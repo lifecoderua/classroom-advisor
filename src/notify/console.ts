@@ -187,7 +187,9 @@ export async function buildReport(db: Db, opts: BuildReportOptions = {}): Promis
         ...(since ? { turnedInAt: { gte: since } } : {}),
       },
       include: {
-        assignment: { select: { accountId: true, title: true, course: { select: { name: true } } } },
+        assignment: {
+          select: { accountId: true, title: true, course: { select: { name: true } } },
+        },
         versions: {
           orderBy: [{ seenAt: "desc" }, { id: "desc" }],
           take: 1,

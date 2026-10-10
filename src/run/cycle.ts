@@ -1,0 +1,151 @@
+import { evaluateDeadlines } from "../checks/evaluate-deadlines.ts";
+import type { ReadText } from "../checks/evaluate-heuristics.ts";
+import {
+  llmSource,
+  pendingQualityVersions,
+  type ReviewSubmissionOptions,
+  reviewSubmission,
+} from "../checks/quality.ts";
+import type { LlmProvider } from "../llm/index.ts";
+import { buildReport, formatReport, reportHasAlerts } from "../notify/console.ts";
+import type { Db } from "../store/index.ts";
+import { inQuietHours, type QuietHours } from "./schedule.ts";
+
+export interface SyncContext {
+  db: Db;
+  now: Date;
+  log: (line: string) => void;
+}
+
+/** Collects and stores fresh Classroom data. Wired by #19. */
+export type SyncFn = (ctx: SyncContext) => Promise<void>;
+
+/** Placeholder until sync (#19) exists. */
+export const stubSync: SyncFn = async ({ log }) => {
+  log("sync not implemented (#19); checking stored data only");
+};
+
+export interface CycleDeps {
+  db: Db;
+  sync: SyncFn;
+  provider: LlmProvider;
+  readText: ReadText;
+  reviewOptions?: ReviewSubmissionOptions;
+  now?: () => Date;
+  log?: (line: string) => void;
+  watchedEmails?: readonly string[];
+  /** IANA time zone for the printed digest (tests). */
+  timeZone?: string;
+  /** Stops reviewing further submissions (SIGINT); the current one finishes. */
+  signal?: AbortSignal;
+}
+
+export interface CycleResult {
+  newAlertIds: number[];
+  reviewed: number;
+  errors: string[];
+  /** The digest of new alerts, or undefined when there are none. */
+  digest?: string;
+}
+
+/**
+ * One `run` cycle: sync → deadline rules → pending quality reviews → digest of the alerts
+ * raised during the cycle. A failing step is logged and the remaining steps still run.
+ */
+export async function runCycle(deps: CycleDeps): Promise<CycleResult> {
+  const { db } = deps;
+  const now = deps.now ?? (() => new Date());
+  const log = deps.log ?? console.log;
+  const errors: string[] = [];
+  const step = async (name: string, fn: () => Promise<void>) => {
+    try {
+      await fn();
+    } catch (err) {
+      const msg = `${name} failed: ${(err as Error).name}: ${(err as Error).message}`;
+      errors.push(msg);
+      log(msg);
+    }
+  };
+
+  const before = (await db.alert.aggregate({ _max: { id: true } }))._max.id ?? 0;
+
+  await step("sync", () => deps.sync({ db, now: now(), log }));
+  await step("deadlines", async () => {
+    await evaluateDeadlines(db, now());
+  });
+  let reviewed = 0;
+  await step("quality", async () => {
+    const ids = await pendingQualityVersions(db, llmSource(deps.provider));
+    for (const id of ids) {
+      if (deps.signal?.aborted) break;
+      await reviewSubmission(db, id, deps.provider, deps.readText, now(), deps.reviewOptions);
+      reviewed++;
+    }
+  });
+
+  const fresh = await db.alert.findMany({
+    where: { id: { gt: before } },
+    select: { id: true },
+    orderBy: { id: "asc" },
+  });
+  const newAlertIds = fresh.map((a) => a.id);
+  const result: CycleResult = { newAlertIds, reviewed, errors };
+  if (newAlertIds.length) {
+    const report = await buildReport(db, {
+      now: now(),
+      alertIds: newAlertIds,
+      ...(deps.watchedEmails ? { watchedEmails: deps.watchedEmails } : {}),
+    });
+    if (reportHasAlerts(report)) {
+      result.digest = formatReport(report, deps.timeZone ? { timeZone: deps.timeZone } : {});
+    }
+  }
+  return result;
+}
+
+export interface LoopOptions {
+  intervalMin: number;
+  quietHours?: QuietHours;
+  /** One cycle, ignoring quiet hours. */
+  once?: boolean;
+  cycle: () => Promise<unknown>;
+  now?: () => Date;
+  /** Resolves after `ms` or as soon as `signal` aborts. */
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  signal: AbortSignal;
+  log?: (line: string) => void;
+}
+
+export function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
+
+/** Runs `cycle` every `intervalMin` minutes until `signal` aborts; skips quiet hours. */
+export async function runLoop(opts: LoopOptions): Promise<{ cycles: number; skipped: number }> {
+  const now = opts.now ?? (() => new Date());
+  const sleep = opts.sleep ?? abortableSleep;
+  const log = opts.log ?? console.log;
+  let cycles = 0;
+  let skipped = 0;
+  while (!opts.signal.aborted) {
+    if (!opts.once && opts.quietHours && inQuietHours(opts.quietHours, now())) {
+      skipped++;
+      log("quiet hours: skipping this cycle");
+    } else {
+      cycles++;
+      await opts.cycle();
+    }
+    if (opts.once || opts.signal.aborted) break;
+    await sleep(opts.intervalMin * 60_000, opts.signal);
+  }
+  return { cycles, skipped };
+}

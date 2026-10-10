@@ -20,7 +20,7 @@ For now it's a single TS package with modules under `src/`:
 |---|---|
 | `config/` | `.env` + `config.local.json` (watched accounts, profile dir, provider), zod-validated |
 | `collector/` | browser session, account discovery, page/RPC capture, parsers, file fetcher |
-| `store/` | Prisma client + repositories |
+| `store/` | Prisma 7 client (better-sqlite3 adapter, DB at `<dataDir>/app.db`) + repositories; JSON stored as strings |
 | `sync/` | orchestration: diff, versioning, domain events |
 | `checks/` | deadline rules, turned-in heuristics, LLM quality pass, verdict merge |
 | `llm/` | `LlmProvider` adapter: `claude-cli` (default), `gemini`, `fake` |

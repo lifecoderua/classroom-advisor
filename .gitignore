@@ -154,3 +154,6 @@ config.local.json
 *.db
 *.db-journal
 captures/
+
+# Prisma generated client
+src/store/generated/

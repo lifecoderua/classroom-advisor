@@ -29,3 +29,6 @@ Real data (captures, files, DB) stays only under gitignored `.data/`. Fixtures a
 
 ### D9. Telegram right after the MVP
 The MVP is data + minimal checks + console report. Telegram is the first notifier after that.
+
+### D10. Call the internal read-only RPCs directly (2026-10-11)
+Recon (#18) found that To-do and detail pages embed no data; it all arrives via `batchexecute` RPCs. Rendering pages and sniffing traffic works, but it's slow and fragile. So we open one page per account for the session tokens, then call the allow-listed read-only rpcids ourselves. The risk is an undocumented API whose positions and rpcids can change. That's why parsers sit behind `ParseDriftError`, fixtures are kept, and `recon` is there to re-learn the shapes.

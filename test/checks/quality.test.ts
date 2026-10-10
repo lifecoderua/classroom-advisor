@@ -279,23 +279,68 @@ describe("reviewSubmission", () => {
     expect(await db.alert.count()).toBe(0);
   });
 
-  it("falls back to heuristics on provider failure and retries later", async () => {
+  it("on provider failure raises nothing, retries, and alerts after 3 failures", async () => {
     const id = await seed();
-    // No cached text for the doc → fetch_failed (0.9) → heuristics-only warn.
+    // No cached text for the doc → fetch_failed (0.9): a heuristics warn, but no direct verdict.
     await db.attachment.updateMany({ where: { mime: DOC }, data: { contentPath: null } });
     const failing = new FakeProvider({ respond: () => new LlmError("timed out") });
 
-    const res = await run(id, failing);
-    expect(res).toMatchObject({ status: "fallback", verdict: "warn", alertCreated: true });
-    expect(res.message).toContain("heuristics only");
+    for (const n of [1, 2]) {
+      expect(await run(id, failing)).toEqual({ status: "fallback", llmFailures: n });
+    }
+    expect(await db.alert.count()).toBe(0);
     expect((await listCheckResults(db, id)).map((r) => r.source)).toEqual(["heuristic"]);
+    expect(await pendingQualityVersions(db, "llm:fake")).toEqual([id]);
 
-    const ok = new FakeProvider();
-    expect(await run(id, ok)).toMatchObject({ status: "reviewed", verdict: "ok" });
+    expect(await run(id, failing)).toEqual({
+      status: "fallback",
+      llmFailures: 3,
+      failureAlertCreated: true,
+    });
+    const alert = await db.alert.findUnique({ where: { key: `quality:${id}:llm-failed` } });
+    expect(alert?.level).toBe("alert");
+    expect(alert?.message).toContain("couldn't run");
+    expect(await db.alert.count()).toBe(1);
+    expect(await run(id, failing)).toMatchObject({ llmFailures: 4, failureAlertCreated: false });
+
+    const heur = (await listCheckResults(db, id))[0];
+    expect(JSON.parse(heur?.findings ?? "{}").llmFailures).toEqual({ "llm:fake": 4 });
+
+    expect(await run(id, new FakeProvider())).toMatchObject({ status: "reviewed", verdict: "ok" });
     expect((await listCheckResults(db, id)).map((r) => r.source)).toEqual([
       "heuristic",
       "llm:fake",
     ]);
+  });
+
+  it("on provider failure still alerts a direct heuristic panic", async () => {
+    const id = await seed();
+    const tpl = "Робочий аркуш. Розв'яжи приклади один два три чотири п'ять.";
+    writeFileSync(join(dataDir, "files/tpl.txt"), tpl);
+    const a = await db.assignment.findFirstOrThrow();
+    const [m] = await syncAttachments(
+      db,
+      { owner: "material", assignmentId: a.id },
+      [{ url: "https://docs.example/tpl", title: "Аркуш", driveFileId: "d0", mime: DOC }],
+      T0,
+    );
+    if (!m) throw new Error("seed failed");
+    await setAttachmentContent(db, m.id, { contentPath: "files/tpl.txt", contentHash: "t" });
+    await db.attachment.updateMany({
+      where: { mime: DOC, owner: "submission" },
+      data: { contentPath: "files/tpl.txt" },
+    });
+    await db.attachment.deleteMany({ where: { mime: "image/jpeg" } });
+
+    const res = await run(id, new FakeProvider({ respond: () => new LlmError("down") }));
+    expect(res).toMatchObject({
+      status: "fallback",
+      verdict: "panic",
+      alertCreated: true,
+      llmFailures: 1,
+    });
+    expect(res.message).toContain("heuristics only");
+    expect((await db.alert.findUnique({ where: { key: `quality:${id}` } }))?.level).toBe("panic");
   });
 
   it("skips versions that are not turned in", async () => {

@@ -118,7 +118,8 @@ check
             imagePathOf: cachedImagePath(config.dataDir),
           },
         );
-        const tail = res.message ? `  ${res.message}` : "";
+        const failures = res.llmFailures ? ` (LLM failed ${res.llmFailures}x)` : "";
+        const tail = `${failures}${res.message ? `  ${res.message}` : ""}`;
         console.log(`#${id}  ${res.status}${res.verdict ? ` ${res.verdict}` : ""}${tail}`);
       }
     } finally {

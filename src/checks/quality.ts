@@ -225,7 +225,10 @@ const DONE: ReadonlySet<string> = new Set(["turned_in", "returned"]);
 
 export type ReviewStatus =
   | "reviewed"
-  /** The provider failed; the heuristics-only verdict was used. Retried on the next run. */
+  /**
+   * The provider failed: nothing stored for the LLM (retried on the next run). Alerts only on a
+   * direct heuristic panic, plus `quality:<id>:llm-failed` after repeated failures.
+   */
   | "fallback"
   /** Already has an LLM CheckResult from this provider. */
   | "already_reviewed"
@@ -238,7 +241,17 @@ export interface ReviewSubmissionResult {
   verdict?: Verdict;
   message?: string;
   alertCreated?: boolean;
+  /** Provider failures so far for this version (on `fallback`). */
+  llmFailures?: number;
+  /** Whether the `quality:<id>:llm-failed` alert was created by this call. */
+  failureAlertCreated?: boolean;
 }
+
+/** After this many provider failures for a version, `quality:<id>:llm-failed` is raised. */
+export const LLM_FAILURE_ALERT_AFTER = 3;
+
+/** The `heuristic` CheckResult findings, plus a per-source LLM failure counter. */
+type StoredHeuristicFindings = TurnedInResult & { llmFailures?: Record<string, number> };
 
 export interface ReviewSubmissionOptions {
   /** Resolves local image paths of student attachments (see `cachedImagePath`). */
@@ -262,7 +275,7 @@ export async function reviewSubmission(
   const source = llmSource(provider);
   const existing = await db.checkResult.findMany({
     where: { submissionVersionId, source: { in: ["heuristic", source] } },
-    select: { source: true },
+    select: { id: true, source: true, findings: true },
   });
   if (existing.some((r) => r.source === source)) return { status: "already_reviewed" };
 
@@ -273,8 +286,9 @@ export async function reviewSubmission(
   }
 
   const heuristic = turnedInSignals(snapshot);
-  if (!existing.some((r) => r.source === "heuristic")) {
-    await addCheckResult(
+  const stored =
+    existing.find((r) => r.source === "heuristic") ??
+    (await addCheckResult(
       db,
       {
         submissionVersionId,
@@ -283,8 +297,7 @@ export async function reviewSubmission(
         findings: heuristic,
       },
       now,
-    );
-  }
+    ));
 
   const input = buildReviewInput(snapshot, heuristic, opts.budget);
   let llm: LlmOutcome;
@@ -294,37 +307,65 @@ export async function reviewSubmission(
     llm = { ok: false, error: (err as Error).message };
   }
   const merged = mergeVerdict(heuristic, llm);
-
-  if (llm.ok) {
-    await addCheckResult(
+  const qualityAlert = async () => {
+    const message = qualityMessage(snapshot, heuristic, llm, merged);
+    const { created } = await raiseAlert(
       db,
       {
-        submissionVersionId,
-        source,
-        verdict: merged.verdict,
-        findings: {
-          promptVersion: REVIEW_PROMPT_VERSION,
-          output: llm.output,
-          merge: merged,
-        },
+        key: `quality:${submissionVersionId}`,
+        level: merged.verdict === "panic" ? "panic" : "alert",
+        message,
       },
       now,
     );
+    return { message, created };
+  };
+
+  if (!llm.ok) {
+    // Nothing is stored for the LLM, so the next run retries. Count the failure on the
+    // heuristic result; only a direct heuristic panic alerts right away.
+    const findings = JSON.parse(stored.findings) as StoredHeuristicFindings;
+    const failures = (findings.llmFailures?.[source] ?? 0) + 1;
+    findings.llmFailures = { ...findings.llmFailures, [source]: failures };
+    await db.checkResult.update({
+      where: { id: stored.id },
+      data: { findings: JSON.stringify(findings) },
+    });
+    const result: ReviewSubmissionResult = { status: "fallback", llmFailures: failures };
+    if (heuristic.directVerdict?.level === "panic") {
+      const { message, created } = await qualityAlert();
+      Object.assign(result, { verdict: "panic", message, alertCreated: created });
+    }
+    if (failures >= LLM_FAILURE_ALERT_AFTER) {
+      const a = snapshot.assignment;
+      const label = a.courseName ? `"${a.title}" (${a.courseName})` : `"${a.title}"`;
+      const { created } = await raiseAlert(
+        db,
+        {
+          key: `quality:${submissionVersionId}:llm-failed`,
+          level: "alert",
+          message: `Automatic review couldn't run: ${label} failed ${failures} times (${provider.name}: ${llm.error}). Check the work by hand.`,
+        },
+        now,
+      );
+      result.failureAlertCreated = created;
+    }
+    return result;
   }
 
-  const status: ReviewStatus = llm.ok ? "reviewed" : "fallback";
-  if (merged.verdict === "ok") return { status, verdict: "ok", alertCreated: false };
-  const message = qualityMessage(snapshot, heuristic, llm, merged);
-  const { created } = await raiseAlert(
+  await addCheckResult(
     db,
     {
-      key: `quality:${submissionVersionId}`,
-      level: merged.verdict === "panic" ? "panic" : "alert",
-      message,
+      submissionVersionId,
+      source,
+      verdict: merged.verdict,
+      findings: { promptVersion: REVIEW_PROMPT_VERSION, output: llm.output, merge: merged },
     },
     now,
   );
-  return { status, verdict: merged.verdict, message, alertCreated: created };
+  if (merged.verdict === "ok") return { status: "reviewed", verdict: "ok", alertCreated: false };
+  const { message, created } = await qualityAlert();
+  return { status: "reviewed", verdict: merged.verdict, message, alertCreated: created };
 }
 
 /**

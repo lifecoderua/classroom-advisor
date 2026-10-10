@@ -34,6 +34,7 @@ describe("loadConfig", () => {
       watchedAccounts: [],
       llmProvider: "claude-cli",
       claudeBin: "claude",
+      llmTimeoutMs: 180_000,
     });
   });
 

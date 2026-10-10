@@ -24,6 +24,7 @@ describe("runDoctor", () => {
       watchedAccounts: [],
       llmProvider: "fake",
       claudeBin: "definitely-not-a-real-binary-xyz",
+      llmTimeoutMs: 1000,
     });
     expect(results.map((r) => r.name)).toEqual(["Node", "Chrome", "Profile dir", "claude CLI"]);
     expect(results.find((r) => r.name === "Node")?.ok).toBe(true);

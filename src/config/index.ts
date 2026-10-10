@@ -12,6 +12,10 @@ export const configSchema = z.strictObject({
   watchedAccounts: z.array(z.email()).default([]),
   llmProvider: z.enum(LLM_PROVIDERS).default("claude-cli"),
   claudeBin: z.string().min(1).default("claude"),
+  /** Model alias or id passed to `claude --model`; CLI default when unset. */
+  claudeModel: z.string().min(1).optional(),
+  /** Per-call LLM timeout. */
+  llmTimeoutMs: z.coerce.number().int().positive().default(180_000),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -23,6 +27,8 @@ const ENV_KEYS = {
   CA_WATCHED_ACCOUNTS: "watchedAccounts",
   CA_LLM_PROVIDER: "llmProvider",
   CA_CLAUDE_BIN: "claudeBin",
+  CA_CLAUDE_MODEL: "claudeModel",
+  CA_LLM_TIMEOUT_MS: "llmTimeoutMs",
 } as const satisfies Record<string, keyof Config>;
 
 export class ConfigError extends Error {

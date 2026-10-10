@@ -116,6 +116,17 @@ Materials (`t51ITc` → `[null, [[attachment, null, [itemKey, materialId]]…]]`
 ### Course membership (`O1Xqee`)
 `[2][0]`: `[0]` `[[courseId],[userId]]` · `[1]` role (3 student) · `[2]` the student's class Drive folder.
 
+## RPC client (`src/collector/classroom/rpc.ts`)
+- `openClassroomPage(context, email)` loads `/a/not-turned-in/all?authuser=<email>` and builds a `ClassroomSession` from `WIZ_global_data`. `oPEP7c` is the signed-in email: it must equal the requested account, otherwise Google silently served another account and we stop (`SessionExpiredError`). A sign-in form (`id="identifierId"`) or a non-Classroom final URL also throws `SessionExpiredError`. Don't match `ServiceLogin` in the HTML: normal pages link to it from the account switcher. Missing tokens → `ParseDriftError`.
+- `source-path` is the page's pathname **including** the `/u/<n>` prefix. Requests send `x-same-domain: 1`. `_reqid` starts at a random 4-digit number and steps by 100000, as the page does.
+- `createRpcClient(transport, session)` sends only allow-listed rpcids (`READ_ONLY_RPCIDS`; anything else throws `RpcNotAllowedError` before a request is built). `Transport` is `(url, body) => Promise<string>`; `playwrightTransport(page)` runs `fetch` in the page. Ids are sent as JSON numbers via `num(id)` (textual, so ids beyond 2^53 survive).
+- `unwrapResponse`: `wrb.fr` row for the rpcid → payload; `null` payload → `RpcError` with the code at `[5]`; a login page → `SessionExpiredError`; anything else unexpected → `ParseDriftError`.
+- Request templates (`todoArgs`, `coursesArgs`, `submissionsArgs`) are tested to equal the recorded requests in `fixtures/classroom/`.
+- Gotcha: functions passed to `page.evaluate` must not define named helpers. tsx (esbuild `keepNames`) wraps them in `__name(...)`, which doesn't exist in the page.
+
+## To-do parser (`src/collector/classroom/todo.ts`)
+`listTodo(transport, session)`: `gXtzob` (all pages) → `pONvgf` per active course with all buckets, following the page token → `Zj93ge` (list mask) in batches of 100 → `AssignmentSummary[]` (zod). Items are parsed with `parseItem` from `detail.ts`. The bucket is `Zj93ge [20]` as-is; an item without a submission gets `unknown`. Drift: no courses at all, a wrong type tag, a page token that doesn't advance, or items with no matching submission at all. Enums shared with the detail parser are in `enums.ts`; positional helpers and the one `ParseDriftError` in `parse-util.ts` (errors carry rpcid, path and value *shape*, never values). `pnpm cli classroom todo [--account n] [--headless]` prints counts per bucket only.
+
 ## Detail parser (`src/collector/classroom/detail.ts`)
 `parseAssignmentDetail({ item, materials?, submissions?, comments?, studentId? })` combines `tQShAc` (or an item already parsed from a list), `t51ITc`, one or both `Zj93ge` responses (list mask + attachments mask, merged per submission) and `sLc6hf` into a zod-validated `AssignmentDetail`. Mappings:
 - item kind: type 2 → `assignment` (→ `quiz` when a material is a Google Forms link), 7 → `material`, 5 → `question` (unverified), else `unknown`.

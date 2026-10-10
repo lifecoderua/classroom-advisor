@@ -155,6 +155,93 @@ export function reader(rpcid: string): Reader {
   };
 }
 
+/**
+ * Cursor-style reader: a position in a payload that remembers its path, so nested parsers
+ * report full paths (`[1][0][2][1][1][0]`). Optional getters return `undefined` for
+ * null/missing. Throws the same {@link ParseDriftError} as {@link reader}.
+ */
+export class Cursor {
+  constructor(
+    readonly rpcid: string,
+    readonly root: unknown,
+    readonly base: Path = [],
+  ) {}
+
+  child(path: Path): Cursor {
+    return new Cursor(this.rpcid, at(this.root, ...path), [...this.base, ...path]);
+  }
+
+  private where(path: Path): string {
+    return formatPath([...this.base, ...path]) || "<root>";
+  }
+
+  /** Throws a drift error with a free-text detail (ids at most, never content). */
+  drift(path: Path, detail: string): never {
+    throw new ParseDriftError({ rpcid: this.rpcid, path: this.where(path), detail });
+  }
+
+  /** Throws "expected X at path, got <shape>". */
+  expected(path: Path, expected: string, got: unknown = this.get(path)): never {
+    throw new ParseDriftError({
+      rpcid: this.rpcid,
+      path: this.where(path),
+      expected,
+      shape: shapeOf(got),
+    });
+  }
+
+  get(path: Path): unknown {
+    return at(this.root, ...path);
+  }
+
+  str(path: Path): string {
+    const v = this.get(path);
+    return typeof v === "string" ? v : this.expected(path, "string", v);
+  }
+
+  optStr(path: Path): string | undefined {
+    const v = this.get(path);
+    if (isNil(v)) return undefined;
+    return typeof v === "string" ? v : this.expected(path, "string", v);
+  }
+
+  num(path: Path): number {
+    const v = this.get(path);
+    return typeof v === "number" ? v : this.expected(path, "number", v);
+  }
+
+  optNum(path: Path): number | undefined {
+    const v = this.get(path);
+    if (isNil(v)) return undefined;
+    return typeof v === "number" ? v : this.expected(path, "number", v);
+  }
+
+  arr(path: Path): unknown[] {
+    const v = this.get(path);
+    return Array.isArray(v) ? v : this.expected(path, "array", v);
+  }
+
+  optArr(path: Path): unknown[] | undefined {
+    const v = this.get(path);
+    if (isNil(v)) return undefined;
+    return Array.isArray(v) ? v : this.expected(path, "array", v);
+  }
+
+  /** Ids are decimal strings in responses (numbers in requests); accept both. */
+  id(path: Path): string {
+    const v = this.get(path);
+    if (typeof v === "string" && /^\d+$/.test(v)) return v;
+    if (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) return String(v);
+    return this.expected(path, "decimal id", v);
+  }
+
+  /** Checks the payload type tag at `[0]`, e.g. `hrq.sub`. */
+  tag(expected: string): void {
+    const v = this.get([0]);
+    if (v !== expected) this.expected([0], `tag "${expected}"`, v);
+  }
+}
+
 /** Base64 (standard alphabet, no padding) of a decimal id string, as used in Classroom URLs. */
 export function idToB64(id: string): string {
   return Buffer.from(id, "utf8").toString("base64").replace(/=+$/, "");

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { frame } from "../scripts/anonymize.ts";
+import { parseItem } from "../src/collector/classroom/detail.ts";
 import { ParseDriftError } from "../src/collector/classroom/parse-util.ts";
 import type { ClassroomSession, Transport } from "../src/collector/classroom/rpc.ts";
 import {
@@ -10,7 +11,6 @@ import {
   joinSummaries,
   listTodo,
   parseCourses,
-  parseStreamItem,
   parseSubmissions,
   parseTodoPage,
 } from "../src/collector/classroom/todo.ts";
@@ -89,13 +89,13 @@ describe("parsers on fixtures", () => {
       maxPoints: 100,
     });
     const due = page.rows.find((r) => r.id === "441339928087");
-    expect(due?.dueAt).toBe(1760734740000);
+    expect(due?.dueAt).toEqual(new Date(1760734740000));
     expect(due?.maxPoints).toBeNull();
   });
 
   it("material posts: body at [5], no due date", () => {
     const item = fixture("material-detail.tQShAc.json").response[1][0][2];
-    const m = parseStreamItem(item, "tQShAc", "item");
+    const m = parseItem(item);
     expect(m.kind).toBe("material");
     expect(m.dueAt).toBeNull();
     expect(m.id).toMatch(/^\d+$/);
@@ -240,7 +240,7 @@ describe("listTodo", () => {
     badTitle[2][0][1][0][5] = 42;
     const err = await run({ ...ok, pONvgf: () => badTitle }).catch((e) => e);
     expect(err).toBeInstanceOf(ParseDriftError);
-    expect(err.message).toContain("item#0.base[5]");
+    expect(err.message).toContain("[2][0][1][0][5]");
 
     const noToken = clone(TODO);
     noToken[1] = [true];

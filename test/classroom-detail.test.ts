@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 import { turnedInSignals } from "../src/checks/heuristics.ts";
 import {
   linkTemplates,
-  ParseDriftError,
   parseAssignmentDetail,
   parseItem,
   parseItems,
@@ -13,6 +12,7 @@ import {
   parseSubmissions,
   toHeuristicsInput,
 } from "../src/collector/classroom/detail.ts";
+import { ParseDriftError } from "../src/collector/classroom/parse-util.ts";
 
 const DIR = join(import.meta.dirname, "..", "fixtures", "classroom");
 // biome-ignore lint/suspicious/noExplicitAny: positional protobuf-JSON arrays
@@ -68,7 +68,7 @@ describe("parseItems (tQShAc)", () => {
     expect(() => parseItems(["hrq.sub", p[1]])).toThrow(/expected tag "hrsi.lr"/);
     const badDue = clone(p);
     badDue[1][0][2][1][1][0] = "soon";
-    expect(() => parseItems(badDue)).toThrow(/\[1\]\[0\]\[2\]\[1\]\[1\]\[0\]: expected number/);
+    expect(() => parseItems(badDue)).toThrow(/expected number at \[1\]\[0\]\[2\]\[1\]\[1\]\[0\]/);
     expect(() => parseItems(["hrsi.lr", []])).toThrow(/no items/);
     const badRt = clone(p);
     badRt[1][0][2][1][0][27][0][6][0] = "edu.xx";
@@ -114,7 +114,7 @@ describe("parseMaterials (t51ITc)", () => {
   it("drift: type is not a number, id missing", () => {
     const p = clone(response("detail-materials.t51ITc.json"));
     p[1][0][0][3] = "2";
-    expect(() => parseMaterials(p)).toThrow(/t51ITc \[1\]\[0\]\[0\]\[3\]: expected number/);
+    expect(() => parseMaterials(p)).toThrow(/t51ITc: .*expected number at \[1\]\[0\]\[0\]\[3\]/);
     const q = clone(response("detail-materials.t51ITc.json"));
     q[1][1][0][2] = null;
     expect(() => parseMaterials(q)).toThrow(ParseDriftError);
@@ -174,7 +174,7 @@ describe("parseSubmissions (Zj93ge)", () => {
 
   it("drift: attachments mask alone has no state; unknown enums don't throw", () => {
     expect(() => parseSubmissions(response("detail-attachments.Zj93ge.json"))).toThrow(
-      /Zj93ge \[5\]: submission state missing/,
+      /Zj93ge: .*at \[5\]: submission state missing/,
     );
     const p = clone(response("detail-submission.Zj93ge.json"));
     p[2][0][5] = 99;
@@ -208,7 +208,7 @@ describe("parsePrivateComments (sLc6hf)", () => {
     expect(parsePrivateComments(response("class-comments-empty.sLc6hf.json"))).toEqual([]);
     const p = clone(response("private-comments.sLc6hf.json"));
     p[2][0][11] = "plain";
-    expect(() => parsePrivateComments(p)).toThrow(/sLc6hf \[2\]\[0\]\[11\]\[0\]/);
+    expect(() => parsePrivateComments(p)).toThrow(/sLc6hf: .*\[2\]\[0\]\[11\]\[0\]/);
   });
 });
 

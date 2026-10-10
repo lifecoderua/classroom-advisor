@@ -1,5 +1,16 @@
 import { z } from "zod";
-import { idToB64, ParseDriftError, reader } from "./parse-util.ts";
+import { parseItem } from "./detail.ts";
+import {
+  BUCKETS,
+  type Bucket,
+  bucketOf,
+  ITEM_KINDS,
+  type ItemKind,
+  SUBMISSION_STATES,
+  type SubmissionState,
+  submissionStateOf,
+} from "./enums.ts";
+import { Cursor, idToB64, ParseDriftError, reader } from "./parse-util.ts";
 import {
   ALL_BUCKETS,
   type ClassroomSession,
@@ -19,51 +30,6 @@ import {
  * docs/CLASSROOM-INTERNALS.md. Missing/late/graded come from the submission's bucket
  * (`[20]`) and are never recomputed from dates.
  */
-
-export const ITEM_KINDS = ["assignment", "material", "question", "quiz", "unknown"] as const;
-export type ItemKind = (typeof ITEM_KINDS)[number];
-
-export const BUCKETS = [
-  "assigned",
-  "missing",
-  "turned_in",
-  "done_late",
-  "returned",
-  "graded",
-  "graded_late",
-  "excused",
-  "unknown",
-] as const;
-export type Bucket = (typeof BUCKETS)[number];
-
-export const SUBMISSION_STATES = ["new", "turned_in", "returned", "reclaimed", "unknown"] as const;
-export type SubmissionState = (typeof SUBMISSION_STATES)[number];
-
-const BUCKET_BY_CODE: Record<number, Bucket> = {
-  1: "assigned",
-  2: "missing",
-  3: "turned_in",
-  4: "done_late",
-  7: "returned",
-  8: "graded",
-  10: "graded_late",
-  11: "excused",
-};
-
-const STATE_BY_CODE: Record<number, SubmissionState> = {
-  2: "turned_in",
-  3: "returned",
-  4: "new",
-  5: "reclaimed",
-};
-
-/** Stream item type `item[0]` → kind. Quizzes are not distinguishable yet (see internals). */
-const KIND_BY_TYPE: Record<number, ItemKind> = { 2: "assignment", 5: "question", 7: "material" };
-
-export const bucketOf = (code: number | null): Bucket =>
-  code === null ? "unknown" : (BUCKET_BY_CODE[code] ?? "unknown");
-export const submissionStateOf = (code: number | null): SubmissionState =>
-  code === null ? "unknown" : (STATE_BY_CODE[code] ?? "unknown");
 
 export const assignmentSummarySchema = z.object({
   id: z.string().regex(/^\d+$/),
@@ -104,15 +70,8 @@ export interface Page<T> {
 }
 
 function expectTag(rpcid: string, payload: unknown, tag: string): unknown[] {
-  if (!Array.isArray(payload) || payload[0] !== tag) {
-    throw new ParseDriftError({
-      rpcid,
-      path: "[0]",
-      expected: `tag ${tag}`,
-      shape: Array.isArray(payload) ? `tag ${String(payload[0]).slice(0, 12)}` : typeof payload,
-    });
-  }
-  return payload;
+  new Cursor(rpcid, payload).tag(tag);
+  return payload as unknown[];
 }
 
 /** `[hasMore, [nextPageToken]]` at `payload[1]`. */
@@ -151,43 +110,32 @@ export interface StreamItem {
   courseId: string;
   kind: ItemKind;
   title: string;
-  createdAt: number;
-  updatedAt: number;
-  dueAt: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+  dueAt: Date | null;
   maxPoints: number | null;
 }
 
-/** Parses one stream item `[type, assignment?, ?, ?, ?, material?]`. */
-export function parseStreamItem(item: unknown, rpcid: string, label: string): StreamItem {
-  const r = reader(rpcid);
-  const type = r.int(item, [0], label);
-  const kind = KIND_BY_TYPE[type] ?? "unknown";
-  // Assignments (and presumably questions) keep the body at [1]; material posts at [5].
-  const bodyPath = kind === "material" ? [5] : [1];
-  const body = r.at(item, bodyPath) ?? r.at(item, kind === "material" ? [1] : [5]);
-  if (!Array.isArray(body)) throw r.drift(bodyPath, "item body", body, label);
-  const base = r.arr(body, [0], `${label}.body`);
-  const bl = `${label}.base`;
-  const work = kind === "material" ? null : r.optArr(body, [1], `${label}.body`);
-  const wl = `${label}.work`;
-  return {
-    id: r.id(base, [0, 0], bl),
-    courseId: r.id(base, [0, 1, 0], bl),
-    kind,
-    title: r.optStr(base, [5], bl) ?? "",
-    createdAt: r.ms(base, [1], bl),
-    updatedAt: r.ms(base, [2], bl),
-    dueAt: work ? r.optMs(work, [0], wl) : null,
-    maxPoints: work ? r.optNum(work, [3], wl) : null,
-  };
-}
-
+/** `pONvgf` → `["hrsi.qr", [hasMore, [nextPageToken]], [item…]]`; items parsed as in #6. */
 export function parseTodoPage(payload: unknown): Page<StreamItem> {
   const rpcid = "pONvgf";
   const p = expectTag(rpcid, payload, "hrsi.qr");
   const items = reader(rpcid).optArr(p, [2]) ?? [];
   return {
-    rows: items.map((it, i) => parseStreamItem(it, rpcid, `item#${i}`)),
+    rows: items.map((it, i): StreamItem => {
+      const item = parseItem(it, rpcid, [2, i]);
+      if (!item.createdAt) throw reader(rpcid).drift([2, i, 1, 0, 1], "epoch ms", null);
+      return {
+        id: item.id,
+        courseId: item.courseId,
+        kind: item.kind,
+        title: item.title,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+        dueAt: item.dueAt,
+        maxPoints: item.maxPoints ?? null,
+      };
+    }),
     ...paging(rpcid, p),
   };
 }
@@ -274,9 +222,9 @@ export function joinSummaries(
       courseName: names.get(i.courseId) ?? "",
       title: i.title,
       kind: i.kind,
-      dueAt: i.dueAt === null ? null : new Date(i.dueAt),
-      createdAt: new Date(i.createdAt),
-      updatedAt: new Date(i.updatedAt),
+      dueAt: i.dueAt,
+      createdAt: i.createdAt,
+      updatedAt: i.updatedAt,
       bucket: s?.bucket ?? "unknown",
       submissionState: s?.state ?? null,
       bucketCode: s?.bucketCode ?? null,

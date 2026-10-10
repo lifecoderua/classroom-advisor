@@ -1,7 +1,8 @@
 import type { Command } from "commander";
 import { contextDeps, discoverAccounts, SessionMissingError } from "../collector/accounts.ts";
+import { BUCKETS, type Bucket } from "../collector/classroom/enums.ts";
 import { openClassroomPage } from "../collector/classroom/rpc.ts";
-import { BUCKETS, type Bucket, countByBucket, listTodo } from "../collector/classroom/todo.ts";
+import { countByBucket, listTodo } from "../collector/classroom/todo.ts";
 import { withSession } from "../collector/session.ts";
 import { type Config, loadConfig } from "../config/index.ts";
 

@@ -17,6 +17,9 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { parseFrames } from "../src/collector/classroom/rpc.ts";
+
+export { parseFrames };
 
 const LOREM =
   "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat".split(
@@ -246,36 +249,6 @@ export class Anonymizer {
       throw new Error(`${label}: ${leaks.length} original value(s) still present${detail}`);
     }
   }
-}
-
-/** Splits `)]}'` + length-prefixed JSON chunks. */
-export function parseFrames(body: string): unknown[] {
-  let s = body.replace(/^\)\]\}'\n?/, "");
-  const out: unknown[] = [];
-  while (s.trim()) {
-    const m = /^\s*(\d+)\n/.exec(s);
-    if (!m) throw new Error("batchexecute: bad framing");
-    s = s.slice(m[0].length);
-    // Lengths are not reliable for us (UTF-16 units); find the end of the JSON value instead.
-    let depth = 0;
-    let inStr = false;
-    let i = 0;
-    for (; i < s.length; i++) {
-      const c = s[i];
-      if (inStr) {
-        if (c === "\\") i++;
-        else if (c === '"') inStr = false;
-      } else if (c === '"') inStr = true;
-      else if (c === "[" || c === "{") depth++;
-      else if (c === "]" || c === "}") {
-        depth--;
-        if (depth === 0) break;
-      }
-    }
-    out.push(JSON.parse(s.slice(0, i + 1)));
-    s = s.slice(i + 1);
-  }
-  return out;
 }
 
 /** Inverse of {@link parseFrames}: the length counts UTF-16 units of `"\n" + json + "\n"`. */

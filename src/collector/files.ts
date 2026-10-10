@@ -176,6 +176,11 @@ const LOGIN_URL = /^https:\/\/accounts\.google\.com\//;
 const LOGIN_BODY =
   /accounts\.google\.com\/(?:ServiceLogin|v3\/signin|signin|AccountChooser)|id="identifierId"/;
 
+/** True when an HTML body looks like a Google sign-in or account chooser page. */
+export function isLoginPage(html: string): boolean {
+  return LOGIN_BODY.test(html);
+}
+
 function isHtml(res: HttpResponse): boolean {
   return /text\/html/i.test(res.headers["content-type"] ?? "");
 }

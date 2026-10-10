@@ -13,115 +13,15 @@ import type {
   HeuristicMaterial,
   TurnedInInput,
 } from "../../checks/heuristics.ts";
-
-// ---------------------------------------------------------------------------------------------
-// Positional helpers.
-// TODO(#5): switch to `src/collector/classroom/parse-util.ts` (positional accessors and the shared
-// `ParseDriftError`) once #5 merges, and drop this private copy.
-
-export class ParseDriftError extends Error {
-  override readonly name = "ParseDriftError";
-  constructor(
-    readonly rpcid: string,
-    /** Positional path into the payload, e.g. `[1][0][2][1][0][5]`. */
-    readonly path: string,
-    message: string,
-  ) {
-    super(`${rpcid} ${path}: ${message}`);
-  }
-}
-
-type Path = readonly number[];
-
-/** Navigates a positional path; `undefined` when any step is missing or not an array. */
-function at(root: unknown, path: Path): unknown {
-  let cur: unknown = root;
-  for (const i of path) {
-    if (!Array.isArray(cur)) return undefined;
-    cur = cur[i];
-  }
-  return cur;
-}
-
-const fmt = (path: Path) => path.map((i) => `[${i}]`).join("") || "<root>";
-
-class Reader {
-  constructor(
-    readonly rpcid: string,
-    readonly root: unknown,
-    readonly base: Path = [],
-  ) {}
-
-  child(path: Path): Reader {
-    return new Reader(this.rpcid, at(this.root, path), [...this.base, ...path]);
-  }
-
-  drift(path: Path, message: string): never {
-    throw new ParseDriftError(this.rpcid, fmt([...this.base, ...path]), message);
-  }
-
-  get(path: Path): unknown {
-    return at(this.root, path);
-  }
-
-  str(path: Path): string {
-    const v = this.get(path);
-    if (typeof v !== "string") this.drift(path, `expected string, got ${typeOf(v)}`);
-    return v;
-  }
-
-  optStr(path: Path): string | undefined {
-    const v = this.get(path);
-    if (v == null) return undefined;
-    if (typeof v !== "string") this.drift(path, `expected string, got ${typeOf(v)}`);
-    return v;
-  }
-
-  num(path: Path): number {
-    const v = this.get(path);
-    if (typeof v !== "number") this.drift(path, `expected number, got ${typeOf(v)}`);
-    return v;
-  }
-
-  optNum(path: Path): number | undefined {
-    const v = this.get(path);
-    if (v == null) return undefined;
-    if (typeof v !== "number") this.drift(path, `expected number, got ${typeOf(v)}`);
-    return v;
-  }
-
-  arr(path: Path): unknown[] {
-    const v = this.get(path);
-    if (!Array.isArray(v)) this.drift(path, `expected array, got ${typeOf(v)}`);
-    return v;
-  }
-
-  optArr(path: Path): unknown[] | undefined {
-    const v = this.get(path);
-    if (v == null) return undefined;
-    if (!Array.isArray(v)) this.drift(path, `expected array, got ${typeOf(v)}`);
-    return v;
-  }
-
-  /** Ids are decimal strings in responses (numbers in requests); accept both. */
-  id(path: Path): string {
-    const v = this.get(path);
-    if (typeof v === "string" && /^\d+$/.test(v)) return v;
-    if (typeof v === "number" && Number.isInteger(v)) return String(v);
-    return this.drift(path, `expected decimal id, got ${typeOf(v)}`);
-  }
-
-  tag(expected: string): void {
-    const v = this.get([0]);
-    if (v !== expected) this.drift([0], `expected tag "${expected}", got ${JSON.stringify(v)}`);
-  }
-}
-
-function typeOf(v: unknown): string {
-  if (v === null) return "null";
-  if (Array.isArray(v)) return "array";
-  return typeof v;
-}
+import {
+  BUCKETS,
+  bucketOf,
+  ITEM_KINDS,
+  type ItemKind,
+  SUBMISSION_STATES,
+  submissionStateOf,
+} from "./enums.ts";
+import { Cursor, ParseDriftError, type Path } from "./parse-util.ts";
 
 const ms = (v: number) => new Date(v);
 
@@ -157,20 +57,6 @@ export const attachmentSchema = z.object({
   annotatedSourceId: z.string().optional(),
 });
 export type Attachment = z.infer<typeof attachmentSchema>;
-
-export const ITEM_KINDS = ["assignment", "question", "quiz", "material", "unknown"] as const;
-export const SUBMISSION_STATES = ["turned_in", "returned", "new", "reclaimed", "unknown"] as const;
-export const BUCKETS = [
-  "assigned",
-  "missing",
-  "turned_in",
-  "done_late",
-  "returned",
-  "graded",
-  "graded_late",
-  "excused",
-  "unknown",
-] as const;
 
 export const submissionSchema = z.object({
   state: z.enum(SUBMISSION_STATES),
@@ -252,8 +138,8 @@ const ORIGINS: Record<number, Attachment["origin"]> = {
 };
 
 /** Parses one 21-slot attachment array. `r` points at the attachment itself. */
-export function parseAttachment(r: Reader): Attachment {
-  if (!Array.isArray(r.root)) r.drift([], `expected attachment array, got ${typeOf(r.root)}`);
+export function parseAttachment(r: Cursor): Attachment {
+  if (!Array.isArray(r.root)) r.expected([], "attachment array");
   const title = r.optStr([0]) ?? "";
   const ref = r.str([2]);
   const typeCode = r.num([3]);
@@ -352,7 +238,7 @@ export function linkTemplates(
 export interface ParsedItem {
   id: string;
   courseId: string;
-  kind: (typeof ITEM_KINDS)[number];
+  kind: ItemKind;
   title: string;
   instructions: string;
   instructionsHtml?: string;
@@ -366,7 +252,7 @@ export interface ParsedItem {
 
 /** Parses one bare item `[type, assignment?, ?, ?, ?, material?]`. */
 export function parseItem(item: unknown, rpcid = "tQShAc", path: Path = []): ParsedItem {
-  const r = new Reader(rpcid, item, path);
+  const r = new Cursor(rpcid, item, path);
   const type = r.num([0]);
   let kind: ParsedItem["kind"];
   let bodyPos: number;
@@ -380,8 +266,7 @@ export function parseItem(item: unknown, rpcid = "tQShAc", path: Path = []): Par
   }
   const body = r.child([bodyPos]);
   const base = body.child([0]);
-  if (!Array.isArray(base.root))
-    base.drift([], `expected item base array, got ${typeOf(base.root)}`);
+  if (!Array.isArray(base.root)) base.expected([], "item base array");
 
   const desc = base.optArr([27, 0]) ? base.child([27, 0]) : undefined;
   let instructions = "";
@@ -417,7 +302,7 @@ export function parseItem(item: unknown, rpcid = "tQShAc", path: Path = []): Par
 
 /** `tQShAc` → `["hrsi.lr", [[[0], itemKey, item]…]]`. */
 export function parseItems(payload: unknown): ParsedItem[] {
-  const r = new Reader("tQShAc", payload);
+  const r = new Cursor("tQShAc", payload);
   r.tag("hrsi.lr");
   const rows = r.arr([1]);
   if (rows.length === 0) r.drift([1], "no items");
@@ -436,8 +321,8 @@ export interface ParsedMaterial {
 }
 
 export function parseMaterials(payload: unknown): ParsedMaterial[] {
-  const r = new Reader("t51ITc", payload);
-  if (!Array.isArray(payload)) r.drift([], `expected array, got ${typeOf(payload)}`);
+  const r = new Cursor("t51ITc", payload);
+  if (!Array.isArray(payload)) r.expected([], "array");
   const rows = r.optArr([1]) ?? [];
   return rows.map((_, i) => {
     const row = r.child([1, i]);
@@ -461,34 +346,16 @@ export interface ParsedSubmission {
   sourceIds: Map<Attachment, string>;
 }
 
-const STATES: Record<number, SubmissionDetail["state"]> = {
-  2: "turned_in",
-  3: "returned",
-  4: "new",
-  5: "reclaimed",
-};
-
-const BUCKET_CODES: Record<number, SubmissionDetail["bucket"]> = {
-  1: "assigned",
-  2: "missing",
-  3: "turned_in",
-  4: "done_late",
-  7: "returned",
-  8: "graded",
-  10: "graded_late",
-  11: "excused",
-};
-
 /** Raw submission rows of one or more `Zj93ge` payloads, keyed by `studentId/itemId`. */
 function submissionRows(payloads: readonly unknown[]): Map<string, unknown[]> {
   const out = new Map<string, unknown[]>();
   payloads.forEach((payload) => {
-    const r = new Reader("Zj93ge", payload);
+    const r = new Cursor("Zj93ge", payload);
     r.tag("hrq.sub");
     const subs = r.optArr([2]) ?? [];
     subs.forEach((_, i) => {
       const s = r.child([2, i]);
-      if (!Array.isArray(s.root)) s.drift([], `expected submission array, got ${typeOf(s.root)}`);
+      if (!Array.isArray(s.root)) s.expected([], "submission array");
       const key = `${s.id([0, 0])}/${s.id([0, 1, 0])}`;
       // The list mask and the attachments mask return disjoint fields: merge position-wise.
       const prev = out.get(key);
@@ -503,7 +370,7 @@ function submissionRows(payloads: readonly unknown[]): Map<string, unknown[]> {
 }
 
 function parseSubmissionRow(row: unknown[], path: Path): ParsedSubmission {
-  const r = new Reader("Zj93ge", row, path);
+  const r = new Cursor("Zj93ge", row, path);
   const stateCode =
     r.optNum([5]) ?? r.drift([5], "submission state missing (list mask not fetched?)");
   const bucketCode = r.optNum([20]);
@@ -521,8 +388,8 @@ function parseSubmissionRow(row: unknown[], path: Path): ParsedSubmission {
     return a;
   });
 
-  const state = STATES[stateCode] ?? "unknown";
-  const bucket = (bucketCode !== undefined && BUCKET_CODES[bucketCode]) || "unknown";
+  const state = submissionStateOf(stateCode);
+  const bucket = bucketOf(bucketCode);
   const submission: SubmissionDetail = { state, bucket, attachments };
   if (lastChange !== undefined) {
     if (state === "turned_in") submission.turnedInAt = ms(lastChange);
@@ -558,7 +425,7 @@ export interface ParsedComment extends PrivateComment {
 }
 
 export function parsePrivateComments(payload: unknown): ParsedComment[] {
-  const r = new Reader("sLc6hf", payload);
+  const r = new Cursor("sLc6hf", payload);
   r.tag("hrq.cmt");
   const rows = r.optArr([2]) ?? [];
   return rows.map((_, i) => {
@@ -608,18 +475,22 @@ export function parseAssignmentDetail(p: DetailPayloads): AssignmentDetail {
   else {
     const items = parseItems(p.item);
     if (items.length !== 1)
-      throw new ParseDriftError("tQShAc", "[1]", `expected 1 item, got ${items.length}`);
+      throw new ParseDriftError({
+        rpcid: "tQShAc",
+        path: "[1]",
+        detail: `expected 1 item, got ${items.length}`,
+      });
     item = items[0] as ParsedItem;
   }
 
   const mats = p.materials === undefined ? [] : parseMaterials(p.materials);
   const foreign = mats.find((m) => m.itemId !== item.id);
   if (foreign)
-    throw new ParseDriftError(
-      "t51ITc",
-      "[1]",
-      `material of item ${foreign.itemId}, not ${item.id}`,
-    );
+    throw new ParseDriftError({
+      rpcid: "t51ITc",
+      path: "[1]",
+      detail: `material of item ${foreign.itemId}, not ${item.id}`,
+    });
 
   let sub: ParsedSubmission | undefined;
   if (p.submissions && p.submissions.length > 0) {
@@ -627,11 +498,11 @@ export function parseAssignmentDetail(p: DetailPayloads): AssignmentDetail {
       (s) => s.itemId === item.id && (!p.studentId || s.studentId === p.studentId),
     );
     if (subs.length !== 1)
-      throw new ParseDriftError(
-        "Zj93ge",
-        "[2]",
-        `expected 1 submission for ${item.id}, got ${subs.length}`,
-      );
+      throw new ParseDriftError({
+        rpcid: "Zj93ge",
+        path: "[2]",
+        detail: `expected 1 submission for ${item.id}, got ${subs.length}`,
+      });
     sub = subs[0];
   }
 
@@ -654,7 +525,12 @@ export function parseAssignmentDetail(p: DetailPayloads): AssignmentDetail {
       .map(({ itemId: _i, ...c }) => c),
   };
   const res = assignmentDetailSchema.safeParse(detail);
-  if (!res.success) throw new ParseDriftError("detail", "<assembled>", res.error.message);
+  if (!res.success)
+    throw new ParseDriftError({
+      rpcid: "detail",
+      path: "<assembled>",
+      detail: res.error.issues.map((i) => `${i.path.join(".")}: ${i.code}`).join("; "),
+    });
   return res.data;
 }
 

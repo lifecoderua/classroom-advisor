@@ -6,6 +6,7 @@ import { setWatched } from "../config/local.ts";
 import { createProvider } from "../llm/index.ts";
 import { openDb } from "../store/index.ts";
 import { accountRows, formatRows, listSessionAccounts } from "./accounts.ts";
+import { registerClassroomCommands } from "./classroom.ts";
 import { checkDatabase, runDoctor } from "./doctor.ts";
 import { readTargetsFile, runRecon, TODO_PATHS } from "./recon.ts";
 import { registerReportCommands } from "./report.ts";
@@ -131,6 +132,7 @@ check
   });
 
 registerReportCommands(program);
+registerClassroomCommands(program);
 
 program
   .command("recon")

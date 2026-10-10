@@ -39,6 +39,8 @@ export interface HeuristicAttachment {
   /** Drive id of the template this file was copied from, when known. */
   templateSourceId?: string | null | undefined;
   bytes?: number | null | undefined;
+  /** Absolute path to a local image of the attachment (carried for the LLM pass). */
+  imagePath?: string | undefined;
 }
 
 export interface TurnedInInput {
@@ -47,6 +49,9 @@ export interface TurnedInInput {
     title: string;
     instructions: string;
     materials: readonly HeuristicMaterial[];
+    /** Context for the LLM pass; unused by the heuristics. */
+    courseName?: string | undefined;
+    dueAt?: Date | null | undefined;
   };
   submission: {
     state: string;

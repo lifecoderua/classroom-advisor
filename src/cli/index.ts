@@ -1,6 +1,10 @@
 import { Command } from "commander";
-import { loadConfig } from "../config/index.ts";
+import { cachedImagePath, cachedTextReader } from "../checks/evaluate-heuristics.ts";
+import { llmSource, pendingQualityVersions, reviewSubmission } from "../checks/quality.ts";
+import { LLM_PROVIDERS, loadConfig } from "../config/index.ts";
 import { setWatched } from "../config/local.ts";
+import { createProvider } from "../llm/index.ts";
+import { openDb } from "../store/index.ts";
 import { accountRows, formatRows, listSessionAccounts } from "./accounts.ts";
 import { runDoctor } from "./doctor.ts";
 
@@ -75,6 +79,53 @@ for (const [name, watched] of [
       console.log(`Watch list: ${watchedAccounts.length} account(s).`);
     });
 }
+
+const check = program.command("check").description("Run checks over the stored data");
+
+check
+  .command("quality")
+  .description("LLM review of turned-in work without a review from this provider yet")
+  .option("--submission-version <id>", "review only this submission version")
+  .option("--provider <name>", `LLM provider (${LLM_PROVIDERS.join(" | ")})`)
+  .action(async (opts: { submissionVersion?: string; provider?: string }) => {
+    const config = loadConfig();
+    if (opts.provider && !(LLM_PROVIDERS as readonly string[]).includes(opts.provider)) {
+      throw new Error(`unknown provider '${opts.provider}' (use ${LLM_PROVIDERS.join(", ")})`);
+    }
+    const provider = createProvider({
+      ...config,
+      llmProvider: (opts.provider as (typeof LLM_PROVIDERS)[number]) ?? config.llmProvider,
+    });
+    const db = openDb(config);
+    try {
+      let ids: number[];
+      if (opts.submissionVersion) {
+        const id = Number(opts.submissionVersion);
+        if (!Number.isInteger(id) || id <= 0) throw new Error("--submission-version must be an id");
+        ids = [id];
+      } else {
+        ids = await pendingQualityVersions(db, llmSource(provider));
+      }
+      if (ids.length === 0) console.log("Nothing to review.");
+      for (const id of ids) {
+        const res = await reviewSubmission(
+          db,
+          id,
+          provider,
+          cachedTextReader(config.dataDir),
+          new Date(),
+          {
+            imagePathOf: cachedImagePath(config.dataDir),
+          },
+        );
+        const failures = res.llmFailures ? ` (LLM failed ${res.llmFailures}x)` : "";
+        const tail = `${failures}${res.message ? `  ${res.message}` : ""}`;
+        console.log(`#${id}  ${res.status}${res.verdict ? ` ${res.verdict}` : ""}${tail}`);
+      }
+    } finally {
+      await db.$disconnect();
+    }
+  });
 
 try {
   await program.parseAsync();

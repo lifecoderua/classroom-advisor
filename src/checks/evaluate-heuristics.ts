@@ -21,6 +21,27 @@ export function cachedTextReader(dataDir: string): ReadText {
   };
 }
 
+/** Absolute local image path of an attachment, when one is cached. */
+export type ImagePathOf = (attachment: Attachment) => string | undefined;
+
+const IMAGE_EXTS: ReadonlySet<string> = new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".gif",
+  ".heic",
+  ".heif",
+]);
+
+/** Cached image files (`<dataDir>/<contentPath>` with an image extension). */
+export function cachedImagePath(dataDir: string): ImagePathOf {
+  return (a) =>
+    a.contentPath && IMAGE_EXTS.has(extname(a.contentPath).toLowerCase())
+      ? join(dataDir, a.contentPath)
+      : undefined;
+}
+
 function instructionsOf(payload: string | undefined): string {
   if (!payload) return "";
   try {
@@ -37,6 +58,7 @@ export async function loadTurnedInInput(
   db: Db,
   submissionVersionId: number,
   readText: ReadText,
+  imagePathOf?: ImagePathOf,
 ): Promise<TurnedInInput | null> {
   const v = await db.submissionVersion.findUnique({
     where: { id: submissionVersionId },
@@ -45,6 +67,7 @@ export async function loadTurnedInInput(
         include: {
           assignment: {
             include: {
+              course: { select: { name: true } },
               attachments: { orderBy: { id: "asc" } },
               versions: { orderBy: [{ seenAt: "desc" }, { id: "desc" }], take: 1 },
             },
@@ -55,12 +78,16 @@ export async function loadTurnedInInput(
   });
   if (!v) return null;
   const { assignment } = v.submission;
-  const toItem = async (a: Attachment): Promise<HeuristicAttachment> => ({
-    kind: kindFromMime(a.mime, a.url),
-    title: a.title ?? a.url,
-    driveFileId: a.driveFileId,
-    text: await readText(a),
-  });
+  const toItem = async (a: Attachment): Promise<HeuristicAttachment> => {
+    const imagePath = imagePathOf?.(a);
+    return {
+      kind: kindFromMime(a.mime, a.url),
+      title: a.title ?? a.url,
+      driveFileId: a.driveFileId,
+      text: await readText(a),
+      ...(imagePath ? { imagePath } : {}),
+    };
+  };
   const byOwner = (owner: string) =>
     Promise.all(assignment.attachments.filter((a) => a.owner === owner).map(toItem));
   return {
@@ -69,6 +96,8 @@ export async function loadTurnedInInput(
       title: assignment.title,
       instructions: instructionsOf(assignment.versions[0]?.payload),
       materials: await byOwner("material"),
+      courseName: assignment.course.name,
+      dueAt: assignment.dueAt,
     },
     submission: {
       state: v.state,

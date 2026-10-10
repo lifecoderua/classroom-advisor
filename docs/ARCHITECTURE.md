@@ -59,6 +59,7 @@ Runs are idempotent: running twice gives no duplicate events or alerts.
 - *alert*: posted more than 24h ago, not turned in, and no sign of work (no student attachment or doc edit).
 - *panic*: due in under 24h and not turned in, **or** marked missing.
 - No due date → weekly reminder. Material-only posts are ignored.
+- Implemented in `src/checks/deadlines.ts` (pure, over a plain `DeadlineInput` snapshot) and `src/checks/evaluate-deadlines.ts` (loads watched, open assignments and calls `raiseAlert`). Codes: `untouched_24h` (alert), `due_soon` / `missing` (panic; overdue counts as missing), `no_due_date` (info, after 7 days). Dedupe key `deadline:<assignmentId>:<code>`, plus `:<ISO week>` for `no_due_date` so it re-fires weekly. A panic suppresses `untouched_24h` in the same run. Boundaries are strict: exactly 24h is not yet late.
 
 **Turned-in quality**, where the core problems are wrong or unchecked work and missing or partial attachments:
 1. Heuristics produce *signals* with confidence, not verdicts: `no_attachments`, `fewer_attachments_than_expected`, `template_unchanged`, `empty_or_tiny_doc`, `fetch_failed`, `kind_hint` (quiz/online test/link).

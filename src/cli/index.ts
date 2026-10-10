@@ -7,6 +7,7 @@ import { createProvider } from "../llm/index.ts";
 import { openDb } from "../store/index.ts";
 import { accountRows, formatRows, listSessionAccounts } from "./accounts.ts";
 import { checkDatabase, runDoctor } from "./doctor.ts";
+import { readTargetsFile, runRecon, TODO_PATHS } from "./recon.ts";
 import { registerReportCommands } from "./report.ts";
 
 const program = new Command()
@@ -130,6 +131,35 @@ check
   });
 
 registerReportCommands(program);
+
+program
+  .command("recon")
+  .description(
+    "Read-only: capture Classroom pages and their XHR traffic to <dataDir>/captures (real data)",
+  )
+  .option("--url <url...>", "Classroom URLs or paths to capture instead of the To-do pages")
+  .option("--url-file <path>", "read URLs or paths from a file, one per line")
+  .option("--account <n>", "only this watched account (0-based index in the watch list)")
+  .option("--scroll <n>", "scroll rounds per page", "4")
+  .option("--headless", "run Chrome headless")
+  .action(
+    async (opts: {
+      url?: string[];
+      urlFile?: string;
+      account?: string;
+      scroll: string;
+      headless?: boolean;
+    }) => {
+      const config = loadConfig();
+      const targets = [...(opts.url ?? []), ...(opts.urlFile ? readTargetsFile(opts.urlFile) : [])];
+      await runRecon(config, {
+        targets: targets.length > 0 ? targets : [...TODO_PATHS],
+        headless: Boolean(opts.headless),
+        scrollRounds: Number(opts.scroll),
+        ...(opts.account !== undefined ? { account: Number(opts.account) } : {}),
+      });
+    },
+  );
 
 try {
   await program.parseAsync();

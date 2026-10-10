@@ -1,0 +1,93 @@
+{
+  "rpcid": "t51ITc",
+  "sourcePath": "/c/MzQyMjc1NDUxNzY5/a/MjMzMjI5MDMxMTEy/details",
+  "request": [
+    [null, null, 1, 0],
+    [[233229031112, [342275451769]]],
+    [
+      [
+        null,
+        1,
+        1,
+        1,
+        1,
+        1,
+        null,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        null,
+        [[1, 1, 1, 1, 1], 1, 1, 1, 1, 1, 1],
+        [[1, 1, 1, 1, 1], 1, 1, 1, [1, 1]],
+        1,
+        null,
+        1,
+        [[1, 1, 1, 1, 1], 1, 1],
+        1,
+        [[1, 1, 1, 1, 1], 1]
+      ]
+    ]
+  ],
+  "response": [
+    null,
+    [
+      [
+        [
+          "exercitation ullamco laboris nisi aliquip ex ea commodo consequat lorem ipsum dolor sit",
+          null,
+          "Z2ISfXnSDXn",
+          3,
+          null,
+          "https://i.ytimg.com/vi/Z2ISfXnSDXn/default.jpg",
+          "https://www.youtube.com/watch?v=Z2ISfXnSDXn",
+          null,
+          "224",
+          null,
+          2,
+          null,
+          null,
+          null,
+          null,
+          1,
+          null,
+          "276000963713",
+          null,
+          null,
+          1
+        ],
+        null,
+        [["233229031112", ["342275451769"]], "276000963713"]
+      ],
+      [
+        [
+          "commodo consequat lorem ipsum dolor sit amet consectetur",
+          null,
+          "https://example.com/resource/677034608?wwmethod=link",
+          4,
+          null,
+          "https://classroom.google.com/webthumbnail?url=https://example.com/resource/677034608?wwmethod%3Dlink",
+          "https://example.com/resource/677034608?wwmethod=link",
+          null,
+          null,
+          null,
+          2,
+          null,
+          null,
+          null,
+          null,
+          1,
+          null,
+          "675591071985",
+          null,
+          null,
+          1
+        ],
+        null,
+        [["233229031112", ["342275451769"]], "675591071985"]
+      ]
+    ]
+  ]
+}

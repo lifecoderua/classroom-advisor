@@ -1,0 +1,33 @@
+{
+  "rpcid": "tQShAc",
+  "sourcePath": "/c/MzQyMjc1NDUxNzY5/a/MTAwOTAwNTA3NjA0/details",
+  "request": [
+    [[100900507604, [342275451769]]],
+    [[[null, 1]], [[null, 1]], [[null, 1]], null, null, [[null, 1]]]
+  ],
+  "response": [
+    "hrsi.lr",
+    [
+      [
+        [0],
+        ["100900507604", ["342275451769"]],
+        [
+          2,
+          [
+            [
+              ["100900507604", ["342275451769"]],
+              null,
+              1759861512381,
+              null,
+              null,
+              null,
+              null,
+              null,
+              2
+            ]
+          ]
+        ]
+      ]
+    ]
+  ]
+}

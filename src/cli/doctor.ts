@@ -2,6 +2,7 @@ import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import type { Config } from "../config/index.ts";
+import { databasePath, openDbAt } from "../store/index.ts";
 
 export interface CheckResult {
   name: string;
@@ -94,4 +95,24 @@ export function runDoctor(config: Config): CheckResult[] {
         : `GEMINI_API_KEY not set${config.llmProvider === "gemini" ? " (required by llmProvider gemini)" : ""}`,
     },
   ];
+}
+
+/** DB reachable (file present and queryable) and how many accounts are watched in it. */
+export async function checkDatabase(config: Pick<Config, "dataDir">): Promise<CheckResult> {
+  const path = databasePath(config);
+  if (!existsSync(path)) {
+    return { name: "Database", ok: false, detail: `${path} missing (run pnpm db:migrate)` };
+  }
+  const db = openDbAt(path);
+  try {
+    const [watched, total] = await Promise.all([
+      db.account.count({ where: { watched: true } }),
+      db.account.count(),
+    ]);
+    return { name: "Database", ok: true, detail: `${watched} watched of ${total} account(s)` };
+  } catch (err) {
+    return { name: "Database", ok: false, detail: (err as Error).message.split("\n")[0] ?? "" };
+  } finally {
+    await db.$disconnect();
+  }
 }

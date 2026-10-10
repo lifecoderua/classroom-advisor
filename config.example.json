@@ -5,5 +5,7 @@
   "llmProvider": "claude-cli",
   "claudeBin": "claude",
   "geminiModel": "gemini-3.8-flash",
-  "llmTimeoutMs": 180000
+  "llmTimeoutMs": 180000,
+  "runIntervalMin": 60,
+  "quietHours": "22:00-07:00"
 }

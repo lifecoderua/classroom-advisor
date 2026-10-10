@@ -6,7 +6,8 @@ import { setWatched } from "../config/local.ts";
 import { createProvider } from "../llm/index.ts";
 import { openDb } from "../store/index.ts";
 import { accountRows, formatRows, listSessionAccounts } from "./accounts.ts";
-import { runDoctor } from "./doctor.ts";
+import { checkDatabase, runDoctor } from "./doctor.ts";
+import { registerReportCommands } from "./report.ts";
 
 const program = new Command()
   .name("classroom-advisor")
@@ -19,6 +20,7 @@ program
   .action(async (opts: { session?: boolean }) => {
     const config = loadConfig();
     const results = runDoctor(config);
+    results.push(await checkDatabase(config));
     if (opts.session) {
       try {
         const { accounts, method } = await listSessionAccounts(config, true);
@@ -126,6 +128,8 @@ check
       await db.$disconnect();
     }
   });
+
+registerReportCommands(program);
 
 try {
   await program.parseAsync();

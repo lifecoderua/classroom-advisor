@@ -25,6 +25,7 @@ For now it's a single TS package with modules under `src/`:
 | `checks/` | deadline rules, turned-in heuristics, LLM quality pass, verdict merge |
 | `llm/` | `LlmProvider` adapter: `claude-cli` (default), `gemini`, `fake` |
 | `notify/` | console digest; Telegram |
+| `run/` | `run` loop: cycle orchestration, quiet hours, lock file |
 | `cli/` | `doctor`, `accounts`, `recon`, `sync`, `check`, `report`, `run` |
 
 ## Accounts
@@ -97,6 +98,10 @@ Later, a thin **user-rules** layer can adjust signals and verdicts, e.g. "online
 
 `Alert {key, level info|alert|panic, message, sentAt}`. The console digest comes first (`report`). Then Telegram: panics are sent immediately, everything else in a daily digest; `/status`, `/digest`, `/ack`.
 
+Console digest (`src/notify/console.ts`, `report [--since 24h] [--all]`): one section per watched account (DB `watched` or in the config watch list), labelled by display name or the email's local part. Sections: 🔴 panics, 🟠 alerts, 📥 work turned in within the window with the merged verdict (latest `llm:*` CheckResult with its `summaryForParent`, else the heuristic verdict marked "heuristics only", else "not reviewed yet"), 📅 open work due in the next 7 days (not turned in by status or submission state, materials excluded), ℹ️ info. Alerts are resolved to an account through their key (`deadline:<assignmentId>…`, `quality:<submissionVersionId>…`); anything else lands in "Other". The default window shows alerts created since `--since` plus every unsent one; `--all` shows everything. The console never writes `sentAt`: that belongs to the Telegram notifier.
+
 ## Deployment
 
-Phase 1: this laptop, `run` loop (default every 60 minutes, quiet hours). Phase 2: Docker (Playwright base image, with the profile and `.data` as volumes) on a microVM. Risk: Google may re-verify a session that suddenly comes from a cloud IP. Plan for a noVNC re-login.
+Phase 1: this laptop, `run` loop (default every 60 minutes, quiet hours).
+
+`run [--once]` (`src/run/`): every `runIntervalMin` minutes (default 60) a cycle runs sync → `evaluateDeadlines` → `reviewSubmission` over `pendingQualityVersions` → prints a digest of the alerts raised in that cycle (alert id above the pre-cycle max). A failing step is logged and the next steps still run. Sync is an injected `SyncFn`; until #19 it is a stub that only logs. `quietHours` (`HH:MM-HH:MM`, local time, may cross midnight, end exclusive) skips cycles; `--once` runs one cycle regardless. `<dataDir>/run.lock` holds `{pid, host, startedAt}` and is created exclusively; a lock whose PID is dead on this host (or unreadable) is stale and replaced. SIGINT/SIGTERM stops after the current step (no new reviews start); a second Ctrl-C exits at once. Phase 2: Docker (Playwright base image, with the profile and `.data` as volumes) on a microVM. Risk: Google may re-verify a session that suddenly comes from a cloud IP. Plan for a noVNC re-login.

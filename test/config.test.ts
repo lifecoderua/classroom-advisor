@@ -36,6 +36,7 @@ describe("loadConfig", () => {
       claudeBin: "claude",
       geminiModel: DEFAULT_GEMINI_MODEL,
       llmTimeoutMs: 180_000,
+      runIntervalMin: 60,
     });
   });
 

@@ -1,6 +1,11 @@
+import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { chromeCandidates, runDoctor, which } from "../src/cli/doctor.ts";
+import { checkDatabase, chromeCandidates, runDoctor, which } from "../src/cli/doctor.ts";
 import type { Config } from "../src/config/index.ts";
+import { setWatchedAccounts, upsertAccount } from "../src/store/index.ts";
+import { migratedTemplate } from "./store/helpers.ts";
 
 describe("chromeCandidates", () => {
   it("is platform-aware", () => {
@@ -25,6 +30,7 @@ const base: Config = {
   claudeBin: "definitely-not-a-real-binary-xyz",
   geminiModel: "gemini-test",
   llmTimeoutMs: 1000,
+  runIntervalMin: 60,
 };
 
 describe("runDoctor", () => {
@@ -54,4 +60,34 @@ describe("runDoctor", () => {
     expect(set?.detail).toContain("set");
     expect(set?.detail).not.toContain("sekret-123");
   });
+});
+
+describe("checkDatabase", () => {
+  it("fails when the DB file is missing", async () => {
+    const r = await checkDatabase({ dataDir: "/nonexistent/data" });
+    expect(r).toMatchObject({ name: "Database", ok: false });
+    expect(r.detail).toContain("db:migrate");
+  });
+
+  it("counts watched accounts", async () => {
+    const template = migratedTemplate();
+    const dataDir = mkdtempSync(join(tmpdir(), "ca-doctor-"));
+    try {
+      const db = await template.fresh();
+      await upsertAccount(db, { email: "student-one@school.example" });
+      await setWatchedAccounts(db, ["student-two@school.example"]);
+      const [row] = await db.$queryRawUnsafe<{ file: string }[]>(
+        "SELECT file FROM pragma_database_list WHERE name = 'main'",
+      );
+      copyFileSync(row?.file ?? "", join(dataDir, "app.db"));
+      expect(await checkDatabase({ dataDir })).toEqual({
+        name: "Database",
+        ok: true,
+        detail: "1 watched of 2 account(s)",
+      });
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+      await template.cleanup();
+    }
+  }, 60_000);
 });

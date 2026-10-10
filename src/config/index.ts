@@ -21,6 +21,13 @@ export const configSchema = z.strictObject({
   geminiModel: z.string().min(1).default(DEFAULT_GEMINI_MODEL),
   /** Per-call LLM timeout. */
   llmTimeoutMs: z.coerce.number().int().positive().default(180_000),
+  /** Minutes between `run` cycles. */
+  runIntervalMin: z.coerce.number().int().positive().default(60),
+  /** Local-time window `HH:MM-HH:MM` in which `run` skips cycles (may cross midnight). */
+  quietHours: z
+    .string()
+    .regex(/^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/, "expected HH:MM-HH:MM")
+    .optional(),
 });
 
 export type Config = z.infer<typeof configSchema> & {
@@ -41,6 +48,8 @@ const ENV_KEYS = {
   CA_CLAUDE_MODEL: "claudeModel",
   CA_GEMINI_MODEL: "geminiModel",
   CA_LLM_TIMEOUT_MS: "llmTimeoutMs",
+  CA_RUN_INTERVAL_MIN: "runIntervalMin",
+  CA_QUIET_HOURS: "quietHours",
 } as const satisfies Record<string, keyof Config>;
 
 export class ConfigError extends Error {

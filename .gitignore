@@ -147,3 +147,10 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# classroom-advisor: real kid data must never be committed
+.data/
+config.local.json
+*.db
+*.db-journal
+captures/

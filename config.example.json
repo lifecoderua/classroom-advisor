@@ -1,0 +1,7 @@
+{
+  "profileDir": "~/.classroom-advisor/chrome-profile",
+  "dataDir": "./.data",
+  "watchedAccounts": ["student-one@school.example", "student-two@school.example"],
+  "llmProvider": "claude-cli",
+  "claudeBin": "claude"
+}

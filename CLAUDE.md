@@ -14,7 +14,11 @@ Read `README.md`, `docs/ARCHITECTURE.md` and `docs/DECISIONS.md` first.
 - The collector profile is `~/.classroom-advisor/chrome-profile`. Chrome must not be running on it while the collector runs.
 
 ## Commands
-- `pnpm check`: typecheck + lint
+- `pnpm check`: typecheck (`tsc --noEmit`) + Biome lint/format check
+- `pnpm lint` / `pnpm format`: Biome lint only / format in place
 - `pnpm test`: vitest
-- `pnpm cli <cmd>`: run the CLI via tsx
-- `pnpm db:migrate`: Prisma migrate dev
+- `pnpm cli <cmd>`: run the CLI via tsx (e.g. `pnpm cli doctor`)
+- `pnpm db:migrate`: Prisma migrate dev (lands with #3)
+
+## Config
+`src/config/` merges defaults < `config.local.json` < `.env` < process env, zod-validated. Env vars are `CA_*` (see `.env.example`, `config.example.json`). Imports use explicit `.ts` extensions.

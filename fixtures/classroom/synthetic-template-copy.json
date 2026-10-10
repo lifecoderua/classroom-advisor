@@ -1,0 +1,131 @@
+{
+  "synthetic": true,
+  "note": "SYNTHETIC, hand-written for #6: 'make a copy for each student' was never captured. Shapes follow the 21-slot attachment array; the Google Doc material and the student's copy are guesses (see docs/CLASSROOM-INTERNALS.md). Keys match detail.tQShAc.json.",
+  "materials": {
+    "rpcid": "t51ITc",
+    "response": [
+      null,
+      [
+        [
+          [
+            "Worksheet",
+            null,
+            "1SyntheticTemplateDocId000000000000000000000",
+            2,
+            "application/vnd.google-apps.document",
+            "https://lh3.googleusercontent.com/drive-storage/synthetic={size}",
+            "https://docs.google.com/document/d/1SyntheticTemplateDocId000000000000000000000/edit?usp=drive_web",
+            null,
+            null,
+            null,
+            2,
+            null,
+            null,
+            null,
+            [
+              [
+                "Worksheet",
+                "https://lh3.googleusercontent.com/drive-storage/synthetic={size}",
+                "https://docs.google.com/document/d/1SyntheticTemplateDocId000000000000000000000/edit?usp=drive_web"
+              ],
+              2,
+              null,
+              null,
+              null,
+              null,
+              "https://docs.google.com/file/d/1SyntheticTemplateDocId000000000000000000000/grading"
+            ],
+            1,
+            null,
+            "983435226449",
+            null,
+            null,
+            1
+          ],
+          null,
+          [["100900507604", ["342275451769"]], "983435226449"]
+        ]
+      ]
+    ]
+  },
+  "submission": {
+    "rpcid": "Zj93ge",
+    "response": [
+      "hrq.sub",
+      [false],
+      [
+        [
+          ["831760658545", ["100900507604", ["342275451769"]]],
+          null,
+          1759861488344,
+          null,
+          [
+            [
+              "Student Name - Worksheet",
+              null,
+              "1SyntheticStudentCopyId0000000000000000000000",
+              2,
+              "application/vnd.google-apps.document",
+              "https://lh3.googleusercontent.com/drive-storage/synthetic2={size}",
+              "https://docs.google.com/document/d/1SyntheticStudentCopyId0000000000000000000000/edit?usp=drive_web",
+              null,
+              null,
+              null,
+              2,
+              null,
+              null,
+              null,
+              [
+                [
+                  "Student Name - Worksheet",
+                  "https://lh3.googleusercontent.com/drive-storage/synthetic2={size}",
+                  "https://docs.google.com/document/d/1SyntheticStudentCopyId0000000000000000000000/edit?usp=drive_web"
+                ],
+                null,
+                null,
+                null,
+                null,
+                null,
+                "https://docs.google.com/file/d/1SyntheticStudentCopyId0000000000000000000000/grading"
+              ],
+              2,
+              null,
+              "555000111222",
+              null,
+              null,
+              1
+            ]
+          ],
+          2,
+          null,
+          ["831760658545"],
+          null,
+          null,
+          null,
+          null,
+          null,
+          1,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          3,
+          1757689469607,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          1
+        ]
+      ]
+    ]
+  }
+}

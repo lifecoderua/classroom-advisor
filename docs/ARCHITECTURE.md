@@ -34,7 +34,7 @@ One Chrome profile holds several Google accounts. We list them from the session 
 Session details (`src/collector/session.ts`, `accounts.ts`):
 - Playwright `launchPersistentContext(profileDir, { channel: "chrome" })`, headful by default. We drop Playwright's `--use-mock-keychain` / `--password-store=basic` defaults: with them Chrome can't decrypt the profile's cookies (macOS Keychain key) and the hand-made login looks gone.
 - A live `SingletonLock` (`<host>-<pid>` symlink) in the profile means Chrome is open on it → `ProfileLockedError`.
-- Discovery: `ListAccounts?gpsia=1&source=ChromiumBrowser&json=standard` via `context.request` (shares the profile cookies), parsed like Chromium does; fallback is reading emails off the account chooser page. No accounts → `SessionMissingError` (log in by hand).
+- Discovery: **POST** `ListAccounts?gpsia=1&source=ChromiumBrowser&json=standard` via `context.request` (shares the profile cookies; GET answers 400), parsed like Chromium does (`[3]` email, `[7]` authuser index, `[14]` signed out); fallback is reading emails off the account chooser page. No accounts → `SessionMissingError` (log in by hand).
 
 ## Data sources (see CLASSROOM-INTERNALS.md)
 

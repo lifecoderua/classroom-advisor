@@ -11,7 +11,7 @@ import {
   SessionMissingError,
 } from "../src/collector/accounts.ts";
 
-const entry = (name: string, email: string, valid = 1, signedOut?: boolean) => {
+const entry = (name: string, email: string, index: number, valid = 1, signedOut?: boolean) => {
   const e: unknown[] = [
     "gaia.l.a",
     1,
@@ -20,7 +20,7 @@ const entry = (name: string, email: string, valid = 1, signedOut?: boolean) => {
     "https://lh3.example/photo",
     1,
     1,
-    0,
+    index,
     null,
     valid,
   ];
@@ -34,13 +34,15 @@ const listBody = (...entries: unknown[][]) => JSON.stringify(["gaia.l.a.r", entr
 describe("parseListAccounts", () => {
   it("returns signed-in accounts in cookie order", () => {
     const body = listBody(
-      entry("Kid One", "Kid1@school.example"),
-      entry("Kid Two", "kid2@school.example", 0),
-      entry("Gone", "gone@school.example", 1, true),
+      entry("Kid One", "Kid1@school.example", 0),
+      entry("Kid Two", "kid2@school.example", 1, 0),
+      entry("Gone", "gone@school.example", 2, 1, true),
+      entry("Out of order", "kid4@school.example", 5),
     );
     expect(parseListAccounts(body)).toEqual([
       { email: "kid1@school.example", name: "Kid One", index: 0, valid: true },
       { email: "kid2@school.example", name: "Kid Two", index: 1, valid: false },
+      { email: "kid4@school.example", name: "Out of order", index: 5, valid: true },
     ]);
   });
 
@@ -81,28 +83,28 @@ describe("parseAccountChooser", () => {
 
 describe("discoverAccounts", () => {
   const deps = (over: Partial<DiscoveryDeps>): DiscoveryDeps => ({
-    fetchText: vi.fn(async () => ({ status: 200, text: '["gaia.l.a.r",[]]' })),
+    postText: vi.fn(async () => ({ status: 200, text: '["gaia.l.a.r",[]]' })),
     pageHtml: vi.fn(async () => ""),
     ...over,
   });
 
   it("uses ListAccounts first", async () => {
     const d = deps({
-      fetchText: vi.fn(async () => ({
+      postText: vi.fn(async () => ({
         status: 200,
-        text: listBody(entry("A", "kid1@school.example")),
+        text: listBody(entry("A", "kid1@school.example", 0)),
       })),
     });
     const result = await discoverAccounts(d);
     expect(result.method).toBe("list-accounts");
     expect(result.accounts).toHaveLength(1);
-    expect(d.fetchText).toHaveBeenCalledWith(LIST_ACCOUNTS_URL);
+    expect(d.postText).toHaveBeenCalledWith(LIST_ACCOUNTS_URL);
     expect(d.pageHtml).not.toHaveBeenCalled();
   });
 
   it("falls back to the account chooser", async () => {
     const d = deps({
-      fetchText: vi.fn(async () => ({ status: 403, text: "" })),
+      postText: vi.fn(async () => ({ status: 403, text: "" })),
       pageHtml: vi.fn(async () => '<li data-identifier="kid2@school.example">'),
     });
     const result = await discoverAccounts(d);

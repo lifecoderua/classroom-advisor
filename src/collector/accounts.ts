@@ -42,9 +42,10 @@ function stripXssi(text: string): string {
 
 /**
  * Parses the `ListAccounts` body, as Chromium does:
- * `["gaia.l.a.r", [["gaia.l.a", 1, name, email, photo, ?, ?, ?, ?, valid, gaiaId, ?, ?, ?, signedOut], ...]]`.
- * Positions are kept loose: the email is the first email-looking string if [3] isn't one.
- * Signed-out accounts are dropped; the rest keep their cookie order as `index`.
+ * `["gaia.l.a.r", [["gaia.l.a", 1, name, email, photo, ?, ?, authuserIndex, ?, valid, gaiaId,
+ * ?, ?, ?, signedOut, ?, givenName], ...]]`.
+ * Positions are kept loose: the email is the first email-looking string if [3] isn't one, and
+ * the index falls back to list order. Signed-out accounts are dropped.
  */
 export function parseListAccounts(text: string): GoogleAccount[] {
   let data: unknown;
@@ -66,7 +67,7 @@ export function parseListAccounts(text: string): GoogleAccount[] {
     accounts.push({
       email: email.toLowerCase(),
       ...(name ? { name } : {}),
-      index: accounts.length,
+      index: typeof entry[7] === "number" ? entry[7] : accounts.length,
       valid: entry[9] === undefined || entry[9] === 1 || entry[9] === true,
     });
   }
@@ -89,16 +90,16 @@ export function parseAccountChooser(html: string): GoogleAccount[] {
 }
 
 export interface DiscoveryDeps {
-  /** GET with the profile's cookies. */
-  fetchText(url: string): Promise<{ status: number; text: string }>;
+  /** POST (as Chromium does; GET answers 400) with the profile's cookies. */
+  postText(url: string): Promise<{ status: number; text: string }>;
   /** Loads a page read-only and returns its HTML. */
   pageHtml(url: string): Promise<string>;
 }
 
 export function contextDeps(context: BrowserContext): DiscoveryDeps {
   return {
-    async fetchText(url) {
-      const res = await context.request.get(url, { failOnStatusCode: false });
+    async postText(url) {
+      const res = await context.request.post(url, { failOnStatusCode: false });
       return { status: res.status(), text: await res.text() };
     },
     async pageHtml(url) {
@@ -121,7 +122,7 @@ export function contextDeps(context: BrowserContext): DiscoveryDeps {
 export async function discoverAccounts(deps: DiscoveryDeps): Promise<Discovery> {
   const errors: string[] = [];
   try {
-    const res = await deps.fetchText(LIST_ACCOUNTS_URL);
+    const res = await deps.postText(LIST_ACCOUNTS_URL);
     if (res.status !== 200) throw new Error(`ListAccounts: HTTP ${res.status}`);
     const accounts = parseListAccounts(res.text);
     if (accounts.length > 0) return { accounts, method: "list-accounts" };

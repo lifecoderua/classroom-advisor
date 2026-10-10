@@ -18,7 +18,8 @@ Read `README.md`, `docs/ARCHITECTURE.md` and `docs/DECISIONS.md` first.
 - `pnpm lint` / `pnpm format`: Biome lint only / format in place
 - `pnpm test`: vitest (`CA_LLM_IT=1 pnpm test llm.integration` also runs the live `claude` CLI test)
 - `pnpm cli <cmd>`: run the CLI via tsx (e.g. `pnpm cli doctor`)
-- `pnpm db:migrate`: Prisma migrate dev (lands with #3)
+- `pnpm db:migrate`: Prisma migrate dev on `<dataDir>/app.db` (`--name <x>` for a new migration)
+- `pnpm db:generate`: regenerate the Prisma client into `src/store/generated/` (gitignored; also runs on `postinstall`)
 
 ## Config
 `src/config/` merges defaults < `config.local.json` < `.env` < process env, zod-validated. Env vars are `CA_*` (see `.env.example`, `config.example.json`). Imports use explicit `.ts` extensions.

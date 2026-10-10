@@ -1,0 +1,165 @@
+// SQLite via @prisma/adapter-better-sqlite3. DB path: <dataDir>/app.db (see prisma.config.ts).
+// All timestamps are UTC. Evolving value sets (kinds, statuses, verdicts) are plain strings;
+// the allowed values are typed in src/store/types.ts. JSON blobs are stored as String.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/store/generated"
+  moduleFormat        = "esm"
+  importFileExtension = "ts"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Account {
+  id          Int          @id @default(autoincrement())
+  email       String       @unique
+  displayName String?
+  watched     Boolean      @default(false)
+  /// Last known `/u/N/` index; informational only, accounts are addressed by `authuser=<email>`.
+  authuser    String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  courses     Course[]
+  assignments Assignment[]
+}
+
+model Course {
+  id          Int          @id @default(autoincrement())
+  accountId   Int
+  account     Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  /// Classroom's course id.
+  classroomId String
+  name        String
+  firstSeenAt DateTime     @default(now())
+  lastSeenAt  DateTime     @default(now())
+  assignments Assignment[]
+
+  @@unique([accountId, classroomId])
+}
+
+model Assignment {
+  id          Int                 @id @default(autoincrement())
+  accountId   Int
+  account     Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  courseId    Int
+  course      Course              @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  /// Classroom's coursework id.
+  classroomId String
+  /// assignment | question | material | quiz | unknown
+  kind        String
+  title       String
+  dueAt       DateTime?
+  postedAt    DateTime?
+  /// assigned | turned_in | missing | returned | ...
+  status      String
+  currentHash String
+  firstSeenAt DateTime            @default(now())
+  lastSeenAt  DateTime            @default(now())
+  versions    AssignmentVersion[]
+  submission  Submission?
+  attachments Attachment[]
+
+  @@unique([accountId, classroomId])
+  @@index([dueAt])
+}
+
+/// One row per observed content change: history of edits (e.g. a moved deadline).
+model AssignmentVersion {
+  id           Int        @id @default(autoincrement())
+  assignmentId Int
+  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  hash         String
+  /// Normalized assignment object as JSON.
+  payload      String
+  seenAt       DateTime   @default(now())
+
+  @@index([assignmentId, seenAt])
+}
+
+/// The watched student's own submission; one per assignment (the account is the student).
+model Submission {
+  id           Int                 @id @default(autoincrement())
+  assignmentId Int                 @unique
+  assignment   Assignment          @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  /// new | created | turned_in | returned | reclaimed | ...
+  state        String
+  turnedInAt   DateTime?
+  grade        String?
+  currentHash  String
+  firstSeenAt  DateTime            @default(now())
+  lastSeenAt   DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  versions     SubmissionVersion[]
+  attachments  Attachment[]
+}
+
+model SubmissionVersion {
+  id           Int           @id @default(autoincrement())
+  submissionId Int
+  submission   Submission    @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  hash         String
+  state        String
+  /// Normalized submission object as JSON.
+  payload      String
+  seenAt       DateTime      @default(now())
+  checkResults CheckResult[]
+
+  @@index([submissionId, seenAt])
+}
+
+/// A teacher material (owner = material) or a student file (owner = submission).
+/// Always tied to the assignment; `submissionId` is set for submission attachments.
+model Attachment {
+  id           Int         @id @default(autoincrement())
+  assignmentId Int
+  assignment   Assignment  @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  submissionId Int?
+  submission   Submission? @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  /// material | submission
+  owner        String
+  url          String
+  title        String?
+  driveFileId  String?
+  mime         String?
+  modifiedAt   DateTime?
+  /// Fetched content cache, relative to dataDir.
+  contentPath  String?
+  contentHash  String?
+  fetchedAt    DateTime?
+  firstSeenAt  DateTime    @default(now())
+  lastSeenAt   DateTime    @default(now())
+
+  @@unique([assignmentId, owner, url])
+  @@index([driveFileId])
+}
+
+model CheckResult {
+  id                  Int               @id @default(autoincrement())
+  submissionVersionId Int
+  submissionVersion   SubmissionVersion @relation(fields: [submissionVersionId], references: [id], onDelete: Cascade)
+  /// heuristic | llm:<provider>
+  source              String
+  /// ok | warn | panic
+  verdict             String
+  /// Signals / LLM output as JSON.
+  findings            String
+  createdAt           DateTime          @default(now())
+
+  @@index([submissionVersionId])
+}
+
+model Alert {
+  id        Int       @id @default(autoincrement())
+  /// Dedupe key, e.g. `quality:<submissionVersionId>`.
+  key       String    @unique
+  /// info | alert | panic
+  level     String
+  message   String
+  createdAt DateTime  @default(now())
+  sentAt    DateTime?
+
+  @@index([sentAt])
+}

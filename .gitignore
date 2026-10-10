@@ -157,3 +157,6 @@ captures/
 
 # Prisma generated client
 src/store/generated/
+
+# Claude Code agent worktrees
+.claude/worktrees/

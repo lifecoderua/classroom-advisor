@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { chromeCandidates, runDoctor, which } from "../src/cli/doctor.ts";
+import type { Config } from "../src/config/index.ts";
 
 describe("chromeCandidates", () => {
   it("is platform-aware", () => {
@@ -16,19 +17,41 @@ describe("which", () => {
   });
 });
 
+const base: Config = {
+  profileDir: "/nonexistent/profile",
+  dataDir: "/nonexistent/data",
+  watchedAccounts: [],
+  llmProvider: "fake",
+  claudeBin: "definitely-not-a-real-binary-xyz",
+  geminiModel: "gemini-test",
+  llmTimeoutMs: 1000,
+};
+
 describe("runDoctor", () => {
   it("reports each check", () => {
-    const results = runDoctor({
-      profileDir: "/nonexistent/profile",
-      dataDir: "/nonexistent/data",
-      watchedAccounts: [],
-      llmProvider: "fake",
-      claudeBin: "definitely-not-a-real-binary-xyz",
-      llmTimeoutMs: 1000,
-    });
-    expect(results.map((r) => r.name)).toEqual(["Node", "Chrome", "Profile dir", "claude CLI"]);
+    const results = runDoctor(base);
+    expect(results.map((r) => r.name)).toEqual([
+      "Node",
+      "Chrome",
+      "Profile dir",
+      "claude CLI",
+      "Gemini key",
+    ]);
     expect(results.find((r) => r.name === "Node")?.ok).toBe(true);
     expect(results.find((r) => r.name === "Profile dir")?.ok).toBe(false);
     expect(results.find((r) => r.name === "claude CLI")?.ok).toBe(false);
+  });
+
+  it("reports whether GEMINI_API_KEY is set without printing it", () => {
+    const gemini = (c: Config) => runDoctor(c).find((r) => r.name === "Gemini key");
+    expect(gemini(base)).toMatchObject({ ok: true, detail: "GEMINI_API_KEY not set" });
+    expect(gemini({ ...base, llmProvider: "gemini" })).toMatchObject({
+      ok: false,
+      detail: expect.stringContaining("required"),
+    });
+    const set = gemini({ ...base, llmProvider: "gemini", geminiApiKey: "sekret-123" });
+    expect(set?.ok).toBe(true);
+    expect(set?.detail).toContain("set");
+    expect(set?.detail).not.toContain("sekret-123");
   });
 });

@@ -12,10 +12,20 @@ export function imagePaths(input: ReviewInput): string[] {
 }
 
 /**
+ * How images reach the model: `read-tool` lists paths for the model to open with its Read tool
+ * (claude CLI); `inline` means the image bytes follow the prompt in the same request (Gemini).
+ */
+export type ImageDelivery = "read-tool" | "inline";
+
+/**
  * Wraps the caller's instructions with the input payload and output-format rules.
  * Provider-agnostic plumbing only: no domain guidance lives here.
  */
-export function buildPrompt(input: ReviewInput, instructions = DEFAULT_INSTRUCTIONS): string {
+export function buildPrompt(
+  input: ReviewInput,
+  instructions = DEFAULT_INSTRUCTIONS,
+  delivery: ImageDelivery = "read-tool",
+): string {
   const parts = [
     instructions.trim(),
     `## Input\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
@@ -23,8 +33,11 @@ export function buildPrompt(input: ReviewInput, instructions = DEFAULT_INSTRUCTI
   const images = imagePaths(input);
   if (images.length > 0) {
     parts.push(
-      "## Images\n\nSome attachments have an `imagePath`. Use the Read tool to view each of these files before answering. Do not read any other file.\n\n" +
-        images.map((p) => `- ${p}`).join("\n"),
+      delivery === "inline"
+        ? "## Images\n\nSome attachments have an `imagePath`. Those images are attached after this text, in this order:\n\n" +
+            images.map((p, i) => `${i + 1}. ${p}`).join("\n")
+        : "## Images\n\nSome attachments have an `imagePath`. Use the Read tool to view each of these files before answering. Do not read any other file.\n\n" +
+            images.map((p) => `- ${p}`).join("\n"),
     );
   }
   parts.push(outputFormatInstructions());

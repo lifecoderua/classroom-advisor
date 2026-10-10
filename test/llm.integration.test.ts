@@ -2,11 +2,19 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
-import { afterAll, describe, expect, it } from "vitest";
-import { ClaudeCliProvider, type ReviewInput, reviewOutputSchema } from "../src/llm/index.ts";
+import { afterAll, describe, expect, it as itBase } from "vitest";
+import {
+  ClaudeCliProvider,
+  DEFAULT_GEMINI_MODEL,
+  GeminiProvider,
+  type LlmProvider,
+  type ReviewInput,
+  reviewOutputSchema,
+} from "../src/llm/index.ts";
 
-// Opt-in: calls the real `claude` CLI (costs tokens). Run with `CA_LLM_IT=1 pnpm test llm.integration`.
+// Opt-in: calls the real providers (costs tokens). Run with `CA_LLM_IT=1 pnpm test llm.integration`.
 const enabled = process.env.CA_LLM_IT === "1";
+const geminiKey = process.env.GEMINI_API_KEY?.trim();
 const bin = process.env.CA_CLAUDE_BIN || "claude";
 const model = process.env.CA_CLAUDE_MODEL || "haiku";
 
@@ -44,10 +52,30 @@ function solidPng(w: number, h: number, rgb: [number, number, number]): Buffer {
   ]);
 }
 
-describe.skipIf(!enabled)("claude-cli integration", () => {
+const live: { name: string; ready: boolean; make: () => LlmProvider }[] = [
+  {
+    name: "claude-cli",
+    ready: enabled,
+    make: () => new ClaudeCliProvider({ bin, model, timeoutMs: 180_000 }),
+  },
+  {
+    // Needs a key too: `CA_LLM_IT=1 GEMINI_API_KEY=… pnpm test llm.integration`.
+    name: "gemini",
+    ready: enabled && Boolean(geminiKey),
+    make: () =>
+      new GeminiProvider({
+        apiKey: geminiKey ?? "",
+        model: process.env.CA_GEMINI_MODEL || DEFAULT_GEMINI_MODEL,
+        timeoutMs: 180_000,
+      }),
+  },
+];
+
+describe.each(live)("$name integration", ({ ready, make }) => {
   const dir = mkdtempSync(join(tmpdir(), "ca-llm-it-"));
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
-  const provider = new ClaudeCliProvider({ bin, model, timeoutMs: 180_000 });
+  const provider = ready ? make() : (undefined as unknown as LlmProvider);
+  const it = ready ? itBase : itBase.skip;
 
   it("reviews a synthetic text submission", async () => {
     const input: ReviewInput = {

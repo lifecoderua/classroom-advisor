@@ -6,6 +6,9 @@ import { z } from "zod";
 
 export const LLM_PROVIDERS = ["claude-cli", "gemini", "fake"] as const;
 
+/** Latest stable Flash model with a Gemini API free tier (checked 2026-10 at ai.google.dev). */
+export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
+
 export const configSchema = z.strictObject({
   profileDir: z.string().min(1).default("~/.classroom-advisor/chrome-profile"),
   dataDir: z.string().min(1).default("./.data"),
@@ -14,11 +17,19 @@ export const configSchema = z.strictObject({
   claudeBin: z.string().min(1).default("claude"),
   /** Model alias or id passed to `claude --model`; CLI default when unset. */
   claudeModel: z.string().min(1).optional(),
+  /** Gemini model id for the `gemini` provider. */
+  geminiModel: z.string().min(1).default(DEFAULT_GEMINI_MODEL),
   /** Per-call LLM timeout. */
   llmTimeoutMs: z.coerce.number().int().positive().default(180_000),
 });
 
-export type Config = z.infer<typeof configSchema>;
+export type Config = z.infer<typeof configSchema> & {
+  /**
+   * Secret, from `GEMINI_API_KEY` in the environment or `.env` only (never `config.local.json`,
+   * which rejects it as an unknown key). Absent when unset.
+   */
+  geminiApiKey?: string;
+};
 
 /** Env var → config key. Env values override `config.local.json`. */
 const ENV_KEYS = {
@@ -28,6 +39,7 @@ const ENV_KEYS = {
   CA_LLM_PROVIDER: "llmProvider",
   CA_CLAUDE_BIN: "claudeBin",
   CA_CLAUDE_MODEL: "claudeModel",
+  CA_GEMINI_MODEL: "geminiModel",
   CA_LLM_TIMEOUT_MS: "llmTimeoutMs",
 } as const satisfies Record<string, keyof Config>;
 
@@ -95,11 +107,13 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     throw new ConfigError(`${filePath} must contain a JSON object`);
   }
 
+  const dotenvVars = readDotenv(join(cwd, ".env"));
   const merged = {
     ...file,
-    ...fromEnv(readDotenv(join(cwd, ".env"))),
+    ...fromEnv(dotenvVars),
     ...fromEnv(env),
   };
+  const geminiApiKey = (env.GEMINI_API_KEY?.trim() || dotenvVars.GEMINI_API_KEY?.trim()) ?? "";
 
   const parsed = configSchema.safeParse(merged);
   if (!parsed.success) {
@@ -115,5 +129,6 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     ...parsed.data,
     profileDir: toAbsolute(parsed.data.profileDir),
     dataDir: toAbsolute(parsed.data.dataDir),
+    ...(geminiApiKey ? { geminiApiKey } : {}),
   };
 }

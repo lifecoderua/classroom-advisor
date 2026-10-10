@@ -16,7 +16,7 @@ Read `README.md`, `docs/ARCHITECTURE.md` and `docs/DECISIONS.md` first.
 ## Commands
 - `pnpm check`: typecheck (`tsc --noEmit`) + Biome lint/format check
 - `pnpm lint` / `pnpm format`: Biome lint only / format in place
-- `pnpm test`: vitest (`CA_LLM_IT=1 pnpm test llm.integration` also runs the live `claude` CLI test)
+- `pnpm test`: vitest (`CA_LLM_IT=1 pnpm test llm.integration` also runs the live `claude` CLI test, plus Gemini when `GEMINI_API_KEY` is set)
 - `pnpm cli <cmd>`: run the CLI via tsx (e.g. `pnpm cli doctor`)
 - `pnpm db:migrate`: Prisma migrate dev on `<dataDir>/app.db` (`--name <x>` for a new migration)
 - `pnpm db:generate`: regenerate the Prisma client into `src/store/generated/` (gitignored; also runs on `postinstall`)

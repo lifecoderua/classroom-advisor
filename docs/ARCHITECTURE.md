@@ -65,6 +65,13 @@ Runs are idempotent: running twice gives no duplicate events or alerts.
 **Turned-in quality**, where the core problems are wrong or unchecked work and missing or partial attachments:
 1. Heuristics produce *signals* with confidence, not verdicts: `no_attachments`, `fewer_attachments_than_expected`, `template_unchanged`, `empty_or_tiny_doc`, `fetch_failed`, `kind_hint` (quiz/online test/link).
    Zero attachments is often valid (a lesson with no homework, or an online test scored elsewhere), so signals alone rarely escalate. Only clear-cut cases do, such as a 100% unchanged template.
+   Implemented in `src/checks/heuristics.ts` (pure `turnedInSignals(TurnedInInput)` → `{signals, directVerdict?}`, signals shaped like `ReviewInput.signals`) and `src/checks/evaluate-heuristics.ts` (loads one `SubmissionVersion`: current attachments, kind from mime, instructions from the latest assignment payload's `instructions`/`description`, text via an injected reader; `cachedTextReader(dataDir)` reads cached `.txt/.csv/.md` exports). Details:
+   - `no_attachments`: base 0.5; up for upload words (uk/en stems: `прикріп`, `надішл`, `фото`, `виконай`, `зошит`, `attach`, `submit`, `photo`…) or a template; down for quiz/online test, link-only materials, `question` posts, empty posts.
+   - `fewer_attachments_than_expected`: fewer than templates (0.6) or than parts in the instructions ("3 фото", "2 pages", numbered list; 0.3, since several parts often fit in one file).
+   - `template_unchanged`: word 3-shingle Jaccard ≥ 0.98 against any material text (0.8; ≥ 0.999 → 0.99). Direct `panic` only when every attachment is an identical copy of a template with ≥ 5 words.
+   - `empty_or_tiny_doc`: fewer than 15 own words (template words subtracted as a multiset), or a 0-byte file.
+   - `fetch_failed`: a Google Doc/Slides/Sheet without text (PDFs/images may legitimately lack text).
+   - `kind_hint`: `material` (short-circuits), `quiz` (quiz kind or Form material), `online_test` (keywords: `тест`, `онлайн`, `naurok`, `vseosvita`, `kahoot`…), `link_only`.
 2. An LLM second pass gets the instructions, materials, student work (text + images) and the signals, and returns `{verdict ok|warn|panic, addressesAssignment, missingParts[], issues[], summaryForParent, confidence}`. The audience is young kids. Feedback is written in the assignment's language.
 3. Merge → `CheckResult` → `Alert` (dedupe key `quality:<submissionVersionId>`).
 

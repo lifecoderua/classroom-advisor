@@ -41,6 +41,7 @@ Session details (`src/collector/session.ts`, `accounts.ts`):
 - Student To-do pages `/a/not-turned-in/all`, `/a/missing/all`, `/a/turned-in/all` cover all courses in a single listing.
 - Assignment detail pages give the instructions, materials, submission state and the student's attachments.
 - Files are read through the same session: Docs/Slides via `export?format=txt`, Sheets as csv, PDFs and images raw. They're cached by `driveFileId + modifiedAt`.
+- File fetcher (`src/collector/files.ts`): `HttpGet` over `context.request` (+ `authuser=`). Docs `document/d/<id>/export?format=txt`, Slides `presentation/d/<id>/export/txt`, Sheets `export?format=csv`, everything else `drive.google.com/uc?export=download&id=<id>` (follows the large-file confirm form). PDFs: raw + text via `unpdf`; `contentPath` points at the `.txt`. Images stay as files. Forms, links, YouTube: metadata only. Cache `<dataDir>/files/<driveFileId>/<modifiedAt|nomod>.<ext>` (one dir per file, so the LLM gets Read access to just that dir); `nomod` is always refetched. `contentHash` = sha256 of the `contentPath` file. A login redirect/page throws `SessionExpiredError`; other failures (HTTP, HTML instead of file, >25MB, timeout) return `{ ok: false, error }`.
 
 We parse **network responses / embedded init data, not the DOM** (Classroom's CSS classes are generated). The parsers are defensive, and an empty or invalid parse raises `ParseDriftError`, which surfaces as an alert. Silent breakage is the main risk.
 

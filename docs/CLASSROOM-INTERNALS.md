@@ -116,6 +116,15 @@ Materials (`t51ITc` → `[null, [[attachment, null, [itemKey, materialId]]…]]`
 ### Course membership (`O1Xqee`)
 `[2][0]`: `[0]` `[[courseId],[userId]]` · `[1]` role (3 student) · `[2]` the student's class Drive folder.
 
+## Detail parser (`src/collector/classroom/detail.ts`)
+`parseAssignmentDetail({ item, materials?, submissions?, comments?, studentId? })` combines `tQShAc` (or an item already parsed from a list), `t51ITc`, one or both `Zj93ge` responses (list mask + attachments mask, merged per submission) and `sLc6hf` into a zod-validated `AssignmentDetail`. Mappings:
+- item kind: type 2 → `assignment` (→ `quiz` when a material is a Google Forms link), 7 → `material`, 5 → `question` (unverified), else `unknown`.
+- submission `[5]`: 2 `turned_in`, 3 `returned`, 4 `new`, 5 `reclaimed`. Bucket `[20]`: 1 `assigned`, 2 `missing`, 3 `turned_in`, 4 `done_late`, 7 `returned`, 8 `graded`, 10 `graded_late`, 11 `excused`. `late` comes from the bucket only. `[21]` becomes `turnedInAt` (state 2) or `returnedAt` (state 3).
+- attachment origin `[15]` and type `[3]` as above; Forms links become type/kind `form`. Annotated copies carry `annotatedSourceId` from `[14][3][1]`.
+- comment author: `student` when `[4][0]` equals the submission key's student id, else `teacher`.
+- "Copy for each student" (unverified): a student Google-native file is linked to a Google-native material by `[14][3][1]` or by title (`<title>` or `… - <title>`) and gets `templateSourceId`; the material gets `isTemplate`.
+- Unknown enum values map to `unknown`; structural mismatches throw `ParseDriftError` with the rpcid and positional path.
+
 ## Dates and time zones
 All timestamps, due dates included, are **UTC epoch milliseconds**. No time zone is stored on the item. The UI shows them in the browser's zone. A due date set "without time" shows up as 23:59 local (e.g. `20:59Z` for UTC+3). Evaluate deadlines as instants and render them in the family's configured zone.
 

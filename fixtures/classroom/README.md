@@ -26,6 +26,7 @@ Each `*.json` file is `{ rpcid, sourcePath, request, response }`, where `request
 | `classwork.dpT4Vd.json` | `dpT4Vd` | classwork topic page with a material post (type 7) and an assignment |
 | `material-detail.tQShAc.json` | `tQShAc` | material post by id |
 | `course-user.O1Xqee.json`, `detail.cCzVwf.json` | | membership; add-on attachments (?) |
+| `synthetic-template-copy.json` | `t51ITc`, `Zj93ge` | **synthetic** (hand-written, never captured): a Google Doc template material and the student's copy, for the "make a copy for each student" guess |
 
 To regenerate from local captures (real data stays in `.data/`):
 

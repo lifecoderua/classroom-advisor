@@ -1,0 +1,271 @@
+{
+  "rpcid": "tQShAc",
+  "sourcePath": "/c/MzQyMjc1NDUxNzY5/a/MTAwOTAwNTA3NjA0/details",
+  "request": [
+    [[100900507604, [342275451769]]],
+    [
+      [
+        [
+          1,
+          1,
+          1,
+          1,
+          1,
+          null,
+          null,
+          [1, 1, 1, null, 1, 1, 1],
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          null,
+          null,
+          null,
+          null,
+          1,
+          null,
+          null,
+          null,
+          1,
+          [1],
+          1,
+          [null, null, 1, 1, 1, null, 1]
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          [1],
+          1,
+          null,
+          [1, 1],
+          1,
+          1,
+          null,
+          1,
+          [[1, 1, [], [null, 1]], 1, 1],
+          null,
+          null,
+          null,
+          1
+        ],
+        [null, 1],
+        null,
+        [1, 1]
+      ],
+      [
+        [
+          1,
+          1,
+          1,
+          1,
+          1,
+          null,
+          null,
+          [1, 1, 1, null, 1, 1, 1],
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          null,
+          null,
+          null,
+          null,
+          1,
+          null,
+          null,
+          null,
+          1,
+          [1],
+          1,
+          [null, null, 1, 1, 1, null, 1]
+        ]
+      ],
+      [
+        [
+          1,
+          1,
+          1,
+          1,
+          1,
+          null,
+          null,
+          [1, 1, 1, null, 1, 1, 1],
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          null,
+          null,
+          null,
+          null,
+          1,
+          null,
+          null,
+          null,
+          1,
+          [1],
+          1,
+          [null, null, 1, 1, 1, null, 1]
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          [1],
+          1,
+          null,
+          [1, 1],
+          1,
+          1,
+          null,
+          1,
+          [[1, 1, [], [null, 1]], 1, 1],
+          null,
+          null,
+          null,
+          1
+        ],
+        [1]
+      ],
+      null,
+      null,
+      [
+        [
+          1,
+          1,
+          1,
+          1,
+          1,
+          null,
+          null,
+          [1, 1, 1, null, 1, 1, 1],
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          null,
+          null,
+          null,
+          null,
+          1,
+          null,
+          null,
+          null,
+          1,
+          [1],
+          1,
+          [null, null, 1, 1, 1, null, 1]
+        ]
+      ]
+    ]
+  ],
+  "response": [
+    "hrsi.lr",
+    [
+      [
+        [0],
+        ["100900507604", ["342275451769"]],
+        [
+          2,
+          [
+            [
+              ["100900507604", ["342275451769"]],
+              1757442789890,
+              1759861512381,
+              1759861511097,
+              ["529570952037"],
+              "dolor sit amet consectetur adipiscing elit sed do eiusmod tempor ",
+              null,
+              null,
+              2,
+              [2, ["529570952037"], 1757442789197],
+              1757442789890,
+              null,
+              false,
+              "c:342275451769:s:100900507604",
+              [["119594441761", ["342275451769"]]],
+              1,
+              null,
+              null,
+              null,
+              null,
+              null,
+              "fw==",
+              null,
+              null,
+              null,
+              null,
+              null,
+              [
+                [
+                  null,
+                  "FFD42E21-DFCF-1F3C-C359-74A10850E7E4",
+                  null,
+                  null,
+                  [
+                    [null, [["100900507604", ["342275451769"]], "983435226449"]],
+                    [null, [["100900507604", ["342275451769"]], "277324711494"]]
+                  ],
+                  null,
+                  [
+                    "edu.rt",
+                    "do eiusmod tempor\nincididunt\nut labore et dolore magna\naliqua enim ad\nminim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat lorem ipsum dolor sit\namet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco\nlaboris nisi",
+                    null,
+                    null,
+                    [
+                      null,
+                      "<div><b>dolore magna aliqua</b><br>quis<br>ex ea commodo consequat lorem<br>sit amet consectetur<br><b><i>eiusmod tempor incididunt</i></b>magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea<br><b>nostrud exercitation ullamco</b> ea commodo consequat lorem ipsum dolor sit amet <b>amet</b>tempor incididunt ut labore et dolore magna aliqua enim ad minim veniam<br><b>aliqua enim</b></div>"
+                    ]
+                  ]
+                ]
+              ]
+            ],
+            [
+              1758042000000,
+              1757442789890,
+              true,
+              100,
+              false,
+              null,
+              [1],
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              3
+            ],
+            [
+              "6T-weUlnzUOeLEWyoyhesoCEnDzZnHMlGhHCZdMbeyLnr9k7o4bHdxUtngHotEYybIwOfAvY7",
+              null,
+              "https://drive.google.com/drive/folders/6T-weUlnzUOeLEWyoyhesoCEnDzZnHMlGhHCZdMbeyLnr9k7o4bHdxUtngHotEYybIwOfAvY7"
+            ],
+            null,
+            [2, 2]
+          ]
+        ]
+      ]
+    ]
+  ]
+}

@@ -1,0 +1,103 @@
+{
+  "rpcid": "UG41I",
+  "sourcePath": "/a/not-turned-in/all",
+  "request": [
+    [null, null, 1, 0],
+    [
+      null,
+      null,
+      [1, null, null, null, null, null, null, null, [1, [1, 1, 1, 1]]],
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      1,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      [null, null, null, null, null, null, 1, null, 1]
+    ],
+    [[null, [[null, [831760658545]]]]]
+  ],
+  "response": [
+    "hrq.usr",
+    [],
+    [
+      [
+        ["831760658545"],
+        null,
+        null,
+        [
+          true,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          [
+            [
+              "ut",
+              [
+                [1, "ad minim veniam quis", ["GOO_ZRRJQM_BQYEBXU", "laboris"], true],
+                [
+                  2,
+                  "lorem ipsum dolor sit amet",
+                  ["GBORMU_BVLDYZR_SQKA_HVGRSRE", "XNVTGWP_AFQX_GOIQBHN"],
+                  true
+                ],
+                [11, "elit sed do eiusmod", ["CDE_VEETLIB_PRSDPU_DUBKJPI"], true]
+              ]
+            ],
+            [
+              "labore et dolore magna",
+              [
+                [
+                  3,
+                  "minim veniam quis nostrud exercitation ullamco",
+                  ["BMK_SMZPUOYQDWXA", "nisi", "ipsum"],
+                  true
+                ],
+                [4, "sed do eiusmod tempor incididunt ut", ["et", "KYLOLHNIXH_GVNESIRQ"], true],
+                [
+                  5,
+                  "veniam quis nostrud exercitation ullamco laboris nisi",
+                  ["YKFJIT_UMWGBOXNRV"],
+                  true
+                ],
+                [10, "aliquip ex ea commodo consequat", ["dolor"], true]
+              ]
+            ]
+          ]
+        ],
+        {
+          "24": false,
+          "36": [null, null, null, null, null, null, false, null, false]
+        }
+      ]
+    ]
+  ]
+}

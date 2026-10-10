@@ -1,0 +1,105 @@
+{
+  "rpcid": "t51ITc",
+  "sourcePath": "/c/MzQyMjc1NDUxNzY5/a/MTAwOTAwNTA3NjA0/details",
+  "request": [
+    [null, null, 1, 0],
+    [[100900507604, [342275451769]]],
+    [
+      [
+        null,
+        1,
+        1,
+        1,
+        1,
+        1,
+        null,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        null,
+        [[1, 1, 1, 1, 1], 1, 1, 1, 1, 1, 1],
+        [[1, 1, 1, 1, 1], 1, 1, 1, [1, 1]],
+        1,
+        null,
+        1,
+        [[1, 1, 1, 1, 1], 1, 1],
+        1,
+        [[1, 1, 1, 1, 1], 1]
+      ]
+    ]
+  ],
+  "response": [
+    null,
+    [
+      [
+        [
+          "veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea",
+          null,
+          "https://example.com/resource/26820012?wwmethod=link",
+          4,
+          null,
+          "https://classroom.google.com/webthumbnail?url=https://example.com/resource/26820012?wwmethod%3Dlink",
+          "https://example.com/resource/26820012?wwmethod=link",
+          null,
+          null,
+          null,
+          2,
+          null,
+          null,
+          null,
+          null,
+          1,
+          null,
+          "983435226449",
+          null,
+          null,
+          1
+        ],
+        null,
+        [["100900507604", ["342275451769"]], "983435226449"]
+      ],
+      [
+        [
+          "aliquip ex ea commodo consequat lorem.mp4",
+          null,
+          "5BXNQ1DoZIgFMkIN4BMtDah2LxWQk6fxf",
+          2,
+          "video/mp4",
+          "https://lh3.googleusercontent.com/drive-storage/SVNPiROG4-FjLdMIG3iGU0lVrLcOdeVF5KtO4vQ3GR-yYuuQe1D97mohpwIkz8tAn9GCb4HvWPb9i63muTwiecMFuo6yQTHEBAuB0chMlCtZMm3cz5CE0a={size}",
+          "https://drive.google.com/file/d/5BXNQ1DoZIgFMkIN4BMtDah2LxWQk6fxf/view?usp=drive_web",
+          null,
+          null,
+          null,
+          2,
+          null,
+          null,
+          null,
+          [
+            [
+              "aliquip ex ea commodo consequat lorem.mp4",
+              "https://lh3.googleusercontent.com/drive-storage/SVNPiROG4-FjLdMIG3iGU0lVrLcOdeVF5KtO4vQ3GR-yYuuQe1D97mohpwIkz8tAn9GCb4HvWPb9i63muTwiecMFuo6yQTHEBAuB0chMlCtZMm3cz5CE0a={size}",
+              "https://drive.google.com/file/d/5BXNQ1DoZIgFMkIN4BMtDah2LxWQk6fxf/view?usp=drive_web"
+            ],
+            2,
+            null,
+            null,
+            null,
+            null,
+            "https://docs.google.com/file/d/5BXNQ1DoZIgFMkIN4BMtDah2LxWQk6fxf/grading"
+          ],
+          1,
+          null,
+          "277324711494",
+          null,
+          null,
+          1
+        ],
+        null,
+        [["100900507604", ["342275451769"]], "277324711494"]
+      ]
+    ]
+  ]
+}

@@ -25,6 +25,7 @@ const base: Config = {
   claudeBin: "definitely-not-a-real-binary-xyz",
   geminiModel: "gemini-test",
   llmTimeoutMs: 1000,
+  runIntervalMin: 60,
 };
 
 describe("runDoctor", () => {

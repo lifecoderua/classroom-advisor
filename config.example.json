@@ -4,5 +4,6 @@
   "watchedAccounts": ["student-one@school.example", "student-two@school.example"],
   "llmProvider": "claude-cli",
   "claudeBin": "claude",
+  "geminiModel": "gemini-3.8-flash",
   "llmTimeoutMs": 180000
 }

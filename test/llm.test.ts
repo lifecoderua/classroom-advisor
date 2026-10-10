@@ -7,6 +7,7 @@ import {
   createProvider,
   extractJson,
   FakeProvider,
+  type GeminiProvider,
   LlmError,
   type ReviewInput,
   type ReviewOutput,
@@ -212,10 +213,15 @@ describe("FakeProvider", () => {
 });
 
 describe("createProvider", () => {
-  const base = { claudeBin: "claude", llmTimeoutMs: 1000 } as const;
+  const base = { claudeBin: "claude", geminiModel: "gemini-x", llmTimeoutMs: 1000 } as const;
   it("selects providers from config", () => {
     expect(createProvider({ ...base, llmProvider: "claude-cli" }).name).toBe("claude-cli");
     expect(createProvider({ ...base, llmProvider: "fake" }).name).toBe("fake");
-    expect(() => createProvider({ ...base, llmProvider: "gemini" })).toThrow(/not implemented/);
+    const gemini = createProvider({ ...base, llmProvider: "gemini", geminiApiKey: "k" });
+    expect(gemini.name).toBe("gemini");
+    expect((gemini as GeminiProvider).model).toBe("gemini-x");
+  });
+  it("requires GEMINI_API_KEY for gemini", () => {
+    expect(() => createProvider({ ...base, llmProvider: "gemini" })).toThrow(/GEMINI_API_KEY/);
   });
 });

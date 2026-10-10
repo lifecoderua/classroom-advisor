@@ -10,7 +10,7 @@ const program = new Command()
 
 program
   .command("doctor")
-  .description("Print environment status (Node, Chrome, profile dir, claude CLI)")
+  .description("Print environment status (Node, Chrome, profile dir, claude CLI, Gemini key)")
   .option("--session", "also open the profile headless and count logged-in accounts")
   .action(async (opts: { session?: boolean }) => {
     const config = loadConfig();

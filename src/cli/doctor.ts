@@ -85,5 +85,13 @@ export function runDoctor(config: Config): CheckResult[] {
       ok: Boolean(claude),
       detail: claude ?? `'${config.claudeBin}' not found on PATH`,
     },
+    {
+      // Never print the key itself. Only required when the gemini provider is selected.
+      name: "Gemini key",
+      ok: Boolean(config.geminiApiKey) || config.llmProvider !== "gemini",
+      detail: config.geminiApiKey
+        ? `GEMINI_API_KEY set (model ${config.geminiModel})`
+        : `GEMINI_API_KEY not set${config.llmProvider === "gemini" ? " (required by llmProvider gemini)" : ""}`,
+    },
   ];
 }

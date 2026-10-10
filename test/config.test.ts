@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ConfigError, expandHome, loadConfig } from "../src/config/index.ts";
+import { ConfigError, DEFAULT_GEMINI_MODEL, expandHome, loadConfig } from "../src/config/index.ts";
 
 const HOME = "/home/tester";
 let dir: string;
@@ -34,6 +34,7 @@ describe("loadConfig", () => {
       watchedAccounts: [],
       llmProvider: "claude-cli",
       claudeBin: "claude",
+      geminiModel: DEFAULT_GEMINI_MODEL,
       llmTimeoutMs: 180_000,
     });
   });
@@ -76,6 +77,15 @@ describe("loadConfig", () => {
     writeJson({ watchedAccounts: ["not-an-email"] });
     expect(() => load()).toThrow(/watchedAccounts/);
     writeJson({ typo: true });
+    expect(() => load()).toThrow(ConfigError);
+  });
+
+  it("reads GEMINI_API_KEY from env or .env only, and the model from CA_GEMINI_MODEL", () => {
+    expect(load()).not.toHaveProperty("geminiApiKey");
+    writeFileSync(join(dir, ".env"), "GEMINI_API_KEY=from-dotenv\nCA_GEMINI_MODEL=gemini-x\n");
+    expect(load()).toMatchObject({ geminiApiKey: "from-dotenv", geminiModel: "gemini-x" });
+    expect(load({ GEMINI_API_KEY: "from-env" }).geminiApiKey).toBe("from-env");
+    writeJson({ geminiApiKey: "in-json" });
     expect(() => load()).toThrow(ConfigError);
   });
 

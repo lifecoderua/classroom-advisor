@@ -3,5 +3,6 @@
   "dataDir": "./.data",
   "watchedAccounts": ["student-one@school.example", "student-two@school.example"],
   "llmProvider": "claude-cli",
-  "claudeBin": "claude"
+  "claudeBin": "claude",
+  "llmTimeoutMs": 180000
 }

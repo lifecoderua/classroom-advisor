@@ -66,7 +66,9 @@ Later, a thin **user-rules** layer can adjust signals and verdicts, e.g. "online
 ## LLM adapter
 
 `LlmProvider { name; review(input): Promise<ReviewOutput> }`, with output validated by zod.
-- `claude-cli`: `claude -p --output-format json`, prompt on stdin, with a timeout and retry on invalid JSON.
+- `claude-cli` (`src/llm/claude-cli.ts`): `claude -p --output-format json --json-schema <ReviewOutput draft-07 schema> --no-session-persistence --strict-mcp-config [--model <claudeModel>]`, plus `--tools ""` (no tools) or, when attachments have an `imagePath`, `--tools Read --allowedTools Read --add-dir <image dirs>` so the model can view the images by path. Prompt on stdin, run from an empty temp cwd. Reads `structured_output` from the envelope (falls back to JSON inside `result`, code fences tolerated), zod-validates, retries once with a corrective prompt on invalid output, times out after `llmTimeoutMs` (default 180s), and surfaces stderr on failure.
+  The caller passes the domain prompt as `review(input, { instructions })` (#20); `src/llm/prompt.ts` only wraps it with the input JSON, image paths and the output format.
+  Only images are passed as files; other attachments must arrive as extracted `text`. Opt-in live test: `CA_LLM_IT=1 pnpm test llm.integration` (defaults to `--model haiku`).
 - `gemini`: `GEMINI_API_KEY`, a free-tier Flash model, JSON schema output, images inline.
 - `fake`: for tests.
 

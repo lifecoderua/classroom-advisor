@@ -74,6 +74,12 @@ Runs are idempotent: running twice gives no duplicate events or alerts.
    - `kind_hint`: `material` (short-circuits), `quiz` (quiz kind or Form material), `online_test` (keywords: `тест`, `онлайн`, `naurok`, `vseosvita`, `kahoot`…), `link_only`.
 2. An LLM second pass gets the instructions, materials, student work (text + images) and the signals, and returns `{verdict ok|warn|panic, addressesAssignment, missingParts[], issues[], summaryForParent, confidence}`. The audience is young kids. Feedback is written in the assignment's language.
 3. Merge → `CheckResult` → `Alert` (dedupe key `quality:<submissionVersionId>`).
+   Implemented in `src/checks/quality.ts` with the versioned prompt `src/checks/prompts/review.v1.md` (`REVIEW_PROMPT_VERSION`, stored as `findings.promptVersion`):
+   - `buildReviewInput` (pure): text budget of 24k chars (instructions ≤ 4k; 60% of the rest to the student's work, then materials, water-filled so short texts stay whole, truncation marked), student image paths, signals, `locale` (`uk` for Cyrillic, `en` for Latin).
+   - `mergeVerdict`: a heuristic direct panic wins; an LLM panic with confidence < 0.5 becomes warn; a provider failure falls back to the heuristics-only verdict (`heuristicVerdict`: direct verdict, else warn on a problem signal with confidence ≥ 0.6).
+   - `reviewSubmission(db, versionId, provider, readText, now, {imagePathOf})`: loads via `loadTurnedInInput` (now also course name, due date and cached image paths via `cachedImagePath`), stores a `heuristic` CheckResult (once) and an `llm:<provider>` one (verdict = merged verdict, findings `{promptVersion, output, merge}`), and raises the alert for warn (`alert`) / panic (`panic`) with the parent summary. Skips when this provider's result exists. On provider failure it stores no LLM result (the next run retries) but still raises a heuristics-only alert marked as such; since alerts are deduped, a later LLM review of that version won't replace it.
+   - CLI: `check quality [--submission-version <id>] [--provider <name>]` runs it over `pendingQualityVersions` (latest turned-in/returned version per submission of watched accounts without a result from that provider). Sync (#19) will call `reviewSubmission` directly.
+   - Opt-in live prompt check: `CA_LLM_IT=1 pnpm test quality.integration` (synthetic Ukrainian homework, `CA_LLM_IT_VERBOSE=1` prints the outputs).
 
 Later, a thin **user-rules** layer can adjust signals and verdicts, e.g. "online tests with no attachments are OK".
 

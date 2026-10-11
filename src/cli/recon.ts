@@ -39,25 +39,28 @@ export async function runRecon(config: Config, options: RunReconOptions): Promis
   const indexes = options.account === undefined ? watched.map((_, i) => i) : [options.account];
   const stamp = captureStamp();
 
-  await withSession({ profileDir: config.profileDir, headless: options.headless }, async (s) => {
-    const { accounts } = await discoverAccounts(contextDeps(s.context));
-    const loggedIn = new Map(accounts.map((a) => [a.email, a]));
-    for (const i of indexes) {
-      const email = watched[i];
-      if (!email) throw new Error(`No watched account at index ${i}`);
-      const account = loggedIn.get(email);
-      if (!account?.valid) {
-        throw new SessionMissingError(`watched account #${i} is not logged in`);
+  await withSession(
+    { profileDir: config.profileDir, channel: config.chromeChannel, headless: options.headless },
+    async (s) => {
+      const { accounts } = await discoverAccounts(contextDeps(s.context));
+      const loggedIn = new Map(accounts.map((a) => [a.email, a]));
+      for (const i of indexes) {
+        const email = watched[i];
+        if (!email) throw new Error(`No watched account at index ${i}`);
+        const account = loggedIn.get(email);
+        if (!account?.valid) {
+          throw new SessionMissingError(`watched account #${i} is not logged in`);
+        }
+        const outDir = join(config.dataDir, "captures", String(i), stamp);
+        console.log(`Account #${i}: capturing ${options.targets.length} page(s) → ${outDir}`);
+        await captureTargets(s.context, {
+          email,
+          outDir,
+          targets: options.targets,
+          scrollRounds: options.scrollRounds,
+          log: (line) => console.log(`  ${line}`),
+        });
       }
-      const outDir = join(config.dataDir, "captures", String(i), stamp);
-      console.log(`Account #${i}: capturing ${options.targets.length} page(s) → ${outDir}`);
-      await captureTargets(s.context, {
-        email,
-        outDir,
-        targets: options.targets,
-        scrollRounds: options.scrollRounds,
-        log: (line) => console.log(`  ${line}`),
-      });
-    }
-  });
+    },
+  );
 }

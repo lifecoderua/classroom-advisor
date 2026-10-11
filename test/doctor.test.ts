@@ -2,7 +2,13 @@ import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { checkDatabase, chromeCandidates, runDoctor, which } from "../src/cli/doctor.ts";
+import {
+  checkDatabase,
+  chromeCandidates,
+  chromeCheck,
+  runDoctor,
+  which,
+} from "../src/cli/doctor.ts";
 import type { Config } from "../src/config/index.ts";
 import { setWatchedAccounts, upsertAccount } from "../src/store/index.ts";
 import { migratedTemplate } from "./store/helpers.ts";
@@ -15,6 +21,17 @@ describe("chromeCandidates", () => {
   });
 });
 
+describe("chromeCheck", () => {
+  it("checks the bundled build for the chromium channel", () => {
+    expect(chromeCheck("chromium", () => "/nonexistent/chrome")).toMatchObject({
+      ok: false,
+      detail: expect.stringContaining("playwright install chromium"),
+    });
+    expect(chromeCheck("chromium", () => process.execPath).ok).toBe(true);
+    expect(chromeCheck("msedge").detail).toContain("not checked");
+  });
+});
+
 describe("which", () => {
   it("finds node on PATH and misses nonsense", () => {
     expect(which("node")).toBeTruthy();
@@ -24,6 +41,7 @@ describe("which", () => {
 
 const base: Config = {
   profileDir: "/nonexistent/profile",
+  chromeChannel: "chrome",
   dataDir: "/nonexistent/data",
   watchedAccounts: [],
   llmProvider: "fake",

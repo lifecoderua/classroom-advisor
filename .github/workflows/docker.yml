@@ -1,0 +1,36 @@
+name: Docker
+
+# Builds the image (no push) when the packaging or dependencies change.
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - docker/**
+      - docker-compose.yml
+      - package.json
+      - pnpm-lock.yaml
+      - prisma/**
+      - prisma.config.ts
+      - .github/workflows/docker.yml
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - docker/**
+      - package.json
+      - pnpm-lock.yaml
+      - prisma/**
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t classroom-advisor:ci .
+      - name: Smoke test (no profile, no real data)
+        run: |
+          docker run --rm classroom-advisor:ci doctor || true
+          docker run --rm --entrypoint sh classroom-advisor:ci -c \
+            'test -x /opt/google/chrome/chrome && command -v x11vnc websockify Xvfb'

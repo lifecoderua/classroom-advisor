@@ -25,26 +25,29 @@ export async function runTodoCounts(config: Config, options: TodoCountsOptions):
     throw new Error("No watched accounts. Run `accounts watch <email>` first.");
   const indexes = options.account === undefined ? watched.map((_, i) => i) : [options.account];
 
-  await withSession({ profileDir: config.profileDir, headless: options.headless }, async (s) => {
-    const { accounts } = await discoverAccounts(contextDeps(s.context));
-    const loggedIn = new Map(accounts.map((a) => [a.email, a]));
-    for (const i of indexes) {
-      const email = watched[i];
-      if (!email) throw new Error(`No watched account at index ${i}`);
-      if (!loggedIn.get(email)?.valid) {
-        throw new SessionMissingError(`watched account #${i} is not logged in`);
+  await withSession(
+    { profileDir: config.profileDir, channel: config.chromeChannel, headless: options.headless },
+    async (s) => {
+      const { accounts } = await discoverAccounts(contextDeps(s.context));
+      const loggedIn = new Map(accounts.map((a) => [a.email, a]));
+      for (const i of indexes) {
+        const email = watched[i];
+        if (!email) throw new Error(`No watched account at index ${i}`);
+        if (!loggedIn.get(email)?.valid) {
+          throw new SessionMissingError(`watched account #${i} is not logged in`);
+        }
+        const cp = await openClassroomPage(s.context, email);
+        try {
+          const { courses, summaries } = await listTodo(cp.transport, cp.session, { delayMs: 300 });
+          const active = courses.filter((c) => c.active).length;
+          console.log(formatCounts(i, summaries.length, countByBucket(summaries)));
+          console.log(`  courses: ${active} active of ${courses.length}`);
+        } finally {
+          await cp.close();
+        }
       }
-      const cp = await openClassroomPage(s.context, email);
-      try {
-        const { courses, summaries } = await listTodo(cp.transport, cp.session, { delayMs: 300 });
-        const active = courses.filter((c) => c.active).length;
-        console.log(formatCounts(i, summaries.length, countByBucket(summaries)));
-        console.log(`  courses: ${active} active of ${courses.length}`);
-      } finally {
-        await cp.close();
-      }
-    }
-  });
+    },
+  );
 }
 
 export function registerClassroomCommands(program: Command): void {

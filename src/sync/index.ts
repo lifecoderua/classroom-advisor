@@ -88,6 +88,7 @@ export async function runSync(
 
   const session = await openSession({
     profileDir: config.profileDir,
+    channel: config.chromeChannel,
     headless: options.headless ?? true,
   });
   const outcomes: AccountOutcome[] = [];

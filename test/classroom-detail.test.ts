@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { turnedInSignals } from "../src/checks/heuristics.ts";
 import {
+  commentsHaveMore,
   linkTemplates,
   parseAssignmentDetail,
   parseItem,
@@ -202,6 +203,31 @@ describe("parsePrivateComments (sLc6hf)", () => {
     expect(cs[0]?.text).toMatch(/^consectetur/);
     expect(cs[0]?.at.getTime()).toBe(1759686124263);
     expect(cs[1]?.authorRole).toBe("student");
+  });
+
+  it("a batch over several submissions keeps each comment's submission key", () => {
+    const p = response("private-comments-batch.sLc6hf.json");
+    const cs = parsePrivateComments(p);
+    expect(cs.map((c) => [c.id, c.itemId, c.courseId, c.studentId, c.authorRole])).toEqual([
+      ["111111111101", "200322958360", COURSE, STUDENT, "teacher"],
+      ["111111111102", "200322958360", COURSE, STUDENT, "student"],
+      ["111111111103", "664328137076", COURSE, STUDENT, "teacher"],
+    ]);
+    expect(cs[2]?.text).toBe("sed do eiusmod tempor");
+    expect(commentsHaveMore(p)).toBe(false);
+    expect(commentsHaveMore(["hrq.cmt", [true], []])).toBe(true);
+    expect(commentsHaveMore(["hrq.cmt"])).toBe(false);
+    expect(() => commentsHaveMore(["hrq.cmt", ["x"]])).toThrow(ParseDriftError);
+    expect(() => commentsHaveMore(["hrq.sub", [false]])).toThrow(/expected tag "hrq.cmt"/);
+  });
+
+  it("drift on a bad comment id or time", () => {
+    const p = clone(response("private-comments-batch.sLc6hf.json"));
+    p[2][1][0][0] = "abc";
+    expect(() => parsePrivateComments(p)).toThrow(/sLc6hf: .*\[2\]\[1\]\[0\]\[0\]/);
+    const q = clone(response("private-comments-batch.sLc6hf.json"));
+    q[2][0][1] = "soon";
+    expect(() => parsePrivateComments(q)).toThrow(ParseDriftError);
   });
 
   it("empty response; drift on bad rich text", () => {

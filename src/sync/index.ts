@@ -54,6 +54,7 @@ export function formatOutcome(o: AccountOutcome): string {
     .map(([k, v]) => `${k} ${v}`)
     .join(", ");
   const f = s.files;
+  const c = s.comments;
   return [
     `Account #${o.index}: ${o.status}${s.baseline ? " (baseline)" : ""}`,
     `${s.items} item(s) in ${s.courses} course(s)`,
@@ -62,6 +63,9 @@ export function formatOutcome(o: AccountOutcome): string {
     `submission versions ${s.submissionVersions}`,
     `events ${events || "none"}`,
     `files ${f.fetched} fetched, ${f.cached} cached, ${f.failed} failed`,
+    `comments ${c.fetched} (${c.new} new, ${c.teacherAlerts} teacher alerts${
+      c.errors ? `, ${c.errors} failed calls` : ""
+    })`,
   ].join("; ");
 }
 

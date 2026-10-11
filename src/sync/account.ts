@@ -31,6 +31,13 @@ import {
   upsertSubmission,
 } from "../store/index.ts";
 import {
+  applyComments,
+  type CommentStats,
+  type CommentTarget,
+  emptyCommentStats,
+  fetchPrivateComments,
+} from "./comments.ts";
+import {
   type AssignmentPayload,
   assignmentPayload,
   attachmentInputs,
@@ -87,6 +94,7 @@ export interface SyncStats {
   submissionVersions: number;
   events: Partial<Record<EventType, number>>;
   files: { fetched: number; cached: number; metadataOnly: number; failed: number };
+  comments: CommentStats;
 }
 
 export interface SyncAccountResult {
@@ -107,6 +115,7 @@ export function emptyStats(baseline: boolean): SyncStats {
     submissionVersions: 0,
     events: {},
     files: { fetched: 0, cached: 0, metadataOnly: 0, failed: 0 },
+    comments: emptyCommentStats(),
   };
 }
 
@@ -396,6 +405,44 @@ export async function syncAccount(
       if (r.turnedIn) turnedIn.push(r.assignmentId);
     }
     if (drift) await driftAlert(db, account, drift, label, now);
+
+    // Private comments of every listed submission (batched, so a few calls per account): a
+    // new comment does not always change the submission's update time, so the picked items
+    // alone would miss some.
+    const commentKeys: SubmissionKey[] = listing.summaries
+      .filter((s) => s.kind !== "material" && s.submissionState !== null)
+      .map((s) => ({ studentId: source.session.userId, itemId: s.id, courseId: s.courseId }));
+    if (commentKeys.length > 0) {
+      const fetched = await fetchPrivateComments(source.transport, source.session, commentKeys, {
+        ...delay,
+        log,
+      });
+      stats.comments.errors += fetched.errors;
+      if (fetched.drift) await driftAlert(db, account, fetched.drift, label, now);
+      const rows = await db.assignment.findMany({
+        where: { accountId: account.id, classroomId: { in: commentKeys.map((k) => k.itemId) } },
+        select: {
+          id: true,
+          classroomId: true,
+          baseline: true,
+          title: true,
+          course: { select: { name: true } },
+        },
+      });
+      const targets = new Map<string, CommentTarget>(
+        rows.map((r) => [
+          r.classroomId,
+          { id: r.id, baseline: r.baseline, title: r.title, courseName: r.course.name },
+        ]),
+      );
+      const created = await applyComments(
+        { db, account, baseline, studentId: source.session.userId, now },
+        fetched.comments,
+        targets,
+        stats.comments,
+      );
+      if (created > 0) stats.events["comment.new"] = (stats.events["comment.new"] ?? 0) + created;
+    }
 
     // Contents of turned-in work and of its materials (template comparison). Baseline items
     // are never reviewed, so their files are not downloaded.

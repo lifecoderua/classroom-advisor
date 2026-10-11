@@ -58,6 +58,12 @@ export interface TurnedInInput {
     turnedInAt?: Date | null | undefined;
     attachments: readonly HeuristicAttachment[];
   };
+  /** Recent private comments, oldest first. Context for the LLM pass; unused by the heuristics. */
+  comments?: readonly {
+    authorRole: "teacher" | "student" | "unknown";
+    postedAt: Date;
+    text: string;
+  }[];
 }
 
 export interface DirectVerdict {

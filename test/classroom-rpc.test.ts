@@ -20,6 +20,7 @@ import {
   materialsArgs,
   num,
   type PageGlobals,
+  privateCommentsArgs,
   RpcError,
   RpcNotAllowedError,
   sessionFromGlobals,
@@ -74,6 +75,18 @@ describe("request templates match the recorded requests", () => {
         courseId: String(k[1][1][0]),
       }));
       expect(roundTrip(submissionsArgs(keys, { attachments }))).toEqual(request);
+    }
+  });
+
+  it("sLc6hf private comments (one and many submission keys)", () => {
+    for (const name of ["private-comments.sLc6hf.json", "private-comments-batch.sLc6hf.json"]) {
+      const { request } = fixture(name);
+      const keys = (request[2][3] as J[]).map((k) => ({
+        studentId: String(k[0]),
+        itemId: String(k[1][0]),
+        courseId: String(k[1][1][0]),
+      }));
+      expect(roundTrip(privateCommentsArgs(keys))).toEqual(request);
     }
   });
 

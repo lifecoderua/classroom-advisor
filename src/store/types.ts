@@ -17,6 +17,9 @@ export type SubmissionState =
 export const ATTACHMENT_OWNERS = ["material", "submission"] as const;
 export type AttachmentOwner = (typeof ATTACHMENT_OWNERS)[number];
 
+export const COMMENT_AUTHOR_ROLES = ["teacher", "student", "unknown"] as const;
+export type CommentAuthorRole = (typeof COMMENT_AUTHOR_ROLES)[number];
+
 export const VERDICTS = ["ok", "warn", "panic"] as const;
 export type Verdict = (typeof VERDICTS)[number];
 
@@ -36,6 +39,7 @@ export const EVENT_TYPES = [
   "submission.turned_in",
   "submission.unsubmitted",
   "submission.returned",
+  "comment.new",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 

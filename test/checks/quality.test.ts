@@ -7,6 +7,7 @@ import type { TurnedInInput, TurnedInResult } from "../../src/checks/heuristics.
 import {
   allocate,
   buildReviewInput,
+  DEFAULT_BUDGET,
   detectLocale,
   heuristicVerdict,
   mergeVerdict,
@@ -107,11 +108,33 @@ describe("pure helpers", () => {
     );
     expect(input.submission.turnedInAt).toBe(T0.toISOString());
     expect(input.signals).toHaveLength(1);
+    expect(input.comments).toBeUndefined();
+  });
+
+  it("adds the private comments within their own budget", () => {
+    const s: TurnedInInput = {
+      ...snapshot(),
+      comments: [
+        { authorRole: "teacher", postedAt: T0, text: "Переробити вправу 5, додай фото." },
+        { authorRole: "student", postedAt: NOW, text: "д".repeat(10_000) },
+      ],
+    };
+    const input = buildReviewInput(s, { signals: [] });
+    expect(input.comments?.[0]).toEqual({
+      author: "teacher",
+      postedAt: T0.toISOString(),
+      text: "Переробити вправу 5, додай фото.",
+    });
+    expect(input.comments?.[1]?.author).toBe("student");
+    expect(input.comments?.[1]?.text).toContain("truncated");
+    const total = (input.comments ?? []).reduce((n, c) => n + c.text.length, 0);
+    expect(total).toBeLessThanOrEqual(DEFAULT_BUDGET.comments);
   });
 
   it("loads the versioned prompt", () => {
-    expect(REVIEW_PROMPT_VERSION).toBe("review.v1");
+    expect(REVIEW_PROMPT_VERSION).toBe("review.v2");
     expect(reviewPrompt()).toContain("hints, not facts");
+    expect(reviewPrompt()).toContain("`comments`");
   });
 });
 
@@ -234,7 +257,7 @@ describe("reviewSubmission", () => {
     expect(res).toMatchObject({ status: "reviewed", verdict: "panic", alertCreated: true });
 
     const call = provider.calls[0];
-    expect(call?.opts.instructions).toContain("review.v1");
+    expect(call?.opts.instructions).toContain("review.v2");
     expect(call?.input.locale).toBe("uk");
     expect(call?.input.assignment.courseName).toBe("Математика");
     expect(call?.input.submission.attachments).toEqual([
@@ -248,7 +271,7 @@ describe("reviewSubmission", () => {
       ["llm:fake", "panic"],
     ]);
     expect(JSON.parse(results[1]?.findings ?? "{}")).toMatchObject({
-      promptVersion: "review.v1",
+      promptVersion: "review.v2",
       output: { missingParts: ["Приклад 3"] },
     });
 

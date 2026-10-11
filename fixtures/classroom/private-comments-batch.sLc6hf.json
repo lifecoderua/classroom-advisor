@@ -1,0 +1,80 @@
+{
+  "rpcid": "sLc6hf",
+  "sourcePath": "/u/1/a/not-turned-in/all",
+  "synthetic": "hand-written from the shape of private-comments.sLc6hf.json (a live 100-key batch looked the same); never captured",
+  "request": [
+    [100, null, 1, 0],
+    [1, 1, 1, 1, null, null, [1], 1, null, 3, [1, null, 1]],
+    [
+      [null, null, [2, 3]],
+      null,
+      null,
+      [
+        [831760658545, [200322958360, [342275451769]]],
+        [831760658545, [664328137076, [342275451769]]],
+        [831760658545, [441339928087, [342275451769]]]
+      ],
+      [[1]]
+    ]
+  ],
+  "response": [
+    "hrq.cmt",
+    [false],
+    [
+      [
+        ["111111111101", null, ["831760658545", ["200322958360", ["342275451769"]]], 3],
+        1760100000000,
+        1760100000000,
+        1760100000000,
+        ["744240834250"],
+        null,
+        null,
+        2,
+        [1],
+        "c:342275451769:s:200322958360:su:831760658545:co:111111111101",
+        null,
+        [
+          "edu.rt",
+          "lorem ipsum dolor sit amet",
+          null,
+          null,
+          [null, "<div>lorem ipsum dolor sit amet</div>"]
+        ]
+      ],
+      [
+        ["111111111102", null, ["831760658545", ["200322958360", ["342275451769"]]], 3],
+        1760100600000,
+        1760100600000,
+        1760100600000,
+        ["831760658545"],
+        null,
+        null,
+        2,
+        [1],
+        "c:342275451769:s:200322958360:su:831760658545:co:111111111102",
+        null,
+        [
+          "edu.rt",
+          "consectetur adipiscing",
+          null,
+          null,
+          [null, "<div>consectetur adipiscing</div>"]
+        ]
+      ],
+      [
+        ["111111111103", null, ["831760658545", ["664328137076", ["342275451769"]]], 3],
+        1760090000000,
+        1760090000000,
+        1760090000000,
+        ["744240834250"],
+        null,
+        null,
+        2,
+        [1],
+        "c:342275451769:s:664328137076:su:831760658545:co:111111111103",
+        null,
+        ["edu.rt", "sed do eiusmod tempor", null, null, [null, "<div>sed do eiusmod tempor</div>"]]
+      ]
+    ]
+  ]
+}

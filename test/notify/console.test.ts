@@ -187,6 +187,7 @@ describe("helpers", () => {
   it("parses alert keys", () => {
     expect(parseAlertKey("deadline:12:due_soon")).toEqual({ kind: "deadline", assignmentId: 12 });
     expect(parseAlertKey("quality:7:llm-failed")).toEqual({ kind: "quality", versionId: 7 });
+    expect(parseAlertKey("comment:5")).toEqual({ kind: "comment", commentId: 5 });
     expect(parseAlertKey("quality:x")).toBeNull();
     expect(parseAlertKey("parse-drift:1")).toBeNull();
   });

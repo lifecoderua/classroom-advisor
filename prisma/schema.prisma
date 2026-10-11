@@ -71,10 +71,37 @@ model Assignment {
   versions        AssignmentVersion[]
   submission      Submission?
   attachments     Attachment[]
+  comments        Comment[]
   events          Event[]
 
   @@unique([accountId, classroomId])
   @@index([dueAt])
+}
+
+/// A private comment on the watched student's submission (`sLc6hf`), between the student and
+/// the class's teachers. Deduped by Classroom's comment id; an edit updates `text` in place.
+model Comment {
+  id           Int        @id @default(autoincrement())
+  assignmentId Int
+  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  /// Classroom's comment id.
+  classroomId  String
+  /// teacher | student | unknown
+  authorRole   String
+  /// Classroom user id of the author (names are not stored).
+  authorId     String?
+  /// Plain text of the comment.
+  text         String
+  /// When the comment was posted (Classroom's `[1]`).
+  postedAt     DateTime
+  /// Old news when first stored: written by the baseline sync, or on a baseline item and
+  /// posted before the account's `baselineAt`. No event or alert.
+  baseline     Boolean    @default(false)
+  firstSeenAt  DateTime   @default(now())
+  lastSeenAt   DateTime   @default(now())
+
+  @@unique([assignmentId, classroomId])
+  @@index([assignmentId, postedAt])
 }
 
 /// One row per observed content change: history of edits (e.g. a moved deadline).
@@ -187,7 +214,7 @@ model Event {
   /// e.g. `submission.turned_in:<submissionVersionId>`.
   key          String      @unique
   /// assignment.new | assignment.updated | assignment.missing | submission.turned_in |
-  /// submission.unsubmitted | submission.returned
+  /// submission.unsubmitted | submission.returned | comment.new
   type         String
   accountId    Int
   account      Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)

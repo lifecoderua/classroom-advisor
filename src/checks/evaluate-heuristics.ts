@@ -1,6 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { extname, join } from "node:path";
-import type { Attachment, Db } from "../store/index.ts";
+import {
+  type Attachment,
+  COMMENT_AUTHOR_ROLES,
+  type CommentAuthorRole,
+  type Db,
+} from "../store/index.ts";
 import {
   type HeuristicAttachment,
   type HeuristicMaterial,
@@ -54,6 +59,9 @@ function instructionsOf(payload: string | undefined): string {
   }
 }
 
+/** The latest this many private comments go to the review. */
+export const REVIEW_COMMENTS = 10;
+
 /** Loads the snapshot for one submission version (current attachments, latest instructions). */
 export async function loadTurnedInInput(
   db: Db,
@@ -71,6 +79,10 @@ export async function loadTurnedInInput(
               course: { select: { name: true } },
               attachments: { orderBy: { id: "asc" } },
               versions: { orderBy: [{ seenAt: "desc" }, { id: "desc" }], take: 1 },
+              comments: {
+                orderBy: [{ postedAt: "desc" }, { id: "desc" }],
+                take: REVIEW_COMMENTS,
+              },
             },
           },
         },
@@ -107,6 +119,13 @@ export async function loadTurnedInInput(
       turnedInAt: v.submission.turnedInAt,
       attachments: await byOwner("submission"),
     },
+    comments: assignment.comments.reverse().map((c) => ({
+      authorRole: COMMENT_AUTHOR_ROLES.includes(c.authorRole as CommentAuthorRole)
+        ? (c.authorRole as CommentAuthorRole)
+        : "unknown",
+      postedAt: c.postedAt,
+      text: c.text,
+    })),
   };
 }
 

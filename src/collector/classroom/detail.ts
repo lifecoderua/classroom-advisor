@@ -422,8 +422,27 @@ export function parseSubmissions(...payloads: unknown[]): ParsedSubmission[] {
 export interface ParsedComment extends PrivateComment {
   /** From the comment's submission key. */
   itemId?: string;
+  courseId?: string;
+  studentId?: string;
 }
 
+/**
+ * `[1][0]` of an `sLc6hf` response: more comments than the page size (`[0][0]` of the request,
+ * 100). Never seen `true`; the sync splits the batch when it is.
+ */
+export function commentsHaveMore(payload: unknown): boolean {
+  const r = new Cursor("sLc6hf", payload);
+  r.tag("hrq.cmt");
+  const v = r.get([1, 0]);
+  if (v == null) return false;
+  if (typeof v !== "boolean") r.expected([1, 0], "boolean");
+  return v as boolean;
+}
+
+/**
+ * Parses an `sLc6hf` response. A request may carry many submission keys (the sync batches
+ * 100); each comment names its submission at `[0][2]`.
+ */
 export function parsePrivateComments(payload: unknown): ParsedComment[] {
   const r = new Cursor("sLc6hf", payload);
   r.tag("hrq.cmt");
@@ -433,6 +452,7 @@ export function parsePrivateComments(payload: unknown): ParsedComment[] {
     const id = c.id([0, 0]);
     const studentId = c.get([0, 2, 0]) == null ? undefined : c.id([0, 2, 0]);
     const itemId = c.get([0, 2, 1, 0]) == null ? undefined : c.id([0, 2, 1, 0]);
+    const courseId = c.get([0, 2, 1, 1, 0]) == null ? undefined : c.id([0, 2, 1, 1, 0]);
     const authorId = c.get([4, 0]) == null ? undefined : c.id([4, 0]);
     const rt = c.child([11]);
     rt.tag("edu.rt");
@@ -444,6 +464,8 @@ export function parsePrivateComments(payload: unknown): ParsedComment[] {
     const html = rt.optStr([4, 1]);
     if (html !== undefined) out.html = html;
     if (itemId) out.itemId = itemId;
+    if (courseId) out.courseId = courseId;
+    if (studentId) out.studentId = studentId;
     return out;
   });
 }
@@ -522,7 +544,7 @@ export function parseAssignmentDetail(p: DetailPayloads): AssignmentDetail {
     submission: sub ? { ...sub.submission, attachments: linked.attachments } : null,
     privateComments: comments
       .filter((c) => !c.itemId || c.itemId === item.id)
-      .map(({ itemId: _i, ...c }) => c),
+      .map(({ itemId: _i, courseId: _c, studentId: _s, ...c }) => c),
   };
   const res = assignmentDetailSchema.safeParse(detail);
   if (!res.success)

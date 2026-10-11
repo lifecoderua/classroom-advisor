@@ -19,6 +19,13 @@ export const attachmentSchema = materialSchema.extend({
   imagePath: z.string().optional(),
 });
 
+export const commentSchema = z.object({
+  author: z.enum(["teacher", "student", "unknown"]),
+  /** ISO 8601. */
+  postedAt: z.string(),
+  text: z.string(),
+});
+
 export const reviewInputSchema = z.object({
   assignment: z.object({
     title: z.string(),
@@ -35,6 +42,11 @@ export const reviewInputSchema = z.object({
     turnedInAt: z.string(),
   }),
   signals: z.array(signalSchema),
+  /**
+   * Recent private comments between the teacher and the student on this submission, oldest
+   * first (text may be truncated).
+   */
+  comments: z.array(commentSchema).optional(),
   /** Language hint for the feedback (e.g. `uk`, `en`). Defaults to the assignment's language. */
   locale: z.string().optional(),
 });

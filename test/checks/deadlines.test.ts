@@ -221,6 +221,37 @@ describe("deadlineAlerts", () => {
   });
 });
 
+describe("baseline and lookback (alert-flood guard)", () => {
+  const codes = (i: DeadlineInput, lookbackMs?: number) =>
+    deadlineAlerts(i, NOW, lookbackMs === undefined ? {} : { lookbackMs }).map((d) => d.code);
+  const old = { postedAt: ago(30 * DAY_MS), dueAt: null };
+
+  it("baseline items get the panics only", () => {
+    expect(codes(input({ assignment: { ...old, baseline: true } }))).toEqual([]);
+    expect(codes(input({ assignment: { ...old, status: "missing", baseline: true } }))).toEqual([
+      "missing",
+    ]);
+    const soon = { postedAt: ago(30 * DAY_MS), dueAt: ahead(2 * HOUR_MS), baseline: true };
+    expect(codes(input({ assignment: soon }))).toEqual(["due_soon"]);
+  });
+
+  it("reminders only within the lookback window", () => {
+    expect(codes(input({ assignment: old }))).toEqual(["untouched_24h", "no_due_date"]);
+    expect(codes(input({ assignment: old }), 14 * DAY_MS)).toEqual([]);
+    const recent = { postedAt: ago(10 * DAY_MS), dueAt: null };
+    expect(codes(input({ assignment: recent }), 14 * DAY_MS)).toEqual([
+      "untouched_24h",
+      "no_due_date",
+    ]);
+  });
+
+  it("excused items never alert", () => {
+    expect(codes(input({ assignment: { ...old, status: "excused", dueAt: ago(DAY_MS) } }))).toEqual(
+      [],
+    );
+  });
+});
+
 describe("isoWeek", () => {
   it.each([
     ["2026-10-10T12:00:00Z", "2026-W41"],

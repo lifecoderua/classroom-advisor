@@ -467,6 +467,40 @@ export function submissionsArgs(
   ];
 }
 
+/** `t51ITc` field mask for one material attachment. */
+export const MATERIALS_MASK = [
+  null,
+  1,
+  1,
+  1,
+  1,
+  1,
+  null,
+  1,
+  1,
+  1,
+  1,
+  1,
+  1,
+  null,
+  [[1, 1, 1, 1, 1], 1, 1, 1, 1, 1, 1],
+  [[1, 1, 1, 1, 1], 1, 1, 1, [1, 1]],
+  1,
+  null,
+  1,
+  [[1, 1, 1, 1, 1], 1, 1],
+  1,
+  [[1, 1, 1, 1, 1], 1],
+];
+
+/**
+ * `t51ITc` args: the materials of **one** item. Several keys, or an item without material
+ * refs, answer error `[3]`.
+ */
+export function materialsArgs(itemId: string, courseId: string): unknown {
+  return [[null, null, 1, 0], [[num(itemId), [num(courseId)]]], [MATERIALS_MASK]];
+}
+
 // ---- Playwright -------------------------------------------------------------------------
 
 export const SESSION_PAGE = "/a/not-turned-in/all";

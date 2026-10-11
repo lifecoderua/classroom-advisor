@@ -3,15 +3,41 @@ import { cachedImagePath, cachedTextReader } from "../checks/evaluate-heuristics
 import { loadConfig } from "../config/index.ts";
 import { createProvider } from "../llm/index.ts";
 import { buildReport, formatReport } from "../notify/console.ts";
-import { runCycle, runLoop, stubSync } from "../run/cycle.ts";
+import { runCycle, runLoop } from "../run/cycle.ts";
 import { acquireRunLock } from "../run/lock.ts";
 import { parseDuration, parseQuietHours } from "../run/schedule.ts";
 import { openDb } from "../store/index.ts";
+import { formatOutcome, playwrightSync, runSync } from "../sync/index.ts";
 
 const stamp = () => new Date().toLocaleTimeString("en-GB", { hour12: false });
 
-/** Adds `report` and `run` to the CLI. */
+/** Adds `sync`, `report` and `run` to the CLI. */
 export function registerReportCommands(program: Command): void {
+  program
+    .command("sync")
+    .description(
+      "Read-only: sync watched accounts from Classroom into the DB (prints counts only, no titles)",
+    )
+    .option("--account <n>", "only this watched account (0-based index in the watch list)")
+    .option("--headful", "show the Chrome window (headless by default)")
+    .action(async (opts: { account?: string; headful?: boolean }) => {
+      const config = loadConfig();
+      const lock = acquireRunLock(config.dataDir);
+      const db = openDb(config);
+      try {
+        const outcomes = await runSync(db, config, {
+          headless: !opts.headful,
+          ...(opts.account !== undefined ? { account: Number(opts.account) } : {}),
+          log: () => undefined,
+        });
+        for (const o of outcomes) console.log(formatOutcome(o));
+        if (outcomes.some((o) => o.status !== "ok")) process.exitCode = 1;
+      } finally {
+        await db.$disconnect();
+        lock.release();
+      }
+    });
+
   program
     .command("report")
     .description("Console digest per watched account: panics, alerts, turned-in work, deadlines")
@@ -68,7 +94,8 @@ export function registerReportCommands(program: Command): void {
             log("cycle start");
             const res = await runCycle({
               db,
-              sync: stubSync,
+              sync: playwrightSync(config),
+              deadlineOptions: { lookbackDays: config.alertLookbackDays },
               provider,
               readText: cachedTextReader(config.dataDir),
               reviewOptions: { imagePathOf: cachedImagePath(config.dataDir) },

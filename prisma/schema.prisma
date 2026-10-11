@@ -20,10 +20,15 @@ model Account {
   watched     Boolean      @default(false)
   /// Last known `/u/N/` index; informational only, accounts are addressed by `authuser=<email>`.
   authuser    String?
+  /// End of the first successful sync. Null until then: that sync is the baseline, whose
+  /// items are stored without events and kept out of most alerts (see docs/ARCHITECTURE.md).
+  baselineAt  DateTime?
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
   courses     Course[]
   assignments Assignment[]
+  events      Event[]
+  syncRuns    SyncRun[]
 }
 
 model Course {
@@ -41,26 +46,32 @@ model Course {
 }
 
 model Assignment {
-  id          Int                 @id @default(autoincrement())
-  accountId   Int
-  account     Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  courseId    Int
-  course      Course              @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  id              Int                 @id @default(autoincrement())
+  accountId       Int
+  account         Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  courseId        Int
+  course          Course              @relation(fields: [courseId], references: [id], onDelete: Cascade)
   /// Classroom's coursework id.
-  classroomId String
+  classroomId     String
   /// assignment | question | material | quiz | unknown
-  kind        String
-  title       String
-  dueAt       DateTime?
-  postedAt    DateTime?
+  kind            String
+  title           String
+  dueAt           DateTime?
+  postedAt        DateTime?
   /// assigned | turned_in | missing | returned | ...
-  status      String
-  currentHash String
-  firstSeenAt DateTime            @default(now())
-  lastSeenAt  DateTime            @default(now())
-  versions    AssignmentVersion[]
-  submission  Submission?
-  attachments Attachment[]
+  status          String
+  currentHash     String
+  /// Hash of the To-do summary; a change triggers a detail fetch.
+  summaryHash     String?
+  detailFetchedAt DateTime?
+  /// First stored by the account's baseline sync (it existed before we started watching).
+  baseline        Boolean             @default(false)
+  firstSeenAt     DateTime            @default(now())
+  lastSeenAt      DateTime            @default(now())
+  versions        AssignmentVersion[]
+  submission      Submission?
+  attachments     Attachment[]
+  events          Event[]
 
   @@unique([accountId, classroomId])
   @@index([dueAt])
@@ -104,6 +115,8 @@ model SubmissionVersion {
   state        String
   /// Normalized submission object as JSON.
   payload      String
+  /// Written by the baseline sync: never quality-reviewed.
+  baseline     Boolean       @default(false)
   seenAt       DateTime      @default(now())
   checkResults CheckResult[]
 
@@ -113,24 +126,28 @@ model SubmissionVersion {
 /// A teacher material (owner = material) or a student file (owner = submission).
 /// Always tied to the assignment; `submissionId` is set for submission attachments.
 model Attachment {
-  id           Int         @id @default(autoincrement())
-  assignmentId Int
-  assignment   Assignment  @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
-  submissionId Int?
-  submission   Submission? @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  id               Int         @id @default(autoincrement())
+  assignmentId     Int
+  assignment       Assignment  @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  submissionId     Int?
+  submission       Submission? @relation(fields: [submissionId], references: [id], onDelete: Cascade)
   /// material | submission
-  owner        String
-  url          String
-  title        String?
-  driveFileId  String?
-  mime         String?
-  modifiedAt   DateTime?
+  owner            String
+  url              String
+  title            String?
+  driveFileId      String?
+  mime             String?
+  modifiedAt       DateTime?
   /// Fetched content cache, relative to dataDir.
-  contentPath  String?
-  contentHash  String?
-  fetchedAt    DateTime?
-  firstSeenAt  DateTime    @default(now())
-  lastSeenAt   DateTime    @default(now())
+  contentPath      String?
+  contentHash      String?
+  fetchedAt        DateTime?
+  /// Material is a "make a copy for each student" template (inferred by the detail parser).
+  isTemplate       Boolean     @default(false)
+  /// Student copy: Drive id of the template it was made from (inferred by the detail parser).
+  templateSourceId String?
+  firstSeenAt      DateTime    @default(now())
+  lastSeenAt       DateTime    @default(now())
 
   @@unique([assignmentId, owner, url])
   @@index([driveFileId])
@@ -162,4 +179,40 @@ model Alert {
   sentAt    DateTime?
 
   @@index([sentAt])
+}
+
+/// Domain event emitted by sync. `key` makes emission idempotent (reruns add nothing).
+model Event {
+  id           Int         @id @default(autoincrement())
+  /// e.g. `submission.turned_in:<submissionVersionId>`.
+  key          String      @unique
+  /// assignment.new | assignment.updated | assignment.missing | submission.turned_in |
+  /// submission.unsubmitted | submission.returned
+  type         String
+  accountId    Int
+  account      Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  assignmentId Int?
+  assignment   Assignment? @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  /// Event details as JSON (e.g. the field diff of `assignment.updated`).
+  payload      String
+  createdAt    DateTime    @default(now())
+
+  @@index([type, createdAt])
+}
+
+/// Run log: one row per account per sync.
+model SyncRun {
+  id         Int       @id @default(autoincrement())
+  accountId  Int
+  account    Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  startedAt  DateTime
+  finishedAt DateTime?
+  /// running | ok | session_expired | session_missing | error
+  status     String
+  baseline   Boolean   @default(false)
+  /// Counts as JSON (items, details, versions, events, files).
+  stats      String    @default("{}")
+  error      String?
+
+  @@index([accountId, startedAt])
 }

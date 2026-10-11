@@ -1,10 +1,12 @@
+import { existsSync } from "node:fs";
 import { Command } from "commander";
 import { cachedImagePath, cachedTextReader } from "../checks/evaluate-heuristics.ts";
 import { llmSource, pendingQualityVersions, reviewSubmission } from "../checks/quality.ts";
 import { LLM_PROVIDERS, loadConfig } from "../config/index.ts";
 import { setWatched } from "../config/local.ts";
 import { createProvider } from "../llm/index.ts";
-import { openDb } from "../store/index.ts";
+import { databasePath, openDb } from "../store/index.ts";
+import { syncWatchList } from "../sync/index.ts";
 import { accountRows, formatRows, listSessionAccounts } from "./accounts.ts";
 import { registerClassroomCommands } from "./classroom.ts";
 import { checkDatabase, runDoctor } from "./doctor.ts";
@@ -72,9 +74,9 @@ for (const [name, watched] of [
     .description(
       `${watched ? "Add" : "Remove"} an account ${watched ? "to" : "from"} the watch list`,
     )
-    .action((email: string) => {
-      // TODO(#19): mirror to Account.watched in the DB.
+    .action(async (email: string) => {
       const { changed, watchedAccounts } = setWatched(process.cwd(), email, watched);
+      await mirrorWatchList();
       console.log(
         changed
           ? `${watched ? "Watching" : "Stopped watching"} ${email.trim().toLowerCase()}.`
@@ -82,6 +84,23 @@ for (const [name, watched] of [
       );
       console.log(`Watch list: ${watchedAccounts.length} account(s).`);
     });
+}
+
+/**
+ * Mirrors the config watch list to `Account.watched` when the DB exists (sync does it too).
+ * CA_WATCHED_ACCOUNTS, when set, wins over config.local.json here as everywhere.
+ */
+async function mirrorWatchList(): Promise<void> {
+  const config = loadConfig();
+  if (!existsSync(databasePath(config))) return;
+  const db = openDb(config);
+  try {
+    await syncWatchList(db, config.watchedAccounts);
+  } catch (err) {
+    console.log(`Note: could not update the DB watch flags (${(err as Error).name}).`);
+  } finally {
+    await db.$disconnect();
+  }
 }
 
 const check = program.command("check").description("Run checks over the stored data");

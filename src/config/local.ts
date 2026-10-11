@@ -38,7 +38,7 @@ export interface WatchChange {
 
 /**
  * Adds or removes an email in `watchedAccounts` of `config.local.json`, keeping other keys.
- * TODO(#19): mirror the watch list to `Account.watched` in the DB once the store lands (#3).
+ * The CLI then mirrors the list to `Account.watched` (sync does it on every run too).
  */
 export function setWatched(cwd: string, email: string, watched: boolean): WatchChange {
   const path = join(cwd, LOCAL_CONFIG_FILE);

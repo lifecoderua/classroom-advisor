@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { FakeProvider } from "../../src/llm/index.ts";
-import { runCycle, runLoop, type SyncFn, stubSync } from "../../src/run/cycle.ts";
+import { runCycle, runLoop, type SyncFn } from "../../src/run/cycle.ts";
 import { parseQuietHours } from "../../src/run/schedule.ts";
 import {
   type Db,
@@ -132,18 +132,43 @@ describe("runCycle", () => {
     expect(logs[0]).toContain("sync failed");
   });
 
-  it("uses the stub sync until #19", async () => {
-    const logs: string[] = [];
-    const res = await runCycle({
-      db,
-      sync: stubSync,
+  it("passes the alert lookback to the deadline rules", async () => {
+    const quiet: SyncFn = async ({ db, now }) => {
+      const account = await upsertAccount(db, { email: "student-one@school.example" });
+      await db.account.update({ where: { id: account.id }, data: { watched: true } });
+      const course = await upsertCourse(db, {
+        accountId: account.id,
+        classroomId: "c",
+        name: "Math",
+      });
+      await upsertAssignment(
+        db,
+        {
+          accountId: account.id,
+          courseId: course.id,
+          kind: "assignment",
+          classroomId: "old",
+          title: "Old lesson",
+          status: "assigned",
+          postedAt: new Date(now.getTime() - 30 * 24 * H),
+          hash: "old",
+          payload: {},
+        },
+        now,
+      );
+    };
+    const deps = {
+      sync: quiet,
       provider: warnProvider(),
       readText: async () => undefined,
       now: () => NOW,
-      log: (l) => logs.push(l),
-    });
-    expect(logs).toEqual(["sync not implemented (#19); checking stored data only"]);
-    expect(res).toEqual({ newAlertIds: [], reviewed: 0, errors: [] });
+      log: () => undefined,
+    };
+    const res = await runCycle({ db, ...deps, deadlineOptions: { lookbackDays: 14 } });
+    expect(res.newAlertIds).toEqual([]);
+    const db2 = await template.fresh();
+    const res2 = await runCycle({ db: db2, ...deps });
+    expect(res2.newAlertIds.length).toBeGreaterThan(0);
   });
 });
 

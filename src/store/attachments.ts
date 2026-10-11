@@ -12,6 +12,10 @@ export interface AttachmentInput {
   driveFileId?: string | null;
   mime?: string | null;
   modifiedAt?: Date | null;
+  /** Material is a "make a copy for each student" template. */
+  isTemplate?: boolean;
+  /** Student copy: Drive id of its template. */
+  templateSourceId?: string | null;
 }
 
 /**
@@ -39,6 +43,8 @@ export function syncAttachments(
         driveFileId: item.driveFileId ?? null,
         mime: item.mime ?? null,
         modifiedAt: item.modifiedAt ?? null,
+        isTemplate: item.isTemplate ?? false,
+        templateSourceId: item.templateSourceId ?? null,
         lastSeenAt: now,
       };
       const key = { assignmentId_owner_url: { assignmentId, owner, url: item.url } };

@@ -121,7 +121,8 @@ Materials (`t51ITc` → `[null, [[attachment, null, [itemKey, materialId]]…]]`
 - `source-path` is the page's pathname **including** the `/u/<n>` prefix. Requests send `x-same-domain: 1`. `_reqid` starts at a random 4-digit number and steps by 100000, as the page does.
 - `createRpcClient(transport, session)` sends only allow-listed rpcids (`READ_ONLY_RPCIDS`; anything else throws `RpcNotAllowedError` before a request is built). `Transport` is `(url, body) => Promise<string>`; `playwrightTransport(page)` runs `fetch` in the page. Ids are sent as JSON numbers via `num(id)` (textual, so ids beyond 2^53 survive).
 - `unwrapResponse`: `wrb.fr` row for the rpcid → payload; `null` payload → `RpcError` with the code at `[5]`; a login page → `SessionExpiredError`; anything else unexpected → `ParseDriftError`.
-- Request templates (`todoArgs`, `coursesArgs`, `submissionsArgs`) are tested to equal the recorded requests in `fixtures/classroom/`.
+- Request templates (`todoArgs`, `coursesArgs`, `submissionsArgs`, `materialsArgs`) are tested to equal the recorded requests in `fixtures/classroom/`.
+- `pONvgf` items use the same mask as `tQShAc` and carry the description and material refs, so sync builds details from the listing plus `Zj93ge` (both masks) and `t51ITc`, without `tQShAc`. `listTodo` returns the parsed items (`items[].item`) next to the summaries.
 - Gotcha: functions passed to `page.evaluate` must not define named helpers. tsx (esbuild `keepNames`) wraps them in `__name(...)`, which doesn't exist in the page.
 
 ## To-do parser (`src/collector/classroom/todo.ts`)

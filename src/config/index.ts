@@ -23,6 +23,15 @@ export const configSchema = z.strictObject({
   llmTimeoutMs: z.coerce.number().int().positive().default(180_000),
   /** Minutes between `run` cycles. */
   runIntervalMin: z.coerce.number().int().positive().default(60),
+  /**
+   * `untouched_24h` and `no_due_date` fire only for items posted within this many days, so
+   * old lesson posts don't flood the digest.
+   */
+  alertLookbackDays: z.coerce.number().int().positive().default(14),
+  /** Sync re-fetches the details of every item at least this often (slow full refresh). */
+  fullRefreshDays: z.coerce.number().int().positive().default(7),
+  /** Pause between Classroom RPC calls during sync, to keep the request rate low. */
+  syncDelayMs: z.coerce.number().int().nonnegative().default(300),
   /** Local-time window `HH:MM-HH:MM` in which `run` skips cycles (may cross midnight). */
   quietHours: z
     .string()
@@ -50,6 +59,9 @@ const ENV_KEYS = {
   CA_LLM_TIMEOUT_MS: "llmTimeoutMs",
   CA_RUN_INTERVAL_MIN: "runIntervalMin",
   CA_QUIET_HOURS: "quietHours",
+  CA_ALERT_LOOKBACK_DAYS: "alertLookbackDays",
+  CA_FULL_REFRESH_DAYS: "fullRefreshDays",
+  CA_SYNC_DELAY_MS: "syncDelayMs",
 } as const satisfies Record<string, keyof Config>;
 
 export class ConfigError extends Error {

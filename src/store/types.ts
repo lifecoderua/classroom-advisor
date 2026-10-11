@@ -28,3 +28,15 @@ export type AlertLevel = (typeof ALERT_LEVELS)[number];
 
 /** Result of an upsert that tracks content versions. */
 export type Change = "new" | "updated" | "unchanged";
+
+export const EVENT_TYPES = [
+  "assignment.new",
+  "assignment.updated",
+  "assignment.missing",
+  "submission.turned_in",
+  "submission.unsubmitted",
+  "submission.returned",
+] as const;
+export type EventType = (typeof EVENT_TYPES)[number];
+
+export type SyncRunStatus = "running" | "ok" | "session_expired" | "session_missing" | "error";

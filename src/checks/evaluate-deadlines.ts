@@ -1,5 +1,11 @@
 import { type Db, raiseAlert } from "../store/index.ts";
-import { type AlertDraft, type DeadlineInput, evaluateDeadlineRules } from "./deadlines.ts";
+import {
+  type AlertDraft,
+  DAY_MS,
+  type DeadlineInput,
+  type DeadlineOptions,
+  evaluateDeadlineRules,
+} from "./deadlines.ts";
 
 /** Loads open assignments of watched accounts as plain `DeadlineInput` snapshots. */
 export async function loadDeadlineInputs(db: Db): Promise<DeadlineInput[]> {
@@ -7,7 +13,7 @@ export async function loadDeadlineInputs(db: Db): Promise<DeadlineInput[]> {
     where: {
       account: { watched: true },
       kind: { not: "material" },
-      status: { notIn: ["turned_in", "returned"] },
+      status: { notIn: ["turned_in", "returned", "excused"] },
     },
     include: {
       course: { select: { name: true } },
@@ -28,6 +34,7 @@ export async function loadDeadlineInputs(db: Db): Promise<DeadlineInput[]> {
         postedAt: r.postedAt,
         firstSeenAt: r.firstSeenAt,
         status: r.status,
+        baseline: r.baseline,
       },
       submission: s && {
         state: s.state,
@@ -41,9 +48,20 @@ export async function loadDeadlineInputs(db: Db): Promise<DeadlineInput[]> {
   });
 }
 
+export interface EvaluateDeadlinesOptions {
+  /** `config.alertLookbackDays`: reminders only for items posted within this many days. */
+  lookbackDays?: number;
+}
+
 /** Runs the deadline rules over the store and raises (deduped) alerts. Returns new alerts only. */
-export async function evaluateDeadlines(db: Db, now: Date = new Date()): Promise<AlertDraft[]> {
-  const drafts = evaluateDeadlineRules(await loadDeadlineInputs(db), now);
+export async function evaluateDeadlines(
+  db: Db,
+  now: Date = new Date(),
+  options: EvaluateDeadlinesOptions = {},
+): Promise<AlertDraft[]> {
+  const rules: DeadlineOptions =
+    options.lookbackDays === undefined ? {} : { lookbackMs: options.lookbackDays * DAY_MS };
+  const drafts = evaluateDeadlineRules(await loadDeadlineInputs(db), now, rules);
   const created: AlertDraft[] = [];
   for (const d of drafts) {
     const res = await raiseAlert(db, { key: d.key, level: d.level, message: d.message }, now);

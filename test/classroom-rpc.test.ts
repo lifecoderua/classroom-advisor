@@ -17,6 +17,7 @@ import {
   coursesArgs,
   createRpcClient,
   encodeArgs,
+  materialsArgs,
   num,
   type PageGlobals,
   RpcError,
@@ -73,6 +74,14 @@ describe("request templates match the recorded requests", () => {
         courseId: String(k[1][1][0]),
       }));
       expect(roundTrip(submissionsArgs(keys, { attachments }))).toEqual(request);
+    }
+  });
+
+  it("t51ITc", () => {
+    for (const name of ["detail-materials.t51ITc.json", "materials-youtube-link.t51ITc.json"]) {
+      const { request } = fixture(name);
+      const [itemId, [courseId]] = request[1][0];
+      expect(roundTrip(materialsArgs(String(itemId), String(courseId)))).toEqual(request);
     }
   });
 

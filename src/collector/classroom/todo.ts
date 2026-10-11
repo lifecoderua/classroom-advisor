@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { parseItem } from "./detail.ts";
+import { type ParsedItem, parseItem } from "./detail.ts";
 import {
   BUCKETS,
   type Bucket,
@@ -49,6 +49,8 @@ export const assignmentSummarySchema = z.object({
   grade: z.number().nullable(),
   maxPoints: z.number().nullable(),
   attachmentCount: z.number().int().nonnegative(),
+  /** Submission's last update (`Zj93ge [2]`), or null. */
+  submissionUpdatedAt: z.date().nullable(),
   url: z.url(),
 });
 export type AssignmentSummary = z.infer<typeof assignmentSummarySchema>;
@@ -114,6 +116,8 @@ export interface StreamItem {
   updatedAt: Date;
   dueAt: Date | null;
   maxPoints: number | null;
+  /** The full parsed item (instructions, material refs), reused for details by sync. */
+  item: ParsedItem;
 }
 
 /** `pONvgf` → `["hrsi.qr", [hasMore, [nextPageToken]], [item…]]`; items parsed as in #6. */
@@ -134,6 +138,7 @@ export function parseTodoPage(payload: unknown): Page<StreamItem> {
         updatedAt: item.updatedAt,
         dueAt: item.dueAt,
         maxPoints: item.maxPoints ?? null,
+        item,
       };
     }),
     ...paging(rpcid, p),
@@ -231,6 +236,7 @@ export function joinSummaries(
       grade: s?.grade ?? null,
       maxPoints: i.maxPoints,
       attachmentCount: s?.attachmentCount ?? 0,
+      submissionUpdatedAt: s?.updatedAt == null ? null : new Date(s.updatedAt),
       url: detailsUrl(i.courseId, i.id, i.kind, authuser),
     } satisfies AssignmentSummary;
     const parsed = assignmentSummarySchema.safeParse(summary);
@@ -258,6 +264,8 @@ export interface ListTodoOptions extends RpcClientOptions {
 export interface TodoListing {
   courses: Course[];
   summaries: AssignmentSummary[];
+  /** The listed items (same order as `summaries`), with their full parsed form. */
+  items: StreamItem[];
 }
 
 /**
@@ -328,7 +336,11 @@ export async function listTodo(
     submissions.push(...parseSubmissions(await client.call("Zj93ge", submissionsArgs(batch))));
   }
 
-  return { courses, summaries: joinSummaries(items, submissions, courses, account.authuser) };
+  return {
+    courses,
+    summaries: joinSummaries(items, submissions, courses, account.authuser),
+    items,
+  };
 }
 
 /** Counts per bucket, every bucket present (zeros included). */

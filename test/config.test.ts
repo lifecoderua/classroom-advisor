@@ -37,6 +37,9 @@ describe("loadConfig", () => {
       geminiModel: DEFAULT_GEMINI_MODEL,
       llmTimeoutMs: 180_000,
       runIntervalMin: 60,
+      alertLookbackDays: 14,
+      fullRefreshDays: 7,
+      syncDelayMs: 300,
     });
   });
 

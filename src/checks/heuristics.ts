@@ -316,14 +316,19 @@ export function turnedInSignals(input: TurnedInInput): TurnedInResult {
 /** Maps a Drive/HTTP mime type (and url) to a heuristic kind. */
 export function kindFromMime(mime?: string | null, url = ""): string {
   if (/youtube\.com|youtu\.be/.test(url)) return "video";
+  // Classroom reports Google-native files by their internal names (kix, punch, ritz, freebird).
   switch (mime) {
     case "application/vnd.google-apps.document":
+    case "application/vnd.google-apps.kix":
       return "doc";
     case "application/vnd.google-apps.presentation":
+    case "application/vnd.google-apps.punch":
       return "slides";
     case "application/vnd.google-apps.spreadsheet":
+    case "application/vnd.google-apps.ritz":
       return "sheet";
     case "application/vnd.google-apps.form":
+    case "application/vnd.google-apps.freebird":
       return "form";
     case "application/pdf":
       return "pdf";

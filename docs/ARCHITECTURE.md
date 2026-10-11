@@ -10,7 +10,7 @@
 ┌──────────────▼──────────── core ──────────────────────────────────┐
 │ sync: hash/diff → store (SQLite+Prisma, versioned) → domain events │
 │ checks: deadline rules │ turned-in heuristics → LLM second pass    │
-│ alerts (deduped) → notify: console now, Telegram next              │
+│ alerts (deduped) → notify: console report, Telegram bot           │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -24,9 +24,9 @@ For now it's a single TS package with modules under `src/`:
 | `sync/` | orchestration: diff, versioning, domain events |
 | `checks/` | deadline rules, turned-in heuristics, LLM quality pass, verdict merge |
 | `llm/` | `LlmProvider` adapter: `claude-cli` (default), `gemini`, `fake` |
-| `notify/` | console digest; Telegram |
+| `notify/` | console digest; Telegram bot (Bot API over fetch) |
 | `run/` | `run` loop: cycle orchestration, quiet hours, lock file |
-| `cli/` | `doctor`, `accounts`, `recon`, `sync`, `check`, `report`, `run` |
+| `cli/` | `doctor`, `accounts`, `recon`, `sync`, `check`, `report`, `run`, `telegram link|test` |
 
 ## Accounts
 
@@ -109,9 +109,16 @@ Later, a thin **user-rules** layer can adjust signals and verdicts, e.g. "online
 
 ## Alerts and notifications
 
-`Alert {key, level info|alert|panic, message, sentAt}`. The console digest comes first (`report`). Then Telegram: panics are sent immediately, everything else in a daily digest; `/status`, `/digest`, `/ack`.
+`Alert {key, level info|alert|panic, message, sentAt, mutedAt}`. `sentAt` = delivered to Telegram; `mutedAt` = acked with `/ack` (D15).
 
-Console digest (`src/notify/console.ts`, `report [--since 24h] [--all]`): one section per watched account (DB `watched` or in the config watch list), labelled by display name or the email's local part. Sections: 🔴 panics, 🟠 alerts, 📥 work turned in within the window with the merged verdict (latest `llm:*` CheckResult with its `summaryForParent`, else the heuristic verdict marked "heuristics only", else "not reviewed yet"), 📅 open work due in the next 7 days (not turned in by status or submission state, materials excluded), ℹ️ info. Alerts are resolved to an account through their key (`deadline:<assignmentId>…`, `quality:<submissionVersionId>…`, `comment:<commentId>`, `sync:<accountId>…`); anything else lands in "Other". The default window shows alerts created since `--since` plus every unsent one; `--all` shows everything. The console never writes `sentAt`: that belongs to the Telegram notifier.
+Console digest (`src/notify/console.ts`, `report [--since 24h] [--all]`): one section per watched account (DB `watched` or in the config watch list), labelled by display name or the email's local part. Sections: 🔴 panics, 🟠 alerts, 📥 work turned in within the window with the merged verdict (latest `llm:*` CheckResult with its `summaryForParent`, else the heuristic verdict marked "heuristics only", else "not reviewed yet"), 📅 open work due in the next 7 days (not turned in by status or submission state, materials excluded), ℹ️ info. Alerts are resolved to an account through their key (`deadline:<assignmentId>…`, `quality:<submissionVersionId>…`, `comment:<commentId>`, `sync:<accountId>…`); anything else lands in "Other". The default window shows alerts created since `--since` plus every unsent one; `--all` shows everything. Muted alerts are left out of the default window (`--all` still shows them). The console never writes `sentAt`: that belongs to the Telegram notifier.
+
+Telegram (`src/notify/telegram.ts`, enabled when `TELEGRAM_BOT_TOKEN` and at least one chat id are set):
+- `TelegramApi`: plain Bot API over `fetch` (`POST https://api.telegram.org/bot<token>/<method>`, JSON). The token comes from `TELEGRAM_BOT_TOKEN` (env / `.env` only; `config.local.json` rejects it) and is redacted from every error message. A 429 is waited out once (`retry_after`, ≤ 60s).
+- Chats: `telegramChatIds` / `CA_TELEGRAM_CHAT_IDS`. `telegram link [--chat <id>]` calls `getMe` + `getUpdates` (no offset, so nothing is confirmed), lists the chats that messaged the bot and appends the chosen id to `config.local.json`. `telegram test` sends a test message to each linked chat.
+- Delivery: after each `run` cycle (`TelegramNotifier.afterCycle`) every unsent, unmuted **panic** is sent at once, even in quiet hours. Alerts and info wait for the **daily digest** at `telegramDigestTime` (local `HH:MM`, default 19:00): once per local day, from that time on, outside quiet hours (a digest time inside the quiet window goes out when it ends, if still the same day). The digest carries every unsent alert. Only alerts created within the last 7 days are sent; older unsent ones stay console-only. Alerts are marked `sentAt` once at least one chat got the whole message; on failure they stay unsent and are retried (the digest after 5 minutes).
+- Format: HTML parse mode, everything escaped; grouped per kid (👤 label) with 🔴/🟠/ℹ️ lines, then "Other". Each line links the assignment details page with `authuser=<email>` (`detailsUrl`; resolved through the alert key: `deadline:` → assignment, `quality:` → submission version → assignment, `comment:` → comment → assignment) and ends with a tappable `/ack_<id>`. Lines are capped at 1500 chars and messages split on line boundaries under 4000 chars (Telegram's limit is 4096), so a tag is never cut.
+- Commands: the `run` loop's wait between cycles becomes `TelegramNotifier.idle`, which long-polls `getUpdates` (50s, `allowed_updates: ["message"]`) and sends the digest when it's due; on a polling error (network, 409 from a second poller) it logs and retries after 30s. Updates from chats not in the list are dropped silently. `/status`: last `SyncRun` per watched account and open alerts (unmuted, last 7 days, or unsent) by level with the unsent count. `/digest`: sends the pending digest now ("Nothing pending." otherwise). `/ack <id>[ <id>…]` or `/ack_<id>`: sets `mutedAt` (and `sentAt` if unset). Anything else starting with `/` gets the help text. The update offset and the last digest day live in `<dataDir>/telegram.json`.
 
 ## Deployment
 

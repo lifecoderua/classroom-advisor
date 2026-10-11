@@ -68,6 +68,10 @@ Notes:
 - **Bind mounts** instead of the named volumes must be writable by uid 1000
   (`chown -R 1000:1000 <dir>`).
 - `docker compose run --rm advisor report` prints the console digest from the same DB.
+- **Telegram:** `TELEGRAM_BOT_TOKEN` and `CA_TELEGRAM_CHAT_IDS` in `.env` (find the chat id with
+  `pnpm cli telegram link` on the laptop, or `docker compose run --rm advisor telegram link`
+  while the loop is stopped). The loop long-polls the bot for commands, so only one `run` may
+  use a bot token at a time (Telegram answers 409 to a second poller).
 
 ## LLM providers in the container
 

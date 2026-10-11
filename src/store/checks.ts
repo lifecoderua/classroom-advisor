@@ -74,3 +74,16 @@ export async function markAlertsSent(
     data: { sentAt: now },
   });
 }
+
+/**
+ * Mutes an alert (Telegram `/ack`): sets `mutedAt` and, when unsent, `sentAt` too, so it never
+ * goes out in a digest. Returns the alert, or null when the id doesn't exist.
+ */
+export async function muteAlert(db: Db, id: number, now: Date = new Date()): Promise<Alert | null> {
+  const alert = await db.alert.findUnique({ where: { id } });
+  if (!alert) return null;
+  return db.alert.update({
+    where: { id },
+    data: { mutedAt: alert.mutedAt ?? now, sentAt: alert.sentAt ?? now },
+  });
+}

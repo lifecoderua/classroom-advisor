@@ -43,6 +43,16 @@ export const configSchema = z.strictObject({
     .string()
     .regex(/^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/, "expected HH:MM-HH:MM")
     .optional(),
+  /**
+   * Telegram chats the bot sends to and takes commands from (`telegram link` adds one). Other
+   * chats are ignored. The bot token is a secret and comes from `TELEGRAM_BOT_TOKEN` only.
+   */
+  telegramChatIds: z.array(z.string().regex(/^-?\d+$/, "expected a numeric chat id")).default([]),
+  /** Local time `HH:MM` of the daily Telegram digest (alerts and info; panics go out at once). */
+  telegramDigestTime: z
+    .string()
+    .regex(/^\d{1,2}:\d{2}$/, "expected HH:MM")
+    .default("19:00"),
 });
 
 export type Config = z.infer<typeof configSchema> & {
@@ -51,6 +61,8 @@ export type Config = z.infer<typeof configSchema> & {
    * which rejects it as an unknown key). Absent when unset.
    */
   geminiApiKey?: string;
+  /** Secret, from `TELEGRAM_BOT_TOKEN` in the environment or `.env` only, like `geminiApiKey`. */
+  telegramBotToken?: string;
 };
 
 /** Env var → config key. Env values override `config.local.json`. */
@@ -69,6 +81,8 @@ const ENV_KEYS = {
   CA_ALERT_LOOKBACK_DAYS: "alertLookbackDays",
   CA_FULL_REFRESH_DAYS: "fullRefreshDays",
   CA_SYNC_DELAY_MS: "syncDelayMs",
+  CA_TELEGRAM_CHAT_IDS: "telegramChatIds",
+  CA_TELEGRAM_DIGEST_TIME: "telegramDigestTime",
 } as const satisfies Record<string, keyof Config>;
 
 export class ConfigError extends Error {
@@ -110,7 +124,7 @@ function fromEnv(env: Record<string, string | undefined>): Partial<Record<keyof 
     const raw = env[envKey]?.trim();
     if (!raw) continue;
     out[configKey] =
-      configKey === "watchedAccounts"
+      configKey === "watchedAccounts" || configKey === "telegramChatIds"
         ? raw
             .split(",")
             .map((s) => s.trim())
@@ -142,6 +156,8 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     ...fromEnv(env),
   };
   const geminiApiKey = (env.GEMINI_API_KEY?.trim() || dotenvVars.GEMINI_API_KEY?.trim()) ?? "";
+  const telegramBotToken =
+    (env.TELEGRAM_BOT_TOKEN?.trim() || dotenvVars.TELEGRAM_BOT_TOKEN?.trim()) ?? "";
 
   const parsed = configSchema.safeParse(merged);
   if (!parsed.success) {
@@ -158,5 +174,6 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     profileDir: toAbsolute(parsed.data.profileDir),
     dataDir: toAbsolute(parsed.data.dataDir),
     ...(geminiApiKey ? { geminiApiKey } : {}),
+    ...(telegramBotToken ? { telegramBotToken } : {}),
   };
 }

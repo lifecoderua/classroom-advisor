@@ -16,6 +16,7 @@ import { registerClassroomCommands } from "./classroom.ts";
 import { checkDatabase, runDoctor } from "./doctor.ts";
 import { readTargetsFile, runRecon, TODO_PATHS } from "./recon.ts";
 import { registerReportCommands } from "./report.ts";
+import { registerTelegramCommands } from "./telegram.ts";
 
 const program = new Command()
   .name("classroom-advisor")
@@ -160,6 +161,7 @@ check
 
 registerReportCommands(program);
 registerClassroomCommands(program);
+registerTelegramCommands(program);
 
 program
   .command("recon")

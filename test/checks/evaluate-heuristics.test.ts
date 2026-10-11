@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
+  cachedOfficeReader,
   cachedTextReader,
   evaluateTurnedIn,
   loadTurnedInInput,
@@ -104,6 +105,33 @@ describe("evaluateTurnedIn", () => {
     const { versionId } = await seed();
     const res = await evaluateTurnedIn(db, versionId, cachedTextReader(dataDir));
     expect(res?.signals.map((s) => s.code)).toEqual(["fetch_failed"]);
+  });
+
+  it("loads Office structure next to the cached text", async () => {
+    const { tpl, copy, versionId } = await seed();
+    const office = {
+      format: "pptx",
+      slides: [
+        { index: 1, text: TEMPLATE, pictures: 0, shapes: 1, animations: 0, animationClasses: {} },
+      ],
+    };
+    const own = {
+      ...office,
+      slides: [{ ...office.slides[0], animations: 2, animationClasses: { entr: 2 } }],
+    };
+    writeFileSync(join(dataDir, "files/tpl.office.json"), JSON.stringify(office));
+    writeFileSync(join(dataDir, "files/copy.office.json"), JSON.stringify(own));
+    await setAttachmentContent(db, tpl.id, { contentPath: "files/tpl.txt", contentHash: "h1" });
+    await setAttachmentContent(db, copy.id, { contentPath: "files/copy.txt", contentHash: "h2" });
+    const opts = { readOffice: cachedOfficeReader(dataDir) };
+
+    const input = await loadTurnedInInput(db, versionId, cachedTextReader(dataDir), opts);
+    expect(input?.submission.attachments[0]?.office).toEqual(own);
+    expect(input?.assignment.materials[0]?.office).toEqual(office);
+    // Same text, but animations were added: no direct panic.
+    const res = await evaluateTurnedIn(db, versionId, cachedTextReader(dataDir), opts);
+    expect(res?.directVerdict).toBeUndefined();
+    expect(res?.signals[0]?.detail).toContain("+2 animation effects");
   });
 
   it("returns null for an unknown version", async () => {

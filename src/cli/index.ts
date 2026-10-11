@@ -1,6 +1,10 @@
 import { existsSync } from "node:fs";
 import { Command } from "commander";
-import { cachedImagePath, cachedTextReader } from "../checks/evaluate-heuristics.ts";
+import {
+  cachedImagePath,
+  cachedOfficeReader,
+  cachedTextReader,
+} from "../checks/evaluate-heuristics.ts";
 import { llmSource, pendingQualityVersions, reviewSubmission } from "../checks/quality.ts";
 import { LLM_PROVIDERS, loadConfig } from "../config/index.ts";
 import { setWatched } from "../config/local.ts";
@@ -139,6 +143,7 @@ check
           new Date(),
           {
             imagePathOf: cachedImagePath(config.dataDir),
+            readOffice: cachedOfficeReader(config.dataDir),
           },
         );
         const failures = res.llmFailures ? ` (LLM failed ${res.llmFailures}x)` : "";

@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import type { APIRequestContext } from "playwright";
 import { extractText } from "unpdf";
 import type { Attachment, Db } from "../store/index.ts";
 import { setAttachmentContent } from "../store/index.ts";
+import { extractOffice, type OfficeFormat, officeFormat, officePlainText } from "./office.ts";
 
 export const ATTACHMENT_KINDS = [
   "doc",
@@ -73,11 +74,14 @@ export type FetchResult =
   | {
       ok: true;
       kind: AttachmentKind;
-      /** Text (docs/slides/pdf), csv (sheets) or raw file (images/other), relative to dataDir. */
+      /**
+       * Text (docs/slides/pdf/Office files), csv (sheets) or raw file (images/other), relative to
+       * dataDir. Office files (and Slides, exported as pptx) also get `<stem>.office.json`.
+       */
       contentPath: string;
       /** sha256 of the file at `contentPath`. */
       contentHash: string;
-      /** Raw downloaded file when it differs from `contentPath` (PDFs). */
+      /** Raw downloaded file when it differs from `contentPath` (PDFs, Office files, Slides). */
       rawPath?: string;
       cached: boolean;
     }
@@ -135,7 +139,8 @@ const IMAGE_EXT: Record<string, string> = {
 };
 
 function extFor(kind: AttachmentKind, mime: string | undefined): string {
-  if (kind === "doc" || kind === "slides") return "txt";
+  if (kind === "doc") return "txt";
+  if (kind === "slides") return "pptx";
   if (kind === "sheet") return "csv";
   if (kind === "pdf") return "pdf";
   const base = mime?.split(";")[0]?.trim().toLowerCase();
@@ -155,12 +160,49 @@ export function exportUrl(kind: AttachmentKind, id: string): string {
     case "doc":
       return `https://docs.google.com/document/d/${eid}/export?format=txt`;
     case "slides":
-      return `https://docs.google.com/presentation/d/${eid}/export/txt`;
+      return `https://docs.google.com/presentation/d/${eid}/export/pptx`;
     case "sheet":
       return `https://docs.google.com/spreadsheets/d/${eid}/export?format=csv`;
     default:
       return `https://drive.google.com/uc?export=download&id=${eid}`;
   }
+}
+
+/** Plain-text export of Slides: the fallback when the pptx export fails (e.g. too large). */
+export function slidesTextUrl(id: string): string {
+  return `https://docs.google.com/presentation/d/${encodeURIComponent(id)}/export/txt`;
+}
+
+/** Sidecar with the structure summary of an Office file, next to its `.txt`. */
+export const OFFICE_SUMMARY_SUFFIX = ".office.json";
+
+/** `<stem>.office.json` for a `<stem>.txt` content path. */
+export function officeSummaryPath(contentPath: string): string {
+  return contentPath.replace(/\.txt$/, OFFICE_SUMMARY_SUFFIX);
+}
+
+/** Empty marker next to a Slides `.txt` that came from the text fallback (don't retry pptx). */
+export const TEXT_ONLY_SUFFIX = ".text-only";
+
+/** Sidecars that sit next to the content file and are never content themselves. */
+const SIDECARS = [OFFICE_SUMMARY_SUFFIX, TEXT_ONLY_SUFFIX];
+
+async function exists(path: string): Promise<boolean> {
+  return access(path).then(
+    () => true,
+    () => false,
+  );
+}
+
+/**
+ * A Slides `.txt` without a structure summary or a text-only marker: cached by the old plain
+ * text export, so it is refetched once as pptx.
+ */
+export async function isStaleSlidesText(dataDir: string, contentPath: string): Promise<boolean> {
+  if (!contentPath.endsWith(".txt")) return false;
+  const stem = join(dataDir, contentPath.slice(0, -".txt".length));
+  for (const suffix of SIDECARS) if (await exists(`${stem}${suffix}`)) return false;
+  return true;
 }
 
 function versionStem(modifiedAt: Date | null | undefined): string {
@@ -263,11 +305,34 @@ async function findCached(dir: string, stem: string, ext: string | undefined) {
   } catch {
     return undefined;
   }
-  const own = names.filter((n) => n.startsWith(`${stem}.`) && !n.endsWith(".tmp"));
+  const own = names.filter(
+    (n) => n.startsWith(`${stem}.`) && !n.endsWith(".tmp") && !SIDECARS.some((s) => n.endsWith(s)),
+  );
   if (ext) return own.includes(`${stem}.${ext}`) ? { content: `${stem}.${ext}`, own } : undefined;
-  // Unknown extension: a `.txt` next to the raw file means we extracted text (PDF).
+  // Unknown extension: a `.txt` next to the raw file means we extracted text (PDF, Office).
   const content = own.find((n) => n === `${stem}.txt`) ?? own[0];
   return content ? { content, own } : undefined;
+}
+
+/**
+ * Writes `<stem>.txt` (plain text) and `<stem>.office.json` (structure) for an Office file.
+ * Returns the text, or an error message when the file can't be read.
+ */
+async function writeOfficeText(
+  dir: string,
+  stem: string,
+  body: Buffer,
+  format: OfficeFormat,
+): Promise<{ text: string } | { error: string }> {
+  try {
+    const summary = extractOffice(new Uint8Array(body), format);
+    const text = officePlainText(summary);
+    await writeAtomic(join(dir, `${stem}${OFFICE_SUMMARY_SUFFIX}`), JSON.stringify(summary));
+    await writeAtomic(join(dir, `${stem}.txt`), text);
+    return { text };
+  } catch (err) {
+    return { error: `${format} text extraction failed: ${(err as Error).message}` };
+  }
 }
 
 /**
@@ -294,16 +359,38 @@ export async function fetchAttachment(
   const relDir = posix.join("files", id);
   const dir = join(options.dataDir, relDir);
   const stem = versionStem(target.modifiedAt);
-  // PDFs are recorded by their extracted text; images/other by whatever extension they got.
+  // PDFs and Slides (pptx) are recorded by their extracted text; images/other by whatever
+  // extension they got (`.txt` when it turned out to be a PDF or an Office file).
   const contentExt =
-    kind === "pdf"
+    kind === "pdf" || kind === "slides"
       ? "txt"
       : kind === "image" || kind === "other"
         ? undefined
         : extFor(kind, undefined);
 
   if (target.modifiedAt) {
-    const hit = await findCached(dir, stem, contentExt);
+    let hit = await findCached(dir, stem, contentExt);
+    // Slides cached by the old text export have no structure: refetch as pptx.
+    if (hit && kind === "slides" && (await isStaleSlidesText(dir, hit.content))) hit = undefined;
+    // An opaque `.bin` from before Office extraction: detect and extract locally, no refetch.
+    if (hit?.content.endsWith(".bin")) {
+      const body = await readFile(join(dir, hit.content));
+      const format = officeFormat(body);
+      if (format) {
+        const rawName = `${stem}.${format}`;
+        await rename(join(dir, hit.content), join(dir, rawName));
+        const out = await writeOfficeText(dir, stem, body, format);
+        if ("error" in out) return { ok: false, kind, error: out.error };
+        return {
+          ok: true,
+          kind,
+          contentPath: posix.join(relDir, `${stem}.txt`),
+          contentHash: sha256(out.text),
+          rawPath: posix.join(relDir, rawName),
+          cached: true,
+        };
+      }
+    }
     if (hit) {
       const body = await readFile(join(dir, hit.content));
       const raw = hit.own.find((n) => n !== hit.content);
@@ -320,11 +407,43 @@ export async function fetchAttachment(
 
   try {
     const url = withAuthuser(exportUrl(kind, id), options.authuser);
-    const res = await download(url, false, opts);
+    let res: HttpResponse;
+    try {
+      res = await download(url, false, opts);
+    } catch (err) {
+      if (kind !== "slides" || !(err instanceof FetchFailure)) throw err;
+      // The pptx export failed (too large, say): fall back to plain text, without structure.
+      const txt = await download(withAuthuser(slidesTextUrl(id), options.authuser), false, opts);
+      await mkdir(dir, { recursive: true });
+      await writeAtomic(join(dir, `${stem}.txt`), txt.body);
+      await writeAtomic(join(dir, `${stem}${TEXT_ONLY_SUFFIX}`), "");
+      return {
+        ok: true,
+        kind,
+        contentPath: posix.join(relDir, `${stem}.txt`),
+        contentHash: sha256(txt.body),
+        cached: false,
+      };
+    }
     await mkdir(dir, { recursive: true });
-    const ext = extFor(kind, target.mime ?? res.headers["content-type"]);
+    // Office files are recognized by their zip contents: Drive's mime types are often generic.
+    const format = officeFormat(res.body);
+    const ext = format ?? extFor(kind, target.mime ?? res.headers["content-type"]);
     const rawName = `${stem}.${ext}`;
     await writeAtomic(join(dir, rawName), res.body);
+    if (format) {
+      const out = await writeOfficeText(dir, stem, res.body, format);
+      if ("error" in out) return { ok: false, kind, error: out.error };
+      return {
+        ok: true,
+        kind,
+        contentPath: posix.join(relDir, `${stem}.txt`),
+        contentHash: sha256(out.text),
+        rawPath: posix.join(relDir, rawName),
+        cached: false,
+      };
+    }
+    if (kind === "slides") return { ok: false, kind, error: "Slides export is not a pptx file" };
     if (ext !== "pdf") {
       return {
         ok: true,

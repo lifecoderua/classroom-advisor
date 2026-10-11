@@ -1,6 +1,7 @@
 // Turned-in quality: heuristics → LLM second pass → merged verdict → CheckResult + Alert (#20).
 
 import { readFileSync } from "node:fs";
+import { type OfficeSummary, officeLabelledText, officeStructure } from "../collector/office.ts";
 import type { LlmProvider, ReviewInput, ReviewOutput } from "../llm/types.ts";
 import {
   addCheckResult,
@@ -9,7 +10,12 @@ import {
   raiseAlert,
   type Verdict,
 } from "../store/index.ts";
-import { type ImagePathOf, loadTurnedInInput, type ReadText } from "./evaluate-heuristics.ts";
+import {
+  type ImagePathOf,
+  loadTurnedInInput,
+  type ReadOffice,
+  type ReadText,
+} from "./evaluate-heuristics.ts";
 import { type TurnedInInput, type TurnedInResult, turnedInSignals } from "./heuristics.ts";
 
 /** Versioned domain prompt; the id is stored with every LLM CheckResult. */
@@ -45,6 +51,9 @@ export const DEFAULT_BUDGET: TextBudget = {
   studentShare: 0.6,
   comments: 4_000,
 };
+
+/** Cap for one attachment's structure summary (about 60 slides), outside the text budget. */
+export const STRUCTURE_MAX = 4_000;
 
 export function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
@@ -87,20 +96,31 @@ export function buildReviewInput(
   const instructions = truncate(a.instructions, budget.instructions);
   const rest = Math.max(0, budget.total - instructions.length);
 
-  const studentTexts = s.attachments.map((x) => x.text ?? "");
+  // Office files and Slides: text with slide headers, plus a separate (untruncated) structure.
+  const llmText = (x: { text?: string | null | undefined; office?: OfficeSummary | undefined }) =>
+    x.office && x.text != null ? officeLabelledText(x.office) : x.text;
+  const studentTexts = s.attachments.map(llmText);
   const studentCaps = allocate(
-    studentTexts.map((t) => t.length),
+    studentTexts.map((t) => t?.length ?? 0),
     Math.floor(rest * budget.studentShare),
   );
   const studentUsed = studentCaps.reduce((n, c) => n + c, 0);
-  const materialTexts = a.materials.map((m) => m.text ?? "");
+  const materialTexts = a.materials.map(llmText);
   const materialCaps = allocate(
-    materialTexts.map((t) => t.length),
+    materialTexts.map((t) => t?.length ?? 0),
     rest - studentUsed,
   );
 
-  const withText = <T extends object>(item: T, text: string | null | undefined, cap: number) =>
-    text == null ? item : { ...item, text: truncate(text, cap) };
+  const withText = <T extends object>(
+    item: T,
+    text: string | null | undefined,
+    cap: number,
+    office: OfficeSummary | undefined,
+  ) => ({
+    ...item,
+    ...(text == null ? {} : { text: truncate(text, cap) }),
+    ...(office ? { structure: truncate(officeStructure(office), STRUCTURE_MAX) } : {}),
+  });
 
   const comments = snapshot.comments ?? [];
   const commentCaps = allocate(
@@ -118,14 +138,15 @@ export function buildReviewInput(
       ...(a.dueAt ? { dueAt: a.dueAt.toISOString() } : {}),
     },
     materials: a.materials.map((m, i) =>
-      withText({ title: m.title, kind: m.kind }, m.text, materialCaps[i] ?? 0),
+      withText({ title: m.title, kind: m.kind }, materialTexts[i], materialCaps[i] ?? 0, m.office),
     ),
     submission: {
       attachments: s.attachments.map((x, i) =>
         withText(
           { title: x.title, kind: x.kind, ...(x.imagePath ? { imagePath: x.imagePath } : {}) },
-          x.text,
+          studentTexts[i],
           studentCaps[i] ?? 0,
+          x.office,
         ),
       ),
       turnedInAt: s.turnedInAt ? s.turnedInAt.toISOString() : "unknown",
@@ -278,6 +299,8 @@ type StoredHeuristicFindings = TurnedInResult & { llmFailures?: Record<string, n
 export interface ReviewSubmissionOptions {
   /** Resolves local image paths of student attachments (see `cachedImagePath`). */
   imagePathOf?: ImagePathOf;
+  /** Reads Office/Slides structure summaries (see `cachedOfficeReader`). */
+  readOffice?: ReadOffice;
   budget?: TextBudget;
 }
 
@@ -301,7 +324,10 @@ export async function reviewSubmission(
   });
   if (existing.some((r) => r.source === source)) return { status: "already_reviewed" };
 
-  const snapshot = await loadTurnedInInput(db, submissionVersionId, readText, opts.imagePathOf);
+  const snapshot = await loadTurnedInInput(db, submissionVersionId, readText, {
+    imagePathOf: opts.imagePathOf,
+    readOffice: opts.readOffice,
+  });
   if (!snapshot) return { status: "not_found" };
   if (!DONE.has(snapshot.submission.state) || snapshot.assignment.kind === "material") {
     return { status: "not_applicable" };

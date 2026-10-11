@@ -12,6 +12,11 @@ export const materialSchema = z.object({
   kind: z.string(),
   /** Extracted text, when available. */
   text: z.string().optional(),
+  /**
+   * Structure of a presentation/document read from the file itself: slide count, pictures,
+   * shapes, animation effects and transitions per slide (or images/tables for documents).
+   */
+  structure: z.string().optional(),
 });
 
 export const attachmentSchema = materialSchema.extend({

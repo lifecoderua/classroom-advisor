@@ -7,10 +7,12 @@ import {
   kindFromMime,
   type Signal,
   similarity,
+  structureAdded,
   type TurnedInInput,
   tokenize,
   turnedInSignals,
 } from "../../src/checks/heuristics.ts";
+import type { PptxSummary, SlideSummary } from "../../src/collector/office.ts";
 
 // Synthetic samples only.
 const TEMPLATE_UK =
@@ -297,5 +299,81 @@ describe("turnedInSignals: attachments", () => {
   it("returned work is checked like turned-in work", () => {
     const { signals } = turnedInSignals(input({ submission: { state: "returned" } }));
     one(signals, "no_attachments");
+  });
+});
+
+describe("turnedInSignals: presentations and Office files", () => {
+  const slide = (over: Partial<SlideSummary> = {}): SlideSummary => ({
+    index: 1,
+    text: "",
+    pictures: 0,
+    shapes: 1,
+    animations: 0,
+    animationClasses: {},
+    ...over,
+  });
+  const deck = (...slides: SlideSummary[]): PptxSummary => ({
+    format: "pptx",
+    slides: slides.map((s, i) => ({ ...s, index: i + 1 })),
+  });
+  const TPL_TEXT =
+    "Анімація об'єктів презентації. Додай ефекти анімації до кожного об'єкта на слайдах";
+  const tplDeck = deck(slide({ text: TPL_TEXT, pictures: 2 }));
+  const slidesTemplate = template({ kind: "slides", text: TPL_TEXT, office: tplDeck });
+  const submit = (att: HeuristicAttachment, materials: HeuristicMaterial[] = []) =>
+    turnedInSignals(input({ assignment: { materials }, submission: { attachments: [att] } }));
+
+  it("structureAdded lists pictures/effects beyond the template", () => {
+    const own = deck(
+      slide({ pictures: 3, animations: 4, animationClasses: { entr: 4 }, transition: "fade" }),
+      slide(),
+    );
+    expect(structureAdded(own, tplDeck)).toEqual([
+      "+1 slides",
+      "+1 pictures",
+      "+1 shapes",
+      "+4 animation effects",
+      "+1 slide transitions",
+    ]);
+    expect(structureAdded(own)).toEqual([
+      "3 pictures",
+      "4 animation effects",
+      "1 slide transitions",
+    ]);
+    expect(structureAdded(undefined)).toEqual([]);
+    expect(structureAdded(tplDeck, tplDeck)).toEqual([]);
+  });
+
+  it("a template copy with added animations is not an untouched template", () => {
+    const own = deck(
+      slide({ text: TPL_TEXT, pictures: 2, animations: 5, animationClasses: { entr: 5 } }),
+    );
+    const res = submit({ kind: "slides", title: "Учень - Анімація", text: TPL_TEXT, office: own }, [
+      slidesTemplate,
+    ]);
+    expect(res.directVerdict).toBeUndefined();
+    const s = one(res.signals, "template_unchanged");
+    expect(s.confidence).toBe(0.3);
+    expect(s.detail).toContain("+5 animation effects");
+  });
+
+  it("an identical template copy (same structure) still panics", () => {
+    const res = submit({ kind: "slides", title: "Копія", text: TPL_TEXT, office: tplDeck }, [
+      slidesTemplate,
+    ]);
+    expect(res.directVerdict?.level).toBe("panic");
+  });
+
+  it("slides with pictures and few words are a weak empty_or_tiny_doc", () => {
+    const own = deck(slide({ text: "Мій кіт", pictures: 2 }), slide({ pictures: 1 }));
+    const { signals } = submit({ kind: "file", title: "kit.pptx", text: "Мій кіт", office: own });
+    const s = one(signals, "empty_or_tiny_doc");
+    expect(s.confidence).toBe(0.3);
+    expect(s.detail).toContain("3 pictures");
+  });
+
+  it("an empty presentation is still empty", () => {
+    const { signals } = submit({ kind: "file", title: "x.pptx", text: "", office: deck(slide()) });
+    expect(one(signals, "empty_or_tiny_doc").confidence).toBe(0.8);
   });
 });

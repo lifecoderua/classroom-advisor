@@ -1,5 +1,9 @@
 import type { Command } from "commander";
-import { cachedImagePath, cachedTextReader } from "../checks/evaluate-heuristics.ts";
+import {
+  cachedImagePath,
+  cachedOfficeReader,
+  cachedTextReader,
+} from "../checks/evaluate-heuristics.ts";
 import { loadConfig } from "../config/index.ts";
 import { createProvider } from "../llm/index.ts";
 import { buildReport, formatReport } from "../notify/console.ts";
@@ -98,7 +102,10 @@ export function registerReportCommands(program: Command): void {
               deadlineOptions: { lookbackDays: config.alertLookbackDays },
               provider,
               readText: cachedTextReader(config.dataDir),
-              reviewOptions: { imagePathOf: cachedImagePath(config.dataDir) },
+              reviewOptions: {
+                imagePathOf: cachedImagePath(config.dataDir),
+                readOffice: cachedOfficeReader(config.dataDir),
+              },
               watchedEmails: config.watchedAccounts,
               signal: controller.signal,
               log,

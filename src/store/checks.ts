@@ -8,6 +8,8 @@ export interface CheckResultInput {
   verdict: Verdict;
   /** Signals or LLM output, stored as JSON. */
   findings: unknown;
+  /** LLM results: the highest `Comment.id` of the assignment the review saw. */
+  throughCommentId?: number | null;
 }
 
 export function addCheckResult(
@@ -21,6 +23,7 @@ export function addCheckResult(
       source: input.source,
       verdict: input.verdict,
       findings: JSON.stringify(input.findings),
+      throughCommentId: input.throughCommentId ?? null,
       createdAt: now,
     },
   });

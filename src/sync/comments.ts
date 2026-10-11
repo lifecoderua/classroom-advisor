@@ -1,6 +1,8 @@
 // Private comments (#39): `sLc6hf` for the listed submissions (batched), stored deduped by
-// comment id, `comment.new` events, and an alert for every fresh teacher comment.
+// comment id, `comment.new` events, and an alert for every fresh teacher comment (`panic` when
+// it asks to redo, fix or attach something, #44).
 
+import { isRedoRequest, redoDueNote, turnedInSince } from "../checks/redo.ts";
 import {
   commentsHaveMore,
   type ParsedComment,
@@ -71,6 +73,9 @@ export interface CommentTarget {
   baseline: boolean;
   title: string;
   courseName: string;
+  dueAt?: Date | null;
+  /** The watched student's submission as stored by this sync. */
+  submission?: { state: string; turnedInAt: Date | null } | null;
 }
 
 export interface CommentStats {
@@ -93,14 +98,14 @@ export const emptyCommentStats = (): CommentStats => ({
 /** Max characters of a comment quoted in an alert. */
 export const COMMENT_ALERT_CHARS = 600;
 
-export function teacherCommentMessage(target: CommentTarget, text: string): string {
+export function teacherCommentMessage(target: CommentTarget, text: string, note?: string): string {
   const label = target.courseName
     ? `"${target.title}" (${target.courseName})`
     : `"${target.title}"`;
   const body = text.trim().replace(/\s+/g, " ");
   const quoted =
     body.length > COMMENT_ALERT_CHARS ? `${body.slice(0, COMMENT_ALERT_CHARS - 1)}…` : body;
-  return `Teacher comment on ${label}: ${quoted || "(empty)"}`;
+  return `Teacher comment on ${label}: ${quoted || "(empty)"}${note ? ` ${note}` : ""}`;
 }
 
 /**
@@ -129,8 +134,27 @@ export interface ApplyCommentsContext {
 }
 
 /**
+ * Level and message of the alert for a fresh teacher comment: `panic` when it asks to redo, fix
+ * or attach something ({@link isRedoRequest}), with a note when the work hasn't been turned in
+ * again since and is past due or due within a day; `alert` otherwise.
+ */
+export function teacherCommentAlert(
+  target: CommentTarget,
+  comment: { text: string; postedAt: Date },
+  now: Date,
+): { level: "alert" | "panic"; message: string } {
+  if (!isRedoRequest(comment.text)) {
+    return { level: "alert", message: teacherCommentMessage(target, comment.text) };
+  }
+  const note = turnedInSince(comment.postedAt, target.submission)
+    ? undefined
+    : redoDueNote(target.dueAt, now);
+  return { level: "panic", message: teacherCommentMessage(target, comment.text, note) };
+}
+
+/**
  * Stores comments (deduped), emits `comment.new:<commentId>` for fresh ones and raises
- * `comment:<commentId>` (level `alert`) for fresh teacher comments. Idempotent.
+ * `comment:<commentId>` for fresh teacher comments (see {@link teacherCommentAlert}). Idempotent.
  */
 export async function applyComments(
   ctx: ApplyCommentsContext,
@@ -179,11 +203,7 @@ export async function applyComments(
     if (comment.authorRole === "teacher") {
       const { created: alerted } = await raiseAlert(
         db,
-        {
-          key: `comment:${comment.id}`,
-          level: "alert",
-          message: teacherCommentMessage(target, comment.text),
-        },
+        { key: `comment:${comment.id}`, ...teacherCommentAlert(target, comment, now) },
         now,
       );
       if (alerted) stats.teacherAlerts++;

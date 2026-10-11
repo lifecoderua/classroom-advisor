@@ -17,6 +17,7 @@ import {
   type ReadText,
 } from "./evaluate-heuristics.ts";
 import { type TurnedInInput, type TurnedInResult, turnedInSignals } from "./heuristics.ts";
+import { isRedoRequest, redoDueNote } from "./redo.ts";
 
 /** Versioned domain prompt; the id is stored with every LLM CheckResult. */
 export const REVIEW_PROMPT_VERSION = "review.v2";
@@ -230,8 +231,55 @@ export function mergeVerdict(heuristic: TurnedInResult, llm: LlmOutcome): Merged
   return { verdict, basis: "llm", notes };
 }
 
-/** Alert text for the parent. */
+type SnapshotComment = NonNullable<TurnedInInput["comments"]>[number];
+
+/**
+ * The latest teacher comment of the snapshot when it asks to redo, fix or attach something and
+ * the work wasn't turned in after it; else `undefined` (a later teacher comment supersedes it).
+ */
+export function openRedoRequest(snapshot: TurnedInInput): SnapshotComment | undefined {
+  const last = (snapshot.comments ?? []).filter((c) => c.authorRole === "teacher").at(-1);
+  if (!last || !isRedoRequest(last.text)) return undefined;
+  const turnedInAt = snapshot.submission.turnedInAt;
+  if (turnedInAt && turnedInAt.getTime() > last.postedAt.getTime()) return undefined;
+  return last;
+}
+
+/** Max characters of the teacher's request quoted in a quality alert. */
+const REQUEST_QUOTE_CHARS = 200;
+
+/**
+ * An open redo request the LLM judged `ok` still needs a look: raises the verdict to `warn`.
+ * Pure; returns `merged` unchanged otherwise.
+ */
+export function applyRedoFloor(
+  merged: MergedVerdict,
+  redo: SnapshotComment | undefined,
+): MergedVerdict {
+  if (!redo || merged.basis !== "llm" || merged.verdict !== "ok") return merged;
+  const text = redo.text.trim().replace(/\s+/g, " ");
+  const quoted =
+    text.length > REQUEST_QUOTE_CHARS ? `${text.slice(0, REQUEST_QUOTE_CHARS - 1)}…` : text;
+  return {
+    ...merged,
+    verdict: "warn",
+    notes: [...merged.notes, `teacher's request not addressed yet: "${quoted}"`],
+  };
+}
+
+/** Alert text for the parent. `extra` sentences are appended (e.g. an overdue redo request). */
 export function qualityMessage(
+  snapshot: TurnedInInput,
+  heuristic: TurnedInResult,
+  llm: LlmOutcome,
+  merged: MergedVerdict,
+  extra: readonly string[] = [],
+): string {
+  const tail = extra.map((e) => ` ${e}`).join("");
+  return `${qualityHeadline(snapshot, heuristic, llm, merged)}${tail}`;
+}
+
+function qualityHeadline(
   snapshot: TurnedInInput,
   heuristic: TurnedInResult,
   llm: LlmOutcome,
@@ -273,7 +321,7 @@ export type ReviewStatus =
    * direct heuristic panic, plus `quality:<id>:llm-failed` after repeated failures.
    */
   | "fallback"
-  /** Already has an LLM CheckResult from this provider. */
+  /** Already has an LLM CheckResult from this provider and no newer teacher comment. */
   | "already_reviewed"
   /** Not turned in, or a material post. */
   | "not_applicable"
@@ -288,6 +336,8 @@ export interface ReviewSubmissionResult {
   llmFailures?: number;
   /** Whether the `quality:<id>:llm-failed` alert was created by this call. */
   failureAlertCreated?: boolean;
+  /** A re-review: the id of the new teacher comment that triggered it. */
+  triggerCommentId?: number;
 }
 
 /** After this many provider failures for a version, `quality:<id>:llm-failed` is raised. */
@@ -304,10 +354,20 @@ export interface ReviewSubmissionOptions {
   budget?: TextBudget;
 }
 
+/** Comments of the assignment that `submissionVersionId` belongs to. */
+const commentsOfVersion = (submissionVersionId: number) => ({
+  assignment: { submission: { versions: { some: { id: submissionVersionId } } } },
+});
+
 /**
  * Reviews one submission version: heuristics, then the LLM, then the merge. Stores a `heuristic`
- * and an `llm:<provider>` CheckResult (each at most once) and raises `quality:<id>` for warn/panic.
+ * CheckResult (once) and an `llm:<provider>` one, and raises `quality:<id>` for warn/panic.
  * On provider failure no LLM result is stored, so the next run retries.
+ *
+ * A version that already has this provider's result is reviewed again only for a fresh teacher
+ * comment newer than what that review saw (`throughCommentId`): one re-review per new comment
+ * (or batch of comments). It alerts as `quality:<id>:c<commentId>`, and only when the verdict got
+ * worse than the previous one; the comment's own `comment:<id>` alert covers the rest.
  */
 export async function reviewSubmission(
   db: Db,
@@ -320,9 +380,35 @@ export async function reviewSubmission(
   const source = llmSource(provider);
   const existing = await db.checkResult.findMany({
     where: { submissionVersionId, source: { in: ["heuristic", source] } },
-    select: { id: true, source: true, findings: true },
+    select: { id: true, source: true, findings: true, verdict: true, throughCommentId: true },
+    orderBy: { id: "asc" },
   });
-  if (existing.some((r) => r.source === source)) return { status: "already_reviewed" };
+  const prior = existing.filter((r) => r.source === source);
+  let trigger: { id: number } | null = null;
+  if (prior.length > 0) {
+    const seen = Math.max(0, ...prior.map((r) => r.throughCommentId ?? 0));
+    trigger = await db.comment.findFirst({
+      where: {
+        ...commentsOfVersion(submissionVersionId),
+        authorRole: "teacher",
+        baseline: false,
+        id: { gt: seen },
+      },
+      orderBy: { id: "desc" },
+      select: { id: true },
+    });
+    if (!trigger) return { status: "already_reviewed" };
+  }
+  const previous = prior.at(-1)?.verdict as Verdict | undefined;
+  const throughCommentId =
+    (
+      await db.comment.aggregate({
+        where: commentsOfVersion(submissionVersionId),
+        _max: { id: true },
+      })
+    )._max.id ?? null;
+  const suffix = trigger ? `:c${trigger.id}` : "";
+  const reReview = trigger ? { triggerCommentId: trigger.id } : {};
 
   const snapshot = await loadTurnedInInput(db, submissionVersionId, readText, {
     imagePathOf: opts.imagePathOf,
@@ -354,13 +440,15 @@ export async function reviewSubmission(
   } catch (err) {
     llm = { ok: false, error: (err as Error).message };
   }
-  const merged = mergeVerdict(heuristic, llm);
+  const redo = openRedoRequest(snapshot);
+  const merged = applyRedoFloor(mergeVerdict(heuristic, llm), redo);
+  const dueNote = redo ? redoDueNote(snapshot.assignment.dueAt, now) : undefined;
   const qualityAlert = async () => {
-    const message = qualityMessage(snapshot, heuristic, llm, merged);
+    const message = qualityMessage(snapshot, heuristic, llm, merged, dueNote ? [dueNote] : []);
     const { created } = await raiseAlert(
       db,
       {
-        key: `quality:${submissionVersionId}`,
+        key: `quality:${submissionVersionId}${suffix}`,
         level: merged.verdict === "panic" ? "panic" : "alert",
         message,
       },
@@ -371,16 +459,22 @@ export async function reviewSubmission(
 
   if (!llm.ok) {
     // Nothing is stored for the LLM, so the next run retries. Count the failure on the
-    // heuristic result; only a direct heuristic panic alerts right away.
+    // heuristic result (per re-review trigger); only a direct heuristic panic alerts right away,
+    // and only on the first review (a re-review doesn't change the heuristics).
     const findings = JSON.parse(stored.findings) as StoredHeuristicFindings;
-    const failures = (findings.llmFailures?.[source] ?? 0) + 1;
-    findings.llmFailures = { ...findings.llmFailures, [source]: failures };
+    const counter = `${source}${suffix}`;
+    const failures = (findings.llmFailures?.[counter] ?? 0) + 1;
+    findings.llmFailures = { ...findings.llmFailures, [counter]: failures };
     await db.checkResult.update({
       where: { id: stored.id },
       data: { findings: JSON.stringify(findings) },
     });
-    const result: ReviewSubmissionResult = { status: "fallback", llmFailures: failures };
-    if (heuristic.directVerdict?.level === "panic") {
+    const result: ReviewSubmissionResult = {
+      status: "fallback",
+      llmFailures: failures,
+      ...reReview,
+    };
+    if (!trigger && heuristic.directVerdict?.level === "panic") {
       const { message, created } = await qualityAlert();
       Object.assign(result, { verdict: "panic", message, alertCreated: created });
     }
@@ -390,7 +484,7 @@ export async function reviewSubmission(
       const { created } = await raiseAlert(
         db,
         {
-          key: `quality:${submissionVersionId}:llm-failed`,
+          key: `quality:${submissionVersionId}${suffix}:llm-failed`,
           level: "alert",
           message: `Automatic review couldn't run: ${label} failed ${failures} times (${provider.name}: ${llm.error}). Check the work by hand.`,
         },
@@ -407,18 +501,35 @@ export async function reviewSubmission(
       submissionVersionId,
       source,
       verdict: merged.verdict,
-      findings: { promptVersion: REVIEW_PROMPT_VERSION, output: llm.output, merge: merged },
+      findings: {
+        promptVersion: REVIEW_PROMPT_VERSION,
+        output: llm.output,
+        merge: merged,
+        ...(trigger ? { trigger: { commentId: trigger.id } } : {}),
+      },
+      throughCommentId,
     },
     now,
   );
-  if (merged.verdict === "ok") return { status: "reviewed", verdict: "ok", alertCreated: false };
+  // A re-review alerts only when the verdict got worse; an unchanged one would repeat itself.
+  const worse = !previous || RANK[merged.verdict] > RANK[previous];
+  if (merged.verdict === "ok" || !worse) {
+    return { status: "reviewed", verdict: merged.verdict, alertCreated: false, ...reReview };
+  }
   const { message, created } = await qualityAlert();
-  return { status: "reviewed", verdict: merged.verdict, message, alertCreated: created };
+  return {
+    status: "reviewed",
+    verdict: merged.verdict,
+    message,
+    alertCreated: created,
+    ...reReview,
+  };
 }
 
 /**
- * Latest turned-in versions of watched accounts' submissions that have no CheckResult from
- * `source` yet. Older versions are superseded and skipped.
+ * Latest turned-in, non-baseline versions of watched accounts' submissions that need a review
+ * from `source`: no result from it yet, or a fresh teacher comment newer than every result's
+ * `throughCommentId` (a re-review, #44). Older versions are superseded and skipped.
  */
 export async function pendingQualityVersions(db: Db, source: CheckSource): Promise<number[]> {
   const subs = await db.submission.findMany({
@@ -434,7 +545,17 @@ export async function pendingQualityVersions(db: Db, source: CheckSource): Promi
           id: true,
           state: true,
           baseline: true,
-          checkResults: { where: { source }, select: { id: true } },
+          checkResults: { where: { source }, select: { throughCommentId: true } },
+        },
+      },
+      assignment: {
+        select: {
+          comments: {
+            where: { authorRole: "teacher", baseline: false },
+            orderBy: { id: "desc" },
+            take: 1,
+            select: { id: true },
+          },
         },
       },
     },
@@ -442,6 +563,10 @@ export async function pendingQualityVersions(db: Db, source: CheckSource): Promi
   });
   return subs.flatMap((s) => {
     const v = s.versions[0];
-    return v && DONE.has(v.state) && !v.baseline && v.checkResults.length === 0 ? [v.id] : [];
+    if (!v || !DONE.has(v.state) || v.baseline) return [];
+    if (v.checkResults.length === 0) return [v.id];
+    const seen = Math.max(0, ...v.checkResults.map((r) => r.throughCommentId ?? 0));
+    const latestTeacher = s.assignment.comments[0]?.id ?? 0;
+    return latestTeacher > seen ? [v.id] : [];
   });
 }

@@ -190,6 +190,9 @@ model CheckResult {
   verdict             String
   /// Signals / LLM output as JSON.
   findings            String
+  /// LLM results: the highest `Comment.id` of the assignment when the review ran (null: none).
+  /// A fresh teacher comment with a higher id re-queues a review of the version (#44).
+  throughCommentId    Int?
   createdAt           DateTime          @default(now())
 
   @@index([submissionVersionId])

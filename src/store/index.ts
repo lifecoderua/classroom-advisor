@@ -3,6 +3,7 @@ export * from "./assignments.ts";
 export * from "./attachments.ts";
 export * from "./checks.ts";
 export * from "./db.ts";
+export * from "./events.ts";
 export type {
   Account,
   Alert,
@@ -11,8 +12,10 @@ export type {
   Attachment,
   CheckResult,
   Course,
+  Event,
   Submission,
   SubmissionVersion,
+  SyncRun,
 } from "./generated/client.ts";
 export * from "./path.ts";
 export * from "./types.ts";

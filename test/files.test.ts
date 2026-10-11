@@ -92,6 +92,11 @@ describe("helpers", () => {
     expect(attachmentKind({ url: file, mime: "application/pdf" })).toBe("pdf");
     expect(attachmentKind({ url: file, mime: "image/png" })).toBe("image");
     expect(attachmentKind({ url: file })).toBe("other");
+    // Classroom's internal names for Google-native files; videos are metadata only.
+    expect(attachmentKind({ url: file, mime: "application/vnd.google-apps.kix" })).toBe("doc");
+    expect(attachmentKind({ url: file, mime: "application/vnd.google-apps.punch" })).toBe("slides");
+    expect(attachmentKind({ url: file, mime: "application/vnd.google-apps.ritz" })).toBe("sheet");
+    expect(attachmentKind({ url: file, mime: "video/mp4" })).toBe("video");
     expect(attachmentKind({ url: "https://example.com/page" })).toBe("link");
   });
 

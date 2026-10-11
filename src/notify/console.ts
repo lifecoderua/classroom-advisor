@@ -70,15 +70,23 @@ export function accountLabel(a: { email: string; displayName: string | null }): 
   return a.displayName?.trim() || a.email.split("@")[0] || a.email;
 }
 
-/** `deadline:<assignmentId>:…` / `quality:<submissionVersionId>[:…]` → the referenced id. */
+/**
+ * `deadline:<assignmentId>:…` / `quality:<submissionVersionId>[:…]` / `sync:<accountId>:…`
+ * → the referenced id.
+ */
 export function parseAlertKey(
   key: string,
-): { kind: "deadline"; assignmentId: number } | { kind: "quality"; versionId: number } | null {
+):
+  | { kind: "deadline"; assignmentId: number }
+  | { kind: "quality"; versionId: number }
+  | { kind: "sync"; accountId: number }
+  | null {
   const [kind, raw] = key.split(":");
   const id = Number(raw);
   if (!Number.isInteger(id) || id <= 0) return null;
   if (kind === "deadline") return { kind, assignmentId: id };
   if (kind === "quality") return { kind, versionId: id };
+  if (kind === "sync") return { kind, accountId: id };
   return null;
 }
 
@@ -105,7 +113,9 @@ async function alertAccounts(db: Db, alerts: readonly ReportAlert[]): Promise<Ma
         ? byAssignment.get(p.assignmentId)
         : p?.kind === "quality"
           ? byVersion.get(p.versionId)
-          : undefined;
+          : p?.kind === "sync"
+            ? p.accountId
+            : undefined;
     if (accountId !== undefined) out.set(id, accountId);
   }
   return out;

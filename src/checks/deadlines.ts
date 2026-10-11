@@ -21,6 +21,11 @@ export interface DeadlineInput {
     /** Fallback for `postedAt`: when the collector first saw the assignment. */
     firstSeenAt: Date;
     status: string;
+    /**
+     * Stored by the account's baseline sync (it existed before we started watching): only the
+     * panics (`missing`, `due_soon`) apply to it.
+     */
+    baseline?: boolean;
   };
   submission?: {
     state: string;
@@ -43,9 +48,11 @@ export interface AlertDraft {
 
 /**
  * Turned in when the submission says so; without a submission row, falls back to the
- * assignment status. A reclaimed (unsubmitted) submission counts as not turned in.
+ * assignment status. A reclaimed (unsubmitted) submission counts as not turned in. The
+ * `missing` bucket wins: a teacher can return work that was never turned in.
  */
 export function isTurnedIn(input: DeadlineInput): boolean {
+  if (input.assignment.status === "missing") return false;
   if (input.submission) return DONE.has(input.submission.state);
   return DONE.has(input.assignment.status);
 }
@@ -65,14 +72,28 @@ function hoursLabel(ms: number): string {
   return h === 1 ? "1 hour" : `${h} hours`;
 }
 
+export interface DeadlineOptions {
+  /**
+   * `untouched_24h` and `no_due_date` apply only to items posted within this window
+   * (default: no limit). Panics ignore it.
+   */
+  lookbackMs?: number;
+}
+
 /** Evaluates the deadline rules for one assignment. Returns drafts, most severe first. */
-export function deadlineAlerts(input: DeadlineInput, now: Date): AlertDraft[] {
+export function deadlineAlerts(
+  input: DeadlineInput,
+  now: Date,
+  options: DeadlineOptions = {},
+): AlertDraft[] {
   const a = input.assignment;
-  if (NO_SUBMISSION_KINDS.has(a.kind) || isTurnedIn(input)) return [];
+  if (NO_SUBMISSION_KINDS.has(a.kind) || a.status === "excused" || isTurnedIn(input)) return [];
 
   const t = now.getTime();
   const posted = (a.postedAt ?? a.firstSeenAt).getTime();
   const due = a.dueAt?.getTime();
+  // Reminders only for recent, post-baseline items; old lesson posts would flood the digest.
+  const remind = !a.baseline && t - posted <= (options.lookbackMs ?? Number.POSITIVE_INFINITY);
   const label = `"${a.title}" (${a.courseName})`;
   const key = (code: DeadlineCode, suffix?: string) =>
     `deadline:${a.id}:${code}${suffix ? `:${suffix}` : ""}`;
@@ -99,7 +120,7 @@ export function deadlineAlerts(input: DeadlineInput, now: Date): AlertDraft[] {
   const lastEdit = signals?.lastStudentEditAt?.getTime();
   const noWork =
     (signals?.attachmentCount ?? 0) === 0 && (lastEdit === undefined || lastEdit <= posted);
-  if (out.length === 0 && t - posted > DAY_MS && noWork) {
+  if (remind && out.length === 0 && t - posted > DAY_MS && noWork) {
     out.push({
       key: key("untouched_24h"),
       level: "alert",
@@ -108,7 +129,7 @@ export function deadlineAlerts(input: DeadlineInput, now: Date): AlertDraft[] {
     });
   }
 
-  if (due === undefined && t - posted > 7 * DAY_MS) {
+  if (remind && due === undefined && t - posted > 7 * DAY_MS) {
     out.push({
       key: key("no_due_date", isoWeek(now)),
       level: "info",
@@ -120,6 +141,10 @@ export function deadlineAlerts(input: DeadlineInput, now: Date): AlertDraft[] {
   return out;
 }
 
-export function evaluateDeadlineRules(inputs: readonly DeadlineInput[], now: Date): AlertDraft[] {
-  return inputs.flatMap((input) => deadlineAlerts(input, now));
+export function evaluateDeadlineRules(
+  inputs: readonly DeadlineInput[],
+  now: Date,
+  options: DeadlineOptions = {},
+): AlertDraft[] {
+  return inputs.flatMap((input) => deadlineAlerts(input, now, options));
 }

@@ -3,6 +3,7 @@ import { extname, join } from "node:path";
 import type { Attachment, Db } from "../store/index.ts";
 import {
   type HeuristicAttachment,
+  type HeuristicMaterial,
   kindFromMime,
   type TurnedInInput,
   type TurnedInResult,
@@ -78,13 +79,15 @@ export async function loadTurnedInInput(
   });
   if (!v) return null;
   const { assignment } = v.submission;
-  const toItem = async (a: Attachment): Promise<HeuristicAttachment> => {
+  const toItem = async (a: Attachment): Promise<HeuristicAttachment & HeuristicMaterial> => {
     const imagePath = imagePathOf?.(a);
     return {
       kind: kindFromMime(a.mime, a.url),
       title: a.title ?? a.url,
       driveFileId: a.driveFileId,
       text: await readText(a),
+      ...(a.isTemplate ? { isTemplate: true } : {}),
+      ...(a.templateSourceId ? { templateSourceId: a.templateSourceId } : {}),
       ...(imagePath ? { imagePath } : {}),
     };
   };

@@ -15,12 +15,13 @@ export const ATTACHMENT_KINDS = [
   "form",
   "link",
   "youtube",
+  "video",
   "other",
 ] as const;
 export type AttachmentKind = (typeof ATTACHMENT_KINDS)[number];
 
 /** Kinds we never download: only their metadata (url, title) is used. */
-const METADATA_ONLY: ReadonlySet<AttachmentKind> = new Set(["form", "link", "youtube"]);
+const METADATA_ONLY: ReadonlySet<AttachmentKind> = new Set(["form", "link", "youtube", "video"]);
 
 export const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
 export const DEFAULT_FETCH_TIMEOUT_MS = 60_000;
@@ -89,30 +90,34 @@ export function driveFileIdFromUrl(url: string): string | undefined {
   return m?.[1];
 }
 
+/** Google-native mimes, including the internal names Classroom reports (kix, punch, ...). */
+const GOOGLE_KIND: Readonly<Record<string, AttachmentKind>> = {
+  "application/vnd.google-apps.document": "doc",
+  "application/vnd.google-apps.kix": "doc",
+  "application/vnd.google-apps.presentation": "slides",
+  "application/vnd.google-apps.punch": "slides",
+  "application/vnd.google-apps.spreadsheet": "sheet",
+  "application/vnd.google-apps.ritz": "sheet",
+  "application/vnd.google-apps.form": "form",
+  "application/vnd.google-apps.freebird": "form",
+};
+
 /** Best-effort kind from url + mime. */
 export function attachmentKind(a: { url: string; mime?: string | null }): AttachmentKind {
   const { url } = a;
   const mime = a.mime?.toLowerCase() ?? "";
-  if (/docs\.google\.com\/document\//.test(url) || mime === "application/vnd.google-apps.document")
-    return "doc";
-  if (
-    /docs\.google\.com\/presentation\//.test(url) ||
-    mime === "application/vnd.google-apps.presentation"
-  )
+  if (/docs\.google\.com\/document\//.test(url) || GOOGLE_KIND[mime] === "doc") return "doc";
+  if (/docs\.google\.com\/presentation\//.test(url) || GOOGLE_KIND[mime] === "slides")
     return "slides";
-  if (
-    /docs\.google\.com\/spreadsheets\//.test(url) ||
-    mime === "application/vnd.google-apps.spreadsheet"
-  )
+  if (/docs\.google\.com\/spreadsheets\//.test(url) || GOOGLE_KIND[mime] === "sheet")
     return "sheet";
-  if (
-    /docs\.google\.com\/forms\/|forms\.gle\//.test(url) ||
-    mime === "application/vnd.google-apps.form"
-  )
+  if (/docs\.google\.com\/forms\/|forms\.gle\//.test(url) || GOOGLE_KIND[mime] === "form")
     return "form";
   if (/(?:youtube\.com|youtu\.be)\//.test(url)) return "youtube";
   if (mime === "application/pdf") return "pdf";
   if (mime.startsWith("image/")) return "image";
+  // Videos are large and no checker reads them: metadata only.
+  if (mime.startsWith("video/")) return "video";
   if (/drive\.google\.com\//.test(url)) return "other";
   return "link";
 }

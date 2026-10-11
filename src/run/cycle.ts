@@ -1,4 +1,4 @@
-import { evaluateDeadlines } from "../checks/evaluate-deadlines.ts";
+import { type EvaluateDeadlinesOptions, evaluateDeadlines } from "../checks/evaluate-deadlines.ts";
 import type { ReadText } from "../checks/evaluate-heuristics.ts";
 import {
   llmSource,
@@ -17,13 +17,8 @@ export interface SyncContext {
   log: (line: string) => void;
 }
 
-/** Collects and stores fresh Classroom data. Wired by #19. */
+/** Collects and stores fresh Classroom data (`playwrightSync` in `src/sync/`). */
 export type SyncFn = (ctx: SyncContext) => Promise<void>;
-
-/** Placeholder until sync (#19) exists. */
-export const stubSync: SyncFn = async ({ log }) => {
-  log("sync not implemented (#19); checking stored data only");
-};
 
 export interface CycleDeps {
   db: Db;
@@ -31,6 +26,7 @@ export interface CycleDeps {
   provider: LlmProvider;
   readText: ReadText;
   reviewOptions?: ReviewSubmissionOptions;
+  deadlineOptions?: EvaluateDeadlinesOptions;
   now?: () => Date;
   log?: (line: string) => void;
   watchedEmails?: readonly string[];
@@ -71,7 +67,7 @@ export async function runCycle(deps: CycleDeps): Promise<CycleResult> {
 
   await step("sync", () => deps.sync({ db, now: now(), log }));
   await step("deadlines", async () => {
-    await evaluateDeadlines(db, now());
+    await evaluateDeadlines(db, now(), deps.deadlineOptions);
   });
   let reviewed = 0;
   await step("quality", async () => {

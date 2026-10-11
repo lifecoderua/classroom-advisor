@@ -20,6 +20,12 @@ export interface AssignmentInput {
   hash: string;
   /** Normalized object, stored as JSON in the version row. */
   payload: unknown;
+  /** Hash of the To-do summary the snapshot came from (sync bookkeeping). */
+  summaryHash?: string | null;
+  /** When details were last fetched (sync bookkeeping). */
+  detailFetchedAt?: Date | null;
+  /** Set on create only: the row comes from the account's baseline sync. */
+  baseline?: boolean;
 }
 
 export interface AssignmentUpsert {
@@ -30,8 +36,10 @@ export interface AssignmentUpsert {
 }
 
 /**
- * Upserts an assignment snapshot. Fields absent from `input` are stored as null.
- * A version row is appended when the assignment is new or its hash changed.
+ * Upserts an assignment snapshot. Fields absent from `input` are stored as null (the sync
+ * bookkeeping fields `summaryHash`/`detailFetchedAt` are left alone when absent). Fields are
+ * refreshed on every call (e.g. `status`, which is not part of the content hash); a version
+ * row is appended only when the assignment is new or its hash changed.
  */
 export function upsertAssignment(
   db: Db,
@@ -48,22 +56,27 @@ export function upsertAssignment(
     status: input.status,
     currentHash: hash,
     lastSeenAt: now,
+    ...(input.summaryHash !== undefined ? { summaryHash: input.summaryHash } : {}),
+    ...(input.detailFetchedAt !== undefined ? { detailFetchedAt: input.detailFetchedAt } : {}),
   };
   return db.$transaction(async (tx) => {
     const existing = await tx.assignment.findUnique({
       where: { accountId_classroomId: { accountId, classroomId } },
     });
     if (existing && existing.currentHash === hash) {
-      const assignment = await tx.assignment.update({
-        where: { id: existing.id },
-        data: { lastSeenAt: now },
-      });
+      const assignment = await tx.assignment.update({ where: { id: existing.id }, data: fields });
       return { assignment, change: "unchanged", version: null };
     }
     const assignment = existing
       ? await tx.assignment.update({ where: { id: existing.id }, data: fields })
       : await tx.assignment.create({
-          data: { ...fields, accountId, classroomId, firstSeenAt: now },
+          data: {
+            ...fields,
+            accountId,
+            classroomId,
+            firstSeenAt: now,
+            baseline: input.baseline ?? false,
+          },
         });
     const version = await tx.assignmentVersion.create({
       data: {
@@ -101,6 +114,8 @@ export interface SubmissionInput {
   /** Content hash computed by sync; a new value appends a `SubmissionVersion`. */
   hash: string;
   payload: unknown;
+  /** Marks a version written by the baseline sync (never quality-reviewed). */
+  baseline?: boolean;
 }
 
 export interface SubmissionUpsert {
@@ -109,7 +124,10 @@ export interface SubmissionUpsert {
   version: SubmissionVersion | null;
 }
 
-/** Same contract as `upsertAssignment`, keyed by assignment (one submission per assignment). */
+/**
+ * Same contract as `upsertAssignment`, keyed by assignment (one submission per assignment).
+ * An unchanged hash only touches `lastSeenAt`.
+ */
 export function upsertSubmission(
   db: Db,
   input: SubmissionInput,
@@ -141,6 +159,7 @@ export function upsertSubmission(
         hash,
         state: input.state,
         payload: JSON.stringify(input.payload),
+        baseline: input.baseline ?? false,
         seenAt: now,
       },
     });

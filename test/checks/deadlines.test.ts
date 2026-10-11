@@ -125,6 +125,14 @@ const cases: { name: string; in: DeadlineInput; codes: string[] }[] = [
     codes: ["missing"],
   },
   {
+    name: "returned without being turned in, missing bucket: missing",
+    in: input({
+      assignment: { dueAt: ago(DAY_MS), status: "missing", baseline: true },
+      submission: { state: "returned", studentWorkSignals: { attachmentCount: 0 } },
+    }),
+    codes: ["missing"],
+  },
+  {
     name: "reclaimed submission after due: missing",
     in: input({
       assignment: { dueAt: ago(HOUR_MS), status: "turned_in" },
@@ -165,7 +173,7 @@ const cases: { name: string; in: DeadlineInput; codes: string[] }[] = [
   {
     name: "returned is ignored",
     in: input({
-      assignment: { dueAt: ago(HOUR_MS), status: "missing" },
+      assignment: { dueAt: ago(HOUR_MS), status: "returned" },
       submission: { state: "returned", studentWorkSignals: { attachmentCount: 0 } },
     }),
     codes: [],
@@ -218,6 +226,37 @@ describe("deadlineAlerts", () => {
     expect(deadlineAlerts(i, new Date(now.getTime() + 1)).map((d) => d.code)).toEqual([
       "untouched_24h",
     ]);
+  });
+});
+
+describe("baseline and lookback (alert-flood guard)", () => {
+  const codes = (i: DeadlineInput, lookbackMs?: number) =>
+    deadlineAlerts(i, NOW, lookbackMs === undefined ? {} : { lookbackMs }).map((d) => d.code);
+  const old = { postedAt: ago(30 * DAY_MS), dueAt: null };
+
+  it("baseline items get the panics only", () => {
+    expect(codes(input({ assignment: { ...old, baseline: true } }))).toEqual([]);
+    expect(codes(input({ assignment: { ...old, status: "missing", baseline: true } }))).toEqual([
+      "missing",
+    ]);
+    const soon = { postedAt: ago(30 * DAY_MS), dueAt: ahead(2 * HOUR_MS), baseline: true };
+    expect(codes(input({ assignment: soon }))).toEqual(["due_soon"]);
+  });
+
+  it("reminders only within the lookback window", () => {
+    expect(codes(input({ assignment: old }))).toEqual(["untouched_24h", "no_due_date"]);
+    expect(codes(input({ assignment: old }), 14 * DAY_MS)).toEqual([]);
+    const recent = { postedAt: ago(10 * DAY_MS), dueAt: null };
+    expect(codes(input({ assignment: recent }), 14 * DAY_MS)).toEqual([
+      "untouched_24h",
+      "no_due_date",
+    ]);
+  });
+
+  it("excused items never alert", () => {
+    expect(codes(input({ assignment: { ...old, status: "excused", dueAt: ago(DAY_MS) } }))).toEqual(
+      [],
+    );
   });
 });
 

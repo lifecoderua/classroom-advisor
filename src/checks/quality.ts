@@ -385,6 +385,7 @@ export async function pendingQualityVersions(db: Db, source: CheckSource): Promi
         select: {
           id: true,
           state: true,
+          baseline: true,
           checkResults: { where: { source }, select: { id: true } },
         },
       },
@@ -393,6 +394,6 @@ export async function pendingQualityVersions(db: Db, source: CheckSource): Promi
   });
   return subs.flatMap((s) => {
     const v = s.versions[0];
-    return v && DONE.has(v.state) && v.checkResults.length === 0 ? [v.id] : [];
+    return v && DONE.has(v.state) && !v.baseline && v.checkResults.length === 0 ? [v.id] : [];
   });
 }

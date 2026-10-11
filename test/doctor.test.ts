@@ -31,6 +31,9 @@ const base: Config = {
   geminiModel: "gemini-test",
   llmTimeoutMs: 1000,
   runIntervalMin: 60,
+  alertLookbackDays: 14,
+  fullRefreshDays: 7,
+  syncDelayMs: 0,
 };
 
 describe("runDoctor", () => {

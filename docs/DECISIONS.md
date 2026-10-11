@@ -32,3 +32,6 @@ The MVP is data + minimal checks + console report. Telegram is the first notifie
 
 ### D10. Call the internal read-only RPCs directly (2026-10-11)
 Recon (#18) found that To-do and detail pages embed no data; it all arrives via `batchexecute` RPCs. Rendering pages and sniffing traffic works, but it's slow and fragile. So we open one page per account for the session tokens, then call the allow-listed read-only rpcids ourselves. The risk is an undocumented API whose positions and rpcids can change. That's why parsers sit behind `ParseDriftError`, fixtures are kept, and `recon` is there to re-learn the shapes.
+
+### D11. First sync is a baseline; reminders have a lookback (2026-10-11)
+The real To-do lists hold hundreds of old items, mostly lesson posts with no homework. Without a guard the first sync would raise ~290 `untouched_24h` / `no_due_date` alerts and send every old turned-in submission to the LLM. So the first successful sync per account only records a baseline (no events, no file downloads, no reviews, only the `missing` / `due_soon` panics for those items), and the two reminders apply only to items posted within `alertLookbackDays` (default 14). Items are flagged at creation, so a baseline interrupted by an expired session continues as a baseline next time.

@@ -24,6 +24,7 @@ import {
   upsertAccount,
   upsertAssignment,
   upsertCourse,
+  upsertSubmission,
 } from "../../src/store/index.ts";
 import { migratedTemplate } from "../store/helpers.ts";
 
@@ -290,6 +291,55 @@ describe("TelegramNotifier", () => {
     clock = at(19, 0, 11);
     await n.afterCycle();
     expect(f.sent()).toHaveLength(3);
+  });
+
+  it("puts 'check by hand' items in their own digest block, never right away; muted ones out", async () => {
+    await seed();
+    const assignment = await db.assignment.findFirstOrThrow();
+    const { version } = await upsertSubmission(
+      db,
+      {
+        assignmentId: assignment.id,
+        state: "turned_in",
+        turnedInAt: clock,
+        hash: "s",
+        payload: {},
+      },
+      clock,
+    );
+    if (!version) throw new Error("seed failed");
+    const byHand = await raiseAlert(
+      db,
+      {
+        key: `quality:${version.id}:unchecked`,
+        level: "info",
+        message: 'Check by hand: "Fractions" (Math): "song.mp3": audio recording: needs listening',
+      },
+      clock,
+    );
+    const muted = await raiseAlert(
+      db,
+      { key: `quality:${version.id}:c9:unchecked`, level: "info", message: "Check by hand: muted" },
+      clock,
+    );
+    await muteAlert(db, muted.alert.id, clock);
+    const f = fakeFetch();
+    const n = notifier(f);
+
+    await n.afterCycle();
+    expect(f.sent()).toHaveLength(1);
+    expect(String(f.sent()[0]?.body.text)).not.toContain("Check by hand");
+    expect(await sentAt(byHand.alert.id)).toBeNull();
+
+    clock = at(19, 5);
+    await n.afterCycle();
+    const digest = String(f.sent()[1]?.body.text);
+    expect(digest).toContain(
+      "🔍 <i>Check by hand</i>\n🔍 Check by hand: &quot;Fractions&quot; (Math): &quot;song.mp3&quot;",
+    );
+    expect(digest.indexOf("untouched")).toBeLessThan(digest.indexOf("🔍 <i>Check by hand</i>"));
+    expect(digest).not.toContain("muted");
+    expect(await sentAt(byHand.alert.id)).not.toBeNull();
   });
 
   it("holds the digest during quiet hours; panics still go out", async () => {

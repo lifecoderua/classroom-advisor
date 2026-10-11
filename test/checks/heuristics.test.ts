@@ -279,8 +279,8 @@ describe("turnedInSignals: attachments", () => {
     ["empty doc", doc(""), "empty_or_tiny_doc"],
     ["tiny doc (en)", doc("My answer is five."), "empty_or_tiny_doc"],
     ["zero-byte file", { kind: "file", title: "a.zip", bytes: 0 }, "empty_or_tiny_doc"],
-    ["doc not fetched", doc(undefined), "fetch_failed"],
-    ["slides not fetched", { kind: "slides", title: "S", text: null }, "fetch_failed"],
+    ["doc not fetched", doc(undefined), undefined],
+    ["unreadable doc", { ...doc(""), unreadable: "file too large to download (30 MB)" }, undefined],
     ["photo without text", photo, undefined],
     ["pdf without text", { kind: "pdf", title: "scan.pdf" }, undefined],
     [

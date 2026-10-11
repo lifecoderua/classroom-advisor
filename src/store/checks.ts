@@ -87,3 +87,15 @@ export async function muteAlert(db: Db, id: number, now: Date = new Date()): Pro
     data: { mutedAt: alert.mutedAt ?? now, sentAt: alert.sentAt ?? now },
   });
 }
+
+/**
+ * Dedupe key of the low-noise "check by hand" alert (level `info`) of a submission version.
+ * A re-review on a teacher comment uses `quality:<id>:c<commentId>:unchecked`.
+ */
+export function uncheckedAlertKey(submissionVersionId: number): string {
+  return `quality:${submissionVersionId}:unchecked`;
+}
+
+export function isUncheckedAlertKey(key: string): boolean {
+  return /^quality:\d+(?::c\d+)?:unchecked$/.test(key);
+}

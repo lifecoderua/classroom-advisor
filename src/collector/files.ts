@@ -4,7 +4,7 @@ import { join, posix } from "node:path";
 import type { APIRequestContext } from "playwright";
 import { extractText } from "unpdf";
 import type { Attachment, Db } from "../store/index.ts";
-import { setAttachmentContent } from "../store/index.ts";
+import { setAttachmentContent, setAttachmentFetchError } from "../store/index.ts";
 import { extractOffice, type OfficeFormat, officeFormat, officePlainText } from "./office.ts";
 
 export const ATTACHMENT_KINDS = [
@@ -482,8 +482,9 @@ export interface AttachmentFetchOutcome {
 }
 
 /**
- * Fetches content for stored attachments and records `contentPath`/`contentHash`.
- * Rows are updated only when the content changed. Stops on {@link SessionExpiredError}.
+ * Fetches content for stored attachments and records `contentPath`/`contentHash` (or
+ * `fetchError` on failure). Rows are updated only when something changed.
+ * Stops on {@link SessionExpiredError}.
  */
 export async function fetchAttachmentContents(
   db: Db,
@@ -515,6 +516,9 @@ export async function fetchAttachmentContents(
         { contentPath: result.contentPath, contentHash: result.contentHash },
         now,
       );
+    } else if (!result.ok && row.fetchError !== result.error) {
+      // Kept for the checks: the reason the work couldn't be checked automatically.
+      attachment = await setAttachmentFetchError(db, row.id, result.error);
     }
     out.push({ attachment, result });
   }

@@ -16,6 +16,7 @@ import {
   type TurnedInResult,
   turnedInSignals,
 } from "./heuristics.ts";
+import { isTemporaryUnreadable, type ReadabilityInput, unreadableReason } from "./readability.ts";
 
 export type ReadText = (attachment: Attachment) => Promise<string | undefined>;
 
@@ -119,11 +120,28 @@ export async function loadTurnedInInput(
   const toItem = async (a: Attachment): Promise<HeuristicAttachment & HeuristicMaterial> => {
     const imagePath = imagePathOf?.(a);
     const office = await readOffice?.(a);
+    const kind = kindFromMime(a.mime, a.url);
+    const title = a.title ?? a.url;
+    const text = await readText(a);
+    const readability: ReadabilityInput = {
+      kind,
+      title,
+      url: a.url,
+      mime: a.mime,
+      contentPath: a.contentPath,
+      fetchError: a.fetchError,
+      text,
+      imagePath,
+      hasStructure: office !== undefined,
+    };
+    const unreadable = unreadableReason(readability);
     return {
-      kind: kindFromMime(a.mime, a.url),
-      title: a.title ?? a.url,
+      kind,
+      title,
       driveFileId: a.driveFileId,
-      text: await readText(a),
+      text,
+      ...(unreadable ? { unreadable } : {}),
+      ...(unreadable && isTemporaryUnreadable(readability) ? { unreadableTemporary: true } : {}),
       ...(a.isTemplate ? { isTemplate: true } : {}),
       ...(a.templateSourceId ? { templateSourceId: a.templateSourceId } : {}),
       ...(imagePath ? { imagePath } : {}),

@@ -169,6 +169,8 @@ model Attachment {
   contentPath      String?
   contentHash      String?
   fetchedAt        DateTime?
+  /// Last fetch failure (e.g. `file too large (…)`, `HTTP 403`); cleared when content is fetched.
+  fetchError       String?
   /// Material is a "make a copy for each student" template (inferred by the detail parser).
   isTemplate       Boolean     @default(false)
   /// Student copy: Drive id of the template it was made from (inferred by the detail parser).
@@ -186,7 +188,7 @@ model CheckResult {
   submissionVersion   SubmissionVersion @relation(fields: [submissionVersionId], references: [id], onDelete: Cascade)
   /// heuristic | llm:<provider>
   source              String
-  /// ok | warn | panic
+  /// ok | warn | panic | unchecked (nothing could be checked automatically)
   verdict             String
   /// Signals / LLM output as JSON.
   findings            String

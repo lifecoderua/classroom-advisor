@@ -12,7 +12,6 @@ export type SignalCode =
   | "fewer_attachments_than_expected"
   | "template_unchanged"
   | "empty_or_tiny_doc"
-  | "fetch_failed"
   | "kind_hint";
 
 export type KindHint = "quiz" | "online_test" | "link_only" | "material";
@@ -31,6 +30,8 @@ export interface HeuristicMaterial {
   isTemplate?: boolean | undefined;
   /** Structure of an Office file or Google Slides (slides, pictures, animations). */
   office?: OfficeSummary | undefined;
+  /** Why the content can't be read (see `HeuristicAttachment.unreadable`). */
+  unreadable?: string | undefined;
 }
 
 export interface HeuristicAttachment {
@@ -46,6 +47,14 @@ export interface HeuristicAttachment {
   imagePath?: string | undefined;
   /** Structure of an Office file or Google Slides (slides, pictures, animations). */
   office?: OfficeSummary | undefined;
+  /**
+   * Why the content can't be read (video, audio, legacy format, failed download…; see
+   * `unreadableReason`). Such attachments are skipped by the heuristics and reported as not
+   * checked automatically.
+   */
+  unreadable?: string | undefined;
+  /** The `unreadable` cause may go away on a later sync (see `isTemporaryUnreadable`). */
+  unreadableTemporary?: boolean | undefined;
 }
 
 export interface TurnedInInput {
@@ -81,8 +90,6 @@ export interface TurnedInResult {
   directVerdict?: DirectVerdict;
 }
 
-/** Google-native kinds: a text export always exists, so missing text means the fetch failed. */
-const TEXT_KINDS: ReadonlySet<string> = new Set(["doc", "slides", "sheet"]);
 const LINK_KINDS: ReadonlySet<string> = new Set(["link", "video", "form"]);
 const DONE: ReadonlySet<string> = new Set(["turned_in", "returned"]);
 
@@ -307,16 +314,8 @@ export function turnedInSignals(input: TurnedInInput): TurnedInResult {
       });
       continue;
     }
-    if (att.text == null) {
-      if (TEXT_KINDS.has(att.kind)) {
-        signals.push({
-          code: "fetch_failed",
-          confidence: 0.9,
-          detail: `"${att.title}" has no text`,
-        });
-      }
-      continue;
-    }
+    // Unreadable content is not the child's fault: it's reported as not checked automatically.
+    if (att.unreadable || att.text == null) continue;
 
     let best: { m: HeuristicMaterial & { text: string }; sim: number } | undefined;
     for (const m of withText) {

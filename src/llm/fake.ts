@@ -13,6 +13,7 @@ export const DEFAULT_FAKE_OUTPUT: ReviewOutput = {
   issues: [],
   summaryForParent: "Looks complete.",
   confidence: 0.9,
+  unverifiable: [],
 };
 
 export type FakeResponder = (input: ReviewInput, opts: ReviewOptions) => ReviewOutput | Error;

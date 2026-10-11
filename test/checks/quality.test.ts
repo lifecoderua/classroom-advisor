@@ -18,6 +18,7 @@ import {
   reviewPrompt,
   reviewSubmission,
   truncate,
+  UNCHECKED_RETRIES,
 } from "../../src/checks/quality.ts";
 import type { PptxSummary } from "../../src/collector/office.ts";
 import { FakeProvider, LlmError, type ReviewOutput } from "../../src/llm/index.ts";
@@ -45,6 +46,7 @@ const out = (o: Partial<ReviewOutput> = {}): ReviewOutput => ({
   issues: [],
   summaryForParent: "Все виконано.",
   confidence: 0.9,
+  unverifiable: [],
   ...o,
 });
 
@@ -179,10 +181,12 @@ describe("pure helpers", () => {
   });
 
   it("loads the versioned prompt", () => {
-    expect(REVIEW_PROMPT_VERSION).toBe("review.v2");
+    expect(REVIEW_PROMPT_VERSION).toBe("review.v3");
     expect(reviewPrompt()).toContain("hints, not facts");
     expect(reviewPrompt()).toContain("`comments`");
     expect(reviewPrompt()).toContain("`structure`");
+    expect(reviewPrompt()).toContain("`unverifiable`");
+    expect(reviewPrompt()).toContain("`unreadable`");
   });
 });
 
@@ -305,7 +309,7 @@ describe("reviewSubmission", () => {
     expect(res).toMatchObject({ status: "reviewed", verdict: "panic", alertCreated: true });
 
     const call = provider.calls[0];
-    expect(call?.opts.instructions).toContain("review.v2");
+    expect(call?.opts.instructions).toContain("review.v3");
     expect(call?.input.locale).toBe("uk");
     expect(call?.input.assignment.courseName).toBe("Математика");
     expect(call?.input.submission.attachments).toEqual([
@@ -319,7 +323,7 @@ describe("reviewSubmission", () => {
       ["llm:fake", "panic"],
     ]);
     expect(JSON.parse(results[1]?.findings ?? "{}")).toMatchObject({
-      promptVersion: "review.v2",
+      promptVersion: "review.v3",
       output: { missingParts: ["Приклад 3"] },
     });
 
@@ -352,7 +356,7 @@ describe("reviewSubmission", () => {
 
   it("on provider failure raises nothing, retries, and alerts after 3 failures", async () => {
     const id = await seed();
-    // No cached text for the doc → fetch_failed (0.9): a heuristics warn, but no direct verdict.
+    // No cached text for the doc: unreadable, but the photo is still reviewed by the LLM.
     await db.attachment.updateMany({ where: { mime: DOC }, data: { contentPath: null } });
     const failing = new FakeProvider({ respond: () => new LlmError("timed out") });
 
@@ -412,6 +416,169 @@ describe("reviewSubmission", () => {
     });
     expect(res.message).toContain("heuristics only");
     expect((await db.alert.findUnique({ where: { key: `quality:${id}` } }))?.level).toBe("panic");
+  });
+
+  const makeUnreadable = async () => {
+    await db.attachment.updateMany({
+      where: { mime: DOC },
+      data: { contentPath: null, fetchError: "file too large (31457280 bytes > 26214400)" },
+    });
+    await db.attachment.updateMany({
+      where: { mime: "image/jpeg" },
+      data: { mime: "video/mp4", contentPath: null },
+    });
+  };
+
+  it("doesn't call the LLM when nothing is readable: unchecked + a 'check by hand' alert", async () => {
+    const id = await seed();
+    await makeUnreadable();
+    const provider = new FakeProvider();
+
+    const res = await run(id, provider);
+    expect(res).toMatchObject({
+      status: "reviewed",
+      verdict: "unchecked",
+      uncheckedAlertCreated: true,
+    });
+    expect(provider.calls).toHaveLength(0);
+    const results = await listCheckResults(db, id);
+    expect(results.map((r) => [r.source, r.verdict])).toEqual([
+      ["heuristic", "ok"],
+      ["llm:fake", "unchecked"],
+    ]);
+    expect(JSON.parse(results[1]?.findings ?? "{}")).toMatchObject({
+      merge: { verdict: "unchecked", basis: "unreadable" },
+      unchecked: [
+        { what: '"Робота"', why: "file too large to download (30 MB)" },
+        { what: '"фото"', why: "video: needs watching" },
+      ],
+    });
+
+    const alerts = await db.alert.findMany();
+    expect(alerts.map((a) => [a.key, a.level])).toEqual([[`quality:${id}:unchecked`, "info"]]);
+    expect(alerts[0]?.message).toBe(
+      'Check by hand: "Приклади" (Математика): "Робота": file too large to download (30 MB); "фото": video: needs watching',
+    );
+    expect(await pendingQualityVersions(db, "llm:fake")).toEqual([]);
+    expect(await run(id, provider)).toEqual({ status: "already_reviewed" });
+  });
+
+  it("retries an unchecked version with only temporary causes, up to 3 times", async () => {
+    const id = await seed();
+    // Neither file downloaded yet (no fetch error): temporary.
+    await db.attachment.updateMany({ data: { contentPath: null } });
+    const provider = new FakeProvider();
+    for (let i = 0; i < UNCHECKED_RETRIES; i++) {
+      expect(await run(id, provider)).toMatchObject({
+        status: "reviewed",
+        verdict: "unchecked",
+        retryPending: true,
+      });
+      expect(await pendingQualityVersions(db, "llm:fake")).toEqual([id]);
+    }
+    expect(await db.alert.count()).toBe(0);
+    // Out of retries: kept as unchecked, with the check-by-hand alert.
+    expect(await run(id, provider)).toMatchObject({
+      verdict: "unchecked",
+      uncheckedAlertCreated: true,
+    });
+    expect(await pendingQualityVersions(db, "llm:fake")).toEqual([]);
+    expect(await run(id, provider)).toEqual({ status: "already_reviewed" });
+    expect(provider.calls).toHaveLength(0);
+    expect(await db.alert.count()).toBe(1);
+  });
+
+  it("a retry reviews the work once it became readable", async () => {
+    const id = await seed();
+    await db.attachment.updateMany({ data: { contentPath: null, fetchError: "HTTP 500" } });
+    const provider = new FakeProvider();
+    expect(await run(id, provider)).toMatchObject({ verdict: "unchecked", retryPending: true });
+    await db.attachment.updateMany({
+      where: { mime: DOC },
+      data: { contentPath: "files/work.txt", fetchError: null },
+    });
+    expect(await run(id, provider)).toMatchObject({ status: "reviewed", verdict: "ok" });
+    expect(provider.calls).toHaveLength(1);
+    expect(await pendingQualityVersions(db, "llm:fake")).toEqual([]);
+  });
+
+  it("keeps a heuristics warn when nothing is readable, with the unchecked parts in it", async () => {
+    const id = await seed();
+    await makeUnreadable();
+    const a = await db.assignment.findFirstOrThrow();
+    await syncAttachments(
+      db,
+      { owner: "material", assignmentId: a.id },
+      ["t1", "t2", "t3"].map((t) => ({
+        url: `https://docs.example/${t}`,
+        title: t,
+        driveFileId: t,
+        mime: DOC,
+        isTemplate: true,
+      })),
+      T0,
+    );
+
+    const res = await run(id, new FakeProvider());
+    expect(res).toMatchObject({ status: "reviewed", verdict: "warn", alertCreated: true });
+    const alerts = await db.alert.findMany();
+    expect(alerts.map((x) => [x.key, x.level])).toEqual([[`quality:${id}`, "alert"]]);
+    expect(alerts[0]?.message).toContain("2 attached, 3 templates provided");
+    expect(alerts[0]?.message).toContain("[heuristics only, nothing readable]");
+    expect(alerts[0]?.message).toContain('Not checked automatically: "Робота": file too large');
+  });
+
+  it("reviews the readable part and lists the unreadable attachment", async () => {
+    const id = await seed();
+    await db.attachment.updateMany({
+      where: { mime: "image/jpeg" },
+      data: { mime: "audio/mpeg", contentPath: "files/p.bin" },
+    });
+    const provider = new FakeProvider();
+
+    const res = await run(id, provider);
+    expect(res).toMatchObject({
+      status: "reviewed",
+      verdict: "ok",
+      alertCreated: false,
+      uncheckedAlertCreated: true,
+    });
+    expect(provider.calls[0]?.input.submission.attachments).toEqual([
+      expect.objectContaining({ title: "Робота", text: expect.stringContaining("5 + 7") }),
+      { title: "фото", kind: "file", unreadable: "audio recording: needs listening" },
+    ]);
+    const alert = await db.alert.findUnique({ where: { key: `quality:${id}:unchecked` } });
+    expect(alert?.level).toBe("info");
+    expect(alert?.message).toContain('"фото": audio recording: needs listening');
+  });
+
+  it("surfaces what the LLM couldn't verify: 'check by hand' on ok, inside the alert on warn", async () => {
+    const unverifiable = [{ what: "Тест на платформі", why: "результат лише на платформі" }];
+    const id = await seed();
+    expect(await run(id, new FakeProvider({ respond: out({ unverifiable }) }))).toMatchObject({
+      verdict: "ok",
+      uncheckedAlertCreated: true,
+    });
+    const alert = await db.alert.findUnique({ where: { key: `quality:${id}:unchecked` } });
+    expect(alert?.message).toBe(
+      'Check by hand: "Приклади" (Математика): Тест на платформі: результат лише на платформі',
+    );
+
+    db = await template.fresh();
+    const id2 = await seed();
+    const res = await run(
+      id2,
+      new FakeProvider({
+        respond: out({ verdict: "warn", summaryForParent: "Перевір.", unverifiable }),
+      }),
+    );
+    expect(res).toMatchObject({ verdict: "warn", alertCreated: true });
+    expect(res.uncheckedAlertCreated).toBeUndefined();
+    const alerts = await db.alert.findMany();
+    expect(alerts.map((x) => x.key)).toEqual([`quality:${id2}`]);
+    expect(alerts[0]?.message).toBe(
+      'Take a look: "Приклади" (Математика): Перевір. Not checked automatically: Тест на платформі: результат лише на платформі.',
+    );
   });
 
   it("skips versions that are not turned in", async () => {
@@ -545,6 +712,29 @@ describe("re-review on a new teacher comment (#44)", () => {
     expect(await pending()).toEqual([]);
     expect(await run(id, provider)).toEqual({ status: "already_reviewed" });
     expect(provider.calls).toHaveLength(1);
+  });
+
+  it("a re-review carries the unchecked parts; check-by-hand again only when they change", async () => {
+    const { versionId: id, assignmentId } = await seed();
+    const unverifiable = [{ what: "Тест на платформі", why: "результат лише на платформі" }];
+    const p = new FakeProvider({ respond: out({ unverifiable }) });
+    expect(await run(id, p)).toMatchObject({ verdict: "ok", uncheckedAlertCreated: true });
+
+    // Same unchecked parts: stored on the re-review, no second check-by-hand alert.
+    await comment(assignmentId, "Молодець.");
+    expect(await run(id, p)).toMatchObject({ verdict: "ok", uncheckedAlertCreated: false });
+    const results = await listCheckResults(db, id);
+    expect(JSON.parse(results.at(-1)?.findings ?? "{}").unchecked).toEqual(unverifiable);
+    expect((await db.alert.findMany()).map((a) => a.key)).toEqual([`quality:${id}:unchecked`]);
+
+    // Worse verdict: the unchecked parts go into the re-review alert.
+    const c2 = await comment(assignmentId, "Перевір ще раз.");
+    const warn = new FakeProvider({
+      respond: out({ verdict: "warn", summaryForParent: "Мало.", unverifiable }),
+    });
+    expect(await run(id, warn)).toMatchObject({ verdict: "warn", alertCreated: true });
+    const alert = await db.alert.findUniqueOrThrow({ where: { key: `quality:${id}:c${c2}` } });
+    expect(alert.message).toContain("Not checked automatically: Тест на платформі");
   });
 
   it("a comment present at the first review doesn't trigger a re-review", async () => {

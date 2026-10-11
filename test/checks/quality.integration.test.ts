@@ -4,7 +4,7 @@ import { turnedInSignals } from "../../src/checks/heuristics.ts";
 import { buildReviewInput, reviewPrompt } from "../../src/checks/quality.ts";
 import { ClaudeCliProvider } from "../../src/llm/index.ts";
 
-// Opt-in: runs the review.v2 prompt through the real `claude` CLI on synthetic Ukrainian
+// Opt-in: runs the review.v3 prompt through the real `claude` CLI on synthetic Ukrainian
 // homework (costs tokens). `CA_LLM_IT=1 pnpm test quality.integration`.
 const enabled = process.env.CA_LLM_IT === "1";
 const it = enabled ? itBase : itBase.skip;
@@ -40,7 +40,7 @@ const math = (work: string): TurnedInInput => ({
   },
 });
 
-describe("review.v2 live (claude-cli)", () => {
+describe("review.v3 live (claude-cli)", () => {
   it("flags missing and wrong tasks, in Ukrainian", async () => {
     const out = await review(math("1) 7 + 5 = 12\n2) 13 - 6 = 8"));
     expect(out.verdict).not.toBe("ok");
@@ -67,9 +67,26 @@ describe("review.v2 live (claude-cli)", () => {
       submission: { state: "turned_in", turnedInAt: T, attachments: [] },
     });
     expect(out.verdict).not.toBe("panic");
+    // The score lives on the platform: "check by hand", not a warn.
+    expect(out.unverifiable.length).toBeGreaterThan(0);
   }, 200_000);
 
-  it("flags work that doesn't match the assignment", async () => {
+  it("reviews the readable part without warning about an unreadable attachment", async () => {
+    const snapshot = math("1) 7 + 5 = 12\n2) 13 - 6 = 7\n3) 8 + 9 = 17\n4) 15 - 7 = 8");
+    const out = await review({
+      ...snapshot,
+      submission: {
+        ...snapshot.submission,
+        attachments: [
+          ...snapshot.submission.attachments,
+          { kind: "file", title: "запис.m4a", unreadable: "audio recording: needs listening" },
+        ],
+      },
+    });
+    expect(out.verdict).toBe("ok");
+  }, 200_000);
+
+  it("flags work) that doesn't match the assignment", async () => {
     const out = await review({
       assignment: {
         kind: "assignment",

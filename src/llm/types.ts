@@ -17,6 +17,8 @@ export const materialSchema = z.object({
    * shapes, animation effects and transitions per slide (or images/tables for documents).
    */
   structure: z.string().optional(),
+  /** Why the content isn't available to the model (video, audio, legacy format…). */
+  unreadable: z.string().optional(),
 });
 
 export const attachmentSchema = materialSchema.extend({
@@ -68,6 +70,11 @@ export const reviewOutputSchema = z.strictObject({
   issues: z.array(z.strictObject({ severity: z.enum(SEVERITIES), text: z.string() })),
   summaryForParent: z.string(),
   confidence: z.number().min(0).max(1),
+  /**
+   * Parts the model can't verify from what it sees (a score on an external test platform, an
+   * audio recording…): shown to the parent as "check by hand", not as a problem.
+   */
+  unverifiable: z.array(z.strictObject({ what: z.string(), why: z.string() })),
 });
 
 export type ReviewOutput = z.infer<typeof reviewOutputSchema>;

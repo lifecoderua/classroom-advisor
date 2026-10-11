@@ -30,6 +30,7 @@ const good: ReviewOutput = {
   issues: [],
   summaryForParent: "Fine.",
   confidence: 0.8,
+  unverifiable: [],
 };
 
 const json = (status: number, body: unknown) =>

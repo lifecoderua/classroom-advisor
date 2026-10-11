@@ -60,7 +60,9 @@ export function syncAttachments(
       const stale =
         existing.driveFileId !== fields.driveFileId ||
         existing.modifiedAt?.getTime() !== fields.modifiedAt?.getTime();
-      const reset = stale ? { contentPath: null, contentHash: null, fetchedAt: null } : {};
+      const reset = stale
+        ? { contentPath: null, contentHash: null, fetchedAt: null, fetchError: null }
+        : {};
       out.push(
         await tx.attachment.update({ where: { id: existing.id }, data: { ...fields, ...reset } }),
       );
@@ -87,5 +89,13 @@ export function setAttachmentContent(
   content: { contentPath: string; contentHash: string },
   now: Date = new Date(),
 ): Promise<Attachment> {
-  return db.attachment.update({ where: { id }, data: { ...content, fetchedAt: now } });
+  return db.attachment.update({
+    where: { id },
+    data: { ...content, fetchedAt: now, fetchError: null },
+  });
+}
+
+/** Records why the content couldn't be fetched (shown as the reason it wasn't auto-checked). */
+export function setAttachmentFetchError(db: Db, id: number, error: string): Promise<Attachment> {
+  return db.attachment.update({ where: { id }, data: { fetchError: error } });
 }

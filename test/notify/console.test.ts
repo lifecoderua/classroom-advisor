@@ -5,6 +5,7 @@ import {
   formatIn,
   formatReport,
   parseAlertKey,
+  reportHasAlerts,
 } from "../../src/notify/console.ts";
 import {
   addCheckResult,
@@ -283,6 +284,81 @@ describe("report", () => {
     expect(text).toContain("Parser drift");
     expect(text).not.toContain("Turned in");
     expect(text).not.toContain("Take a look");
+  });
+
+  it("lists 'check by hand' items in their own section, once per version", async () => {
+    await seed();
+    const versionOf = async (title: string) =>
+      (
+        await db.submissionVersion.findFirstOrThrow({
+          where: { submission: { assignment: { title } } },
+        })
+      ).id;
+    const poem = await versionOf("Poem");
+    const essay = await versionOf("Essay");
+    const item = { what: '"reading.mp3"', why: "audio recording: needs listening" };
+    await addCheckResult(
+      db,
+      {
+        submissionVersionId: poem,
+        source: "llm:fake",
+        verdict: "unchecked",
+        findings: { unchecked: [item] },
+      },
+      ago(0.5),
+    );
+    await raiseAlert(
+      db,
+      {
+        key: `quality:${poem}:unchecked`,
+        level: "info",
+        message: 'Check by hand: "Poem" (Math): "reading.mp3": audio recording: needs listening',
+      },
+      ago(0.5),
+    );
+    // Essay already has a warn alert: its unchecked parts are listed there, not again here.
+    await raiseAlert(
+      db,
+      { key: `quality:${essay}:unchecked`, level: "info", message: "Check by hand: Essay" },
+      ago(0.5),
+    );
+    await addCheckResult(
+      db,
+      {
+        submissionVersionId: essay,
+        source: "llm:fake",
+        verdict: "ok",
+        findings: { output: { summaryForParent: "Done." }, unchecked: [item, item] },
+      },
+      ago(0.5),
+    );
+
+    const report = await buildReport(db, { now: NOW });
+    const one = report.accounts[0];
+    expect(one?.checkByHand.map((a) => a.message)).toEqual([
+      'Check by hand: "Poem" (Math): "reading.mp3": audio recording: needs listening',
+    ]);
+    expect(one?.info.map((a) => a.message)).toEqual(["No due date: Fractions"]);
+    expect(one?.turnedIn).toEqual([
+      expect.objectContaining({ title: "Essay", verdict: "ok", unchecked: 2 }),
+      expect.objectContaining({ title: "Poem", verdict: "unchecked", unchecked: 1 }),
+    ]);
+    const text = formatReport(report, { timeZone: TZ });
+    expect(text).toContain(
+      '"Essay" (Math) · Sat 10 Oct, 10:00 · ✅ ok · 🔍 2 parts not checked automatically',
+    );
+    expect(text).toContain('"Poem" (Math) · Sat 10 Oct, 08:00 · 🔍 not checked automatically\n');
+    expect(text).toContain(
+      '🔍 Check by hand\n  • Check by hand: "Poem" (Math): "reading.mp3": audio recording: needs listening',
+    );
+    expect(text).not.toContain("Check by hand: Essay");
+
+    const ids = (await db.alert.findMany({ where: { key: `quality:${poem}:unchecked` } })).map(
+      (a) => a.id,
+    );
+    const digest = await buildReport(db, { now: NOW, alertIds: ids });
+    expect(reportHasAlerts(digest)).toBe(true);
+    expect(formatReport(digest, { timeZone: TZ })).toContain("🔍 Check by hand");
   });
 
   it("says so when nothing is watched", async () => {

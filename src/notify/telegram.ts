@@ -200,10 +200,14 @@ export function splitMessage(html: string, limit = MESSAGE_LIMIT): string[] {
 
 const LEVEL_ICON: Record<AlertLevel, string> = { panic: "🔴", alert: "🟠", info: "ℹ️" };
 
-function alertLine(a: ReportAlert, links: ReadonlyMap<number, string>): string {
+function alertLine(
+  a: ReportAlert,
+  links: ReadonlyMap<number, string>,
+  icon = LEVEL_ICON[a.level],
+): string {
   const url = links.get(a.id);
   const link = url ? ` · <a href="${escapeHtml(url)}">open</a>` : "";
-  return `${LEVEL_ICON[a.level]} ${escapeHtml(truncate(a.message, LINE_CAP))}${link} · /ack_${a.id}`;
+  return `${icon} ${escapeHtml(truncate(a.message, LINE_CAP))}${link} · /ack_${a.id}`;
 }
 
 export interface TelegramFormatOptions {
@@ -212,7 +216,11 @@ export interface TelegramFormatOptions {
   timeZone?: string;
 }
 
-/** The alerts of a report, grouped per kid (panics, alerts, info), as Telegram HTML. */
+/**
+ * The alerts of a report, grouped per kid (panics, alerts, info), as Telegram HTML. "Check by
+ * hand" items (`quality:<id>:unchecked`, level `info`, so never sent at once) get their own
+ * low-noise block after the rest.
+ */
 export function formatAlertsHtml(
   report: Report,
   links: ReadonlyMap<number, string>,
@@ -221,8 +229,11 @@ export function formatAlertsHtml(
   const out = [`${opts.title} · ${escapeHtml(formatTime(report.generatedAt, opts.timeZone))}`];
   for (const a of report.accounts) {
     const alerts = [...a.panics, ...a.alerts, ...a.info];
-    if (alerts.length === 0) continue;
+    if (alerts.length + a.checkByHand.length === 0) continue;
     out.push("", `👤 <b>${escapeHtml(a.label)}</b>`, ...alerts.map((x) => alertLine(x, links)));
+    if (a.checkByHand.length) {
+      out.push("🔍 <i>Check by hand</i>", ...a.checkByHand.map((x) => alertLine(x, links, "🔍")));
+    }
   }
   if (report.other.length) {
     out.push("", "<b>Other</b>", ...report.other.map((x) => alertLine(x, links)));
@@ -457,7 +468,12 @@ export class TelegramNotifier {
       ...(this.opts.watchedEmails ? { watchedEmails: this.opts.watchedEmails } : {}),
     });
     if (!reportHasAlerts(report)) return 0;
-    const all = [...report.accounts.flatMap((a) => [...a.panics, ...a.alerts, ...a.info])];
+    const all = report.accounts.flatMap((a) => [
+      ...a.panics,
+      ...a.alerts,
+      ...a.checkByHand,
+      ...a.info,
+    ]);
     const links = await alertLinks(this.opts.db, [...all, ...report.other]);
     const html = formatAlertsHtml(report, links, {
       title,
@@ -556,7 +572,7 @@ export class TelegramNotifier {
         "",
         `👤 <b>${escapeHtml(a.label)}</b>`,
         `Last sync: ${sync}`,
-        `Open: ${counts([...a.panics, ...a.alerts, ...a.info])}`,
+        `Open: ${counts([...a.panics, ...a.alerts, ...a.checkByHand, ...a.info])}`,
       );
     }
     if (report.other.length) out.push("", `Other: ${counts(report.other)}`);

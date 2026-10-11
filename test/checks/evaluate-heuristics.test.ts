@@ -11,6 +11,7 @@ import {
 import {
   type Db,
   setAttachmentContent,
+  setAttachmentFetchError,
   syncAttachments,
   upsertAccount,
   upsertAssignment,
@@ -101,10 +102,23 @@ describe("evaluateTurnedIn", () => {
     expect(res?.directVerdict?.level).toBe("panic");
   });
 
-  it("reports fetch_failed when the copy has no cached text", async () => {
-    const { versionId } = await seed();
-    const res = await evaluateTurnedIn(db, versionId, cachedTextReader(dataDir));
-    expect(res?.signals.map((s) => s.code)).toEqual(["fetch_failed"]);
+  it("marks a copy without cached text as unreadable, with the fetch error as the reason", async () => {
+    const { copy, versionId } = await seed();
+    const read = cachedTextReader(dataDir);
+    let input = await loadTurnedInInput(db, versionId, read);
+    expect(input?.submission.attachments[0]?.unreadable).toBe("the file hasn't been downloaded");
+    expect((await evaluateTurnedIn(db, versionId, read))?.signals).toEqual([]);
+
+    await setAttachmentFetchError(db, copy.id, "file too large (31457280 bytes > 26214400)");
+    input = await loadTurnedInInput(db, versionId, read);
+    expect(input?.submission.attachments[0]?.unreadable).toBe("file too large to download (30 MB)");
+    // A readable copy has no reason.
+    await setAttachmentContent(db, copy.id, { contentPath: "files/copy.txt", contentHash: "h2" });
+    input = await loadTurnedInInput(db, versionId, read);
+    expect(input?.submission.attachments[0]?.unreadable).toBeUndefined();
+    expect((await db.attachment.findUniqueOrThrow({ where: { id: copy.id } })).fetchError).toBe(
+      null,
+    );
   });
 
   it("loads Office structure next to the cached text", async () => {

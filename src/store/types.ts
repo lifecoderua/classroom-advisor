@@ -20,7 +20,8 @@ export type AttachmentOwner = (typeof ATTACHMENT_OWNERS)[number];
 export const COMMENT_AUTHOR_ROLES = ["teacher", "student", "unknown"] as const;
 export type CommentAuthorRole = (typeof COMMENT_AUTHOR_ROLES)[number];
 
-export const VERDICTS = ["ok", "warn", "panic"] as const;
+/** `unchecked`: nothing could be checked automatically (see `UncheckedItem`). */
+export const VERDICTS = ["ok", "warn", "panic", "unchecked"] as const;
 export type Verdict = (typeof VERDICTS)[number];
 
 /** `heuristic` or `llm:<provider>`. */
@@ -44,3 +45,10 @@ export const EVENT_TYPES = [
 export type EventType = (typeof EVENT_TYPES)[number];
 
 export type SyncRunStatus = "running" | "ok" | "session_expired" | "session_missing" | "error";
+
+/** A part of the work that wasn't checked automatically, and why ("check by hand"). */
+export interface UncheckedItem {
+  /** E.g. an attachment title in quotes, or "test result on Naurok". */
+  what: string;
+  why: string;
+}

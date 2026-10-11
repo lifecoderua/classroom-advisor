@@ -80,6 +80,7 @@ const warnProvider = () =>
       issues: [],
       summaryForParent: "Only half is done.",
       confidence: 0.8,
+      unverifiable: [],
     },
   });
 

@@ -62,6 +62,7 @@ const good: ReviewOutput = {
   issues: [{ severity: "medium", text: "Exercise 3 is missing." }],
   summaryForParent: "Two of three exercises done.",
   confidence: 0.7,
+  unverifiable: [],
 };
 
 const claudeHarness: Harness = {

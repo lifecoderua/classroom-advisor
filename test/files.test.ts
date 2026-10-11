@@ -442,5 +442,7 @@ describe("fetchAttachmentContents", () => {
     expect(stored[0]?.fetchedAt).not.toBeNull();
     expect(stored[1]?.contentPath).toBeNull();
     expect(stored[2]?.contentPath).toBeNull();
+    // The failure reason is kept for the "not checked automatically" message.
+    expect(stored.map((a) => a.fetchError)).toEqual([null, null, "HTTP 403"]);
   }, 30_000);
 });

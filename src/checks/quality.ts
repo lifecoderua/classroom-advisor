@@ -8,6 +8,8 @@ import {
   type CheckSource,
   type Db,
   raiseAlert,
+  type UncheckedItem,
+  uncheckedAlertKey,
   type Verdict,
 } from "../store/index.ts";
 import {
@@ -20,7 +22,7 @@ import { type TurnedInInput, type TurnedInResult, turnedInSignals } from "./heur
 import { isRedoRequest, redoDueNote } from "./redo.ts";
 
 /** Versioned domain prompt; the id is stored with every LLM CheckResult. */
-export const REVIEW_PROMPT_VERSION = "review.v2";
+export const REVIEW_PROMPT_VERSION = "review.v3";
 
 let promptCache: string | undefined;
 
@@ -139,12 +141,22 @@ export function buildReviewInput(
       ...(a.dueAt ? { dueAt: a.dueAt.toISOString() } : {}),
     },
     materials: a.materials.map((m, i) =>
-      withText({ title: m.title, kind: m.kind }, materialTexts[i], materialCaps[i] ?? 0, m.office),
+      withText(
+        { title: m.title, kind: m.kind, ...(m.unreadable ? { unreadable: m.unreadable } : {}) },
+        materialTexts[i],
+        materialCaps[i] ?? 0,
+        m.office,
+      ),
     ),
     submission: {
       attachments: s.attachments.map((x, i) =>
         withText(
-          { title: x.title, kind: x.kind, ...(x.imagePath ? { imagePath: x.imagePath } : {}) },
+          {
+            title: x.title,
+            kind: x.kind,
+            ...(x.imagePath ? { imagePath: x.imagePath } : {}),
+            ...(x.unreadable ? { unreadable: x.unreadable } : {}),
+          },
           studentTexts[i],
           studentCaps[i] ?? 0,
           x.office,
@@ -169,7 +181,7 @@ export function buildReviewInput(
 // ---------------------------------------------------------------------------------------------
 // Verdicts
 
-const RANK: Record<Verdict, number> = { ok: 0, warn: 1, panic: 2 };
+const RANK: Record<Verdict, number> = { unchecked: 0, ok: 0, warn: 1, panic: 2 };
 const worst = (a: Verdict, b: Verdict): Verdict => (RANK[a] >= RANK[b] ? a : b);
 
 /** Signals that point at a problem (kind hints only describe the assignment). */
@@ -178,7 +190,6 @@ const PROBLEM_SIGNALS: ReadonlySet<string> = new Set([
   "fewer_attachments_than_expected",
   "template_unchanged",
   "empty_or_tiny_doc",
-  "fetch_failed",
 ]);
 /** A heuristics-only result warns from this confidence up. */
 export const HEURISTIC_WARN_CONFIDENCE = 0.6;
@@ -198,8 +209,11 @@ export type LlmOutcome = { ok: true; output: ReviewOutput } | { ok: false; error
 
 export interface MergedVerdict {
   verdict: Verdict;
-  /** `llm`: LLM verdict (possibly adjusted); `heuristic-fallback`: the provider failed. */
-  basis: "llm" | "heuristic-fallback";
+  /**
+   * `llm`: LLM verdict (possibly adjusted); `heuristic-fallback`: the provider failed;
+   * `unreadable`: no attachment could be read, so the LLM wasn't asked (see `unreadableVerdict`).
+   */
+  basis: "llm" | "heuristic-fallback" | "unreadable";
   /** Human-readable adjustments applied by the merge. */
   notes: string[];
 }
@@ -267,6 +281,48 @@ export function applyRedoFloor(
   };
 }
 
+/** Student attachments the review can't read, as "check by hand" items. */
+export function unreadableItems(snapshot: TurnedInInput): UncheckedItem[] {
+  return snapshot.submission.attachments.flatMap((x) =>
+    x.unreadable ? [{ what: `"${x.title}"`, why: x.unreadable }] : [],
+  );
+}
+
+/** Something is attached, but none of it can be read: the LLM has nothing to review. */
+export function nothingReadable(snapshot: TurnedInInput): boolean {
+  const atts = snapshot.submission.attachments;
+  return atts.length > 0 && atts.every((x) => x.unreadable);
+}
+
+/**
+ * Verdict when nothing is readable: the heuristics' warn/panic if they have one (e.g. fewer files
+ * than templates), else `unchecked`. The LLM isn't asked: with no content it could only repeat
+ * the instructions, and "is an upload expected" only matters when nothing is attached.
+ */
+export function unreadableVerdict(heuristic: TurnedInResult): MergedVerdict {
+  const h = heuristicVerdict(heuristic);
+  return {
+    verdict: h === "ok" ? "unchecked" : h,
+    basis: "unreadable",
+    notes: ["no attachment could be read: LLM review skipped"],
+  };
+}
+
+const assignmentLabel = (a: TurnedInInput["assignment"]) =>
+  a.courseName ? `"${a.title}" (${a.courseName})` : `"${a.title}"`;
+
+export const uncheckedText = (items: readonly UncheckedItem[]) =>
+  items.map((i) => `${i.what}: ${i.why}`).join("; ");
+
+/** The sentence appended to a warn/panic alert for the parts that weren't checked. */
+export const uncheckedSentence = (items: readonly UncheckedItem[]) =>
+  `Not checked automatically: ${uncheckedText(items)}.`;
+
+/** Text of the low-noise "check by hand" alert. */
+export function uncheckedMessage(snapshot: TurnedInInput, items: readonly UncheckedItem[]): string {
+  return `Check by hand: ${assignmentLabel(snapshot.assignment)}: ${uncheckedText(items)}`;
+}
+
 /** Alert text for the parent. `extra` sentences are appended (e.g. an overdue redo request). */
 export function qualityMessage(
   snapshot: TurnedInInput,
@@ -285,8 +341,7 @@ function qualityHeadline(
   llm: LlmOutcome,
   merged: MergedVerdict,
 ): string {
-  const a = snapshot.assignment;
-  const label = a.courseName ? `"${a.title}" (${a.courseName})` : `"${a.title}"`;
+  const label = assignmentLabel(snapshot.assignment);
   const head = merged.verdict === "panic" ? "Check now" : "Take a look";
   if (llm.ok) {
     const missing = llm.output.missingParts.length
@@ -304,7 +359,11 @@ function qualityHeadline(
       .filter((s) => PROBLEM_SIGNALS.has(s.code) && s.confidence >= HEURISTIC_WARN_CONFIDENCE)
       .map((s) => s.detail ?? s.code)
       .join("; ");
-  return `${head}: ${label}: ${why} [heuristics only, LLM review unavailable]`;
+  const basis =
+    merged.basis === "unreadable"
+      ? "heuristics only, nothing readable"
+      : "heuristics only, LLM review unavailable";
+  return `${head}: ${label}: ${why} [${basis}]`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -338,7 +397,35 @@ export interface ReviewSubmissionResult {
   failureAlertCreated?: boolean;
   /** A re-review: the id of the new teacher comment that triggered it. */
   triggerCommentId?: number;
+  /** Whether the "check by hand" (`…:unchecked`) alert was created by this call. */
+  uncheckedAlertCreated?: boolean;
+  /** Nothing was readable for a temporary reason: the version is retried on a later run. */
+  retryPending?: boolean;
 }
+
+/**
+ * An `unchecked` result whose causes are all temporary (see `isTemporaryUnreadable`) is retried
+ * on later runs this many times, then kept.
+ */
+export const UNCHECKED_RETRIES = 3;
+
+/** Findings of an `llm:<provider>` CheckResult, as far as the checks read them back. */
+interface StoredLlmFindings {
+  unchecked?: UncheckedItem[];
+  /** An `unchecked` result that will be retried (temporary causes, retries left). */
+  retryable?: boolean;
+}
+
+const parseFindings = (json: string): StoredLlmFindings => {
+  try {
+    return JSON.parse(json) as StoredLlmFindings;
+  } catch {
+    return {};
+  }
+};
+
+const sameItems = (a: readonly UncheckedItem[], b: readonly UncheckedItem[]) =>
+  JSON.stringify(a) === JSON.stringify(b);
 
 /** After this many provider failures for a version, `quality:<id>:llm-failed` is raised. */
 export const LLM_FAILURE_ALERT_AFTER = 3;
@@ -384,8 +471,11 @@ export async function reviewSubmission(
     orderBy: { id: "asc" },
   });
   const prior = existing.filter((r) => r.source === source);
+  const last = prior.at(-1);
+  // An `unchecked` result with temporary causes is retried as a first review (no trigger).
+  const retry = last !== undefined && parseFindings(last.findings).retryable === true;
   let trigger: { id: number } | null = null;
-  if (prior.length > 0) {
+  if (prior.length > 0 && !retry) {
     const seen = Math.max(0, ...prior.map((r) => r.throughCommentId ?? 0));
     trigger = await db.comment.findFirst({
       where: {
@@ -399,7 +489,8 @@ export async function reviewSubmission(
     });
     if (!trigger) return { status: "already_reviewed" };
   }
-  const previous = prior.at(-1)?.verdict as Verdict | undefined;
+  const previous = last?.verdict as Verdict | undefined;
+  const previousUnchecked = last ? (parseFindings(last.findings).unchecked ?? []) : [];
   const throughCommentId =
     (
       await db.comment.aggregate({
@@ -433,6 +524,73 @@ export async function reviewSubmission(
       now,
     ));
 
+  const unreadable = unreadableItems(snapshot);
+  // Check-by-hand alert; a re-review raises its own only when the unchecked parts changed.
+  const uncheckedAlert = async (items: readonly UncheckedItem[]) => {
+    if (trigger && sameItems(items, previousUnchecked)) return { created: false };
+    const key = trigger
+      ? `quality:${submissionVersionId}${suffix}:unchecked`
+      : uncheckedAlertKey(submissionVersionId);
+    const message = uncheckedMessage(snapshot, items);
+    const { created } = await raiseAlert(db, { key, level: "info", message }, now);
+    return { message, created };
+  };
+
+  if (nothingReadable(snapshot)) {
+    // No LLM call. Stored under the provider's source so the version isn't picked up again,
+    // unless every cause is temporary and retries are left (`retryable`).
+    const merged = unreadableVerdict(heuristic);
+    const attempts = prior.filter((r) => r.verdict === "unchecked").length + 1;
+    const versionRow = await db.submissionVersion.findUnique({
+      where: { id: submissionVersionId },
+      select: { baseline: true },
+    });
+    const retryable =
+      merged.verdict === "unchecked" &&
+      !trigger &&
+      !versionRow?.baseline &&
+      attempts <= UNCHECKED_RETRIES &&
+      snapshot.submission.attachments.every((x) => x.unreadableTemporary);
+    await addCheckResult(
+      db,
+      {
+        submissionVersionId,
+        source,
+        verdict: merged.verdict,
+        findings: {
+          promptVersion: REVIEW_PROMPT_VERSION,
+          merge: merged,
+          unchecked: unreadable,
+          ...(retryable ? { retryable: true } : {}),
+          ...(trigger ? { trigger: { commentId: trigger.id } } : {}),
+        },
+        throughCommentId,
+      },
+      now,
+    );
+    const base = { status: "reviewed" as const, verdict: merged.verdict, ...reReview };
+    if (retryable) return { ...base, retryPending: true };
+    if (merged.verdict === "unchecked") {
+      const { message, created } = await uncheckedAlert(unreadable);
+      return { ...base, ...(message ? { message } : {}), uncheckedAlertCreated: created };
+    }
+    if (previous && RANK[merged.verdict] <= RANK[previous]) return { ...base, alertCreated: false };
+    const llmSkipped: LlmOutcome = { ok: false, error: "nothing readable" };
+    const message = qualityMessage(snapshot, heuristic, llmSkipped, merged, [
+      uncheckedSentence(unreadable),
+    ]);
+    const { created } = await raiseAlert(
+      db,
+      {
+        key: `quality:${submissionVersionId}${suffix}`,
+        level: merged.verdict === "panic" ? "panic" : "alert",
+        message,
+      },
+      now,
+    );
+    return { ...base, message, alertCreated: created };
+  }
+
   const input = buildReviewInput(snapshot, heuristic, opts.budget);
   let llm: LlmOutcome;
   try {
@@ -443,8 +601,13 @@ export async function reviewSubmission(
   const redo = openRedoRequest(snapshot);
   const merged = applyRedoFloor(mergeVerdict(heuristic, llm), redo);
   const dueNote = redo ? redoDueNote(snapshot.assignment.dueAt, now) : undefined;
+  const unchecked = llm.ok ? [...unreadable, ...llm.output.unverifiable] : unreadable;
   const qualityAlert = async () => {
-    const message = qualityMessage(snapshot, heuristic, llm, merged, dueNote ? [dueNote] : []);
+    const extra = [
+      ...(unchecked.length ? [uncheckedSentence(unchecked)] : []),
+      ...(dueNote ? [dueNote] : []),
+    ];
+    const message = qualityMessage(snapshot, heuristic, llm, merged, extra);
     const { created } = await raiseAlert(
       db,
       {
@@ -506,6 +669,7 @@ export async function reviewSubmission(
         output: llm.output,
         merge: merged,
         ...(trigger ? { trigger: { commentId: trigger.id } } : {}),
+        ...(unchecked.length ? { unchecked } : {}),
       },
       throughCommentId,
     },
@@ -514,7 +678,19 @@ export async function reviewSubmission(
   // A re-review alerts only when the verdict got worse; an unchanged one would repeat itself.
   const worse = !previous || RANK[merged.verdict] > RANK[previous];
   if (merged.verdict === "ok" || !worse) {
-    return { status: "reviewed", verdict: merged.verdict, alertCreated: false, ...reReview };
+    const result: ReviewSubmissionResult = {
+      status: "reviewed",
+      verdict: merged.verdict,
+      alertCreated: false,
+      ...reReview,
+    };
+    // Unchecked parts of an ok review go to "check by hand"; a warn/panic that isn't worse
+    // already had its alert.
+    if (merged.verdict === "ok" && unchecked.length) {
+      const { message, created } = await uncheckedAlert(unchecked);
+      Object.assign(result, { ...(message ? { message } : {}), uncheckedAlertCreated: created });
+    }
+    return result;
   }
   const { message, created } = await qualityAlert();
   return {
@@ -545,7 +721,11 @@ export async function pendingQualityVersions(db: Db, source: CheckSource): Promi
           id: true,
           state: true,
           baseline: true,
-          checkResults: { where: { source }, select: { throughCommentId: true } },
+          checkResults: {
+            where: { source },
+            orderBy: { id: "asc" },
+            select: { throughCommentId: true, findings: true },
+          },
         },
       },
       assignment: {
@@ -565,6 +745,8 @@ export async function pendingQualityVersions(db: Db, source: CheckSource): Promi
     const v = s.versions[0];
     if (!v || !DONE.has(v.state) || v.baseline) return [];
     if (v.checkResults.length === 0) return [v.id];
+    const last = v.checkResults.at(-1);
+    if (last && parseFindings(last.findings).retryable === true) return [v.id];
     const seen = Math.max(0, ...v.checkResults.map((r) => r.throughCommentId ?? 0));
     const latestTeacher = s.assignment.comments[0]?.id ?? 0;
     return latestTeacher > seen ? [v.id] : [];

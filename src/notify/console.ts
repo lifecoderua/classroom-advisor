@@ -1,8 +1,8 @@
-import type { Db } from "../store/index.ts";
+import { type Db, isUncheckedAlertKey } from "../store/index.ts";
 import type { AlertLevel, Verdict } from "../store/types.ts";
 
 // Console digest: per watched account, panics, alerts, recently turned-in work with its merged
-// verdict, upcoming deadlines and info items. Read-only: `Alert.sentAt` belongs to the Telegram
+// verdict, upcoming deadlines, "check by hand" items and info items. Read-only: `Alert.sentAt` belongs to the Telegram
 // notifier, the console only displays.
 
 const DONE = ["turned_in", "returned"];
@@ -25,6 +25,8 @@ export interface TurnedInItem {
   verdict: Verdict | "pending";
   basis: "llm" | "heuristic" | "none";
   summary?: string;
+  /** Parts not checked automatically (unreadable attachments, what the LLM couldn't verify). */
+  unchecked?: number;
 }
 
 export interface UpcomingItem {
@@ -38,6 +40,8 @@ export interface AccountReport {
   label: string;
   panics: ReportAlert[];
   alerts: ReportAlert[];
+  /** `quality:<id>:unchecked` info alerts: work not checked automatically, with the reason. */
+  checkByHand: ReportAlert[];
   info: ReportAlert[];
   turnedIn: TurnedInItem[];
   upcoming: UpcomingItem[];
@@ -136,6 +140,7 @@ async function alertAccounts(db: Db, alerts: readonly ReportAlert[]): Promise<Ma
 
 interface StoredLlmFindings {
   output?: { summaryForParent?: string };
+  unchecked?: unknown[];
 }
 
 function mergedResult(
@@ -145,12 +150,20 @@ function mergedResult(
   const llm = results.find((r) => r.source.startsWith("llm:"));
   if (llm) {
     let summary: string | undefined;
+    let unchecked = 0;
     try {
-      summary = (JSON.parse(llm.findings) as StoredLlmFindings).output?.summaryForParent?.trim();
+      const f = JSON.parse(llm.findings) as StoredLlmFindings;
+      summary = f.output?.summaryForParent?.trim();
+      unchecked = Array.isArray(f.unchecked) ? f.unchecked.length : 0;
     } catch {
       // Malformed findings: show the verdict alone.
     }
-    return { verdict: llm.verdict as Verdict, basis: "llm", ...(summary ? { summary } : {}) };
+    return {
+      verdict: llm.verdict as Verdict,
+      basis: "llm",
+      ...(summary ? { summary } : {}),
+      ...(unchecked ? { unchecked } : {}),
+    };
   }
   const heuristic = results.find((r) => r.source === "heuristic");
   if (heuristic) return { verdict: heuristic.verdict as Verdict, basis: "heuristic" };
@@ -186,11 +199,19 @@ export async function buildReport(db: Db, opts: BuildReportOptions = {}): Promis
       label: accountLabel(a),
       panics: [],
       alerts: [],
+      checkByHand: [],
       info: [],
       turnedIn: [],
       upcoming: [],
     });
   }
+  // A version with a warn/panic alert already lists its unchecked parts there.
+  const versionOf = (key: string) => /^quality:(\d+)/.exec(key)?.[1];
+  const flagged = new Set(
+    alerts.flatMap((a) =>
+      a.level !== "info" && /^quality:\d+(?::c\d+)?$/.test(a.key) ? [versionOf(a.key)] : [],
+    ),
+  );
   const other: ReportAlert[] = [];
   for (const alert of alerts) {
     const owner = owners.get(alert.id);
@@ -198,7 +219,9 @@ export async function buildReport(db: Db, opts: BuildReportOptions = {}): Promis
     if (!r) other.push(alert);
     else if (alert.level === "panic") r.panics.push(alert);
     else if (alert.level === "alert") r.alerts.push(alert);
-    else r.info.push(alert);
+    else if (isUncheckedAlertKey(alert.key)) {
+      if (!flagged.has(versionOf(alert.key))) r.checkByHand.push(alert);
+    } else r.info.push(alert);
   }
 
   if (!alertsOnly) {
@@ -286,6 +309,7 @@ const VERDICT_MARK: Record<TurnedInItem["verdict"], string> = {
   ok: "✅ ok",
   warn: "🟠 warn",
   panic: "🔴 panic",
+  unchecked: "🔍 not checked automatically",
   pending: "⏳ not reviewed yet",
 };
 
@@ -308,7 +332,7 @@ export function formatReport(report: Report, opts: FormatOptions = {}): string {
     out.push("", "No watched accounts in the database yet (run a sync first).");
   }
   for (const a of report.accounts) {
-    if (report.alertsOnly && a.panics.length + a.alerts.length + a.info.length === 0) continue;
+    if (report.alertsOnly && alertCount(a) === 0) continue;
     out.push("", `== ${a.label} ==`);
     const before = out.length;
     if (a.panics.length) out.push("🔴 Panics", ...alertLines(a.panics, tz));
@@ -318,7 +342,13 @@ export function formatReport(report: Report, opts: FormatOptions = {}): string {
       for (const t of a.turnedIn) {
         const when = t.turnedInAt ? ` · ${formatTime(t.turnedInAt, tz)}` : "";
         const basis = t.basis === "heuristic" ? " (heuristics only)" : "";
-        out.push(`  • ${label(t.title, t.courseName)}${when} · ${VERDICT_MARK[t.verdict]}${basis}`);
+        const partly =
+          t.unchecked && t.verdict !== "unchecked"
+            ? ` · 🔍 ${t.unchecked} part${t.unchecked === 1 ? "" : "s"} not checked automatically`
+            : "";
+        out.push(
+          `  • ${label(t.title, t.courseName)}${when} · ${VERDICT_MARK[t.verdict]}${basis}${partly}`,
+        );
         if (t.summary) out.push(`      ${t.summary}`);
       }
     }
@@ -331,6 +361,7 @@ export function formatReport(report: Report, opts: FormatOptions = {}): string {
         );
       }
     }
+    if (a.checkByHand.length) out.push("🔍 Check by hand", ...alertLines(a.checkByHand, tz));
     if (a.info.length) out.push("ℹ️  Info", ...alertLines(a.info, tz));
     if (out.length === before) out.push("  Nothing to report.");
   }
@@ -340,10 +371,11 @@ export function formatReport(report: Report, opts: FormatOptions = {}): string {
   return out.join("\n");
 }
 
+function alertCount(a: AccountReport): number {
+  return a.panics.length + a.alerts.length + a.checkByHand.length + a.info.length;
+}
+
 /** Whether the report has any alert at all (for the `run` digest). */
 export function reportHasAlerts(report: Report): boolean {
-  return (
-    report.other.length > 0 ||
-    report.accounts.some((a) => a.panics.length + a.alerts.length + a.info.length > 0)
-  );
+  return report.other.length > 0 || report.accounts.some((a) => alertCount(a) > 0);
 }

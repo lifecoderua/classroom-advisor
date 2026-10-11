@@ -19,6 +19,8 @@ export class SessionError extends Error {
 
 export interface SessionOptions {
   profileDir: string;
+  /** Playwright channel (`chrome` by default, `chromium` for the bundled build). */
+  channel?: string;
   /** Headful by default so a human can see what the collector does. */
   headless?: boolean;
 }
@@ -90,14 +92,14 @@ export const IGNORED_DEFAULT_ARGS = [
  * Throws {@link ProfileLockedError} if Chrome already runs on the profile.
  */
 export async function openSession(options: SessionOptions): Promise<Session> {
-  const { profileDir, headless = false } = options;
+  const { profileDir, headless = false, channel = "chrome" } = options;
   const lock = profileLock(profileDir);
   if (lock) throw new ProfileLockedError(profileDir, `pid ${lock.pid} on ${lock.host}`);
 
   let context: BrowserContext;
   try {
     context = await chromium.launchPersistentContext(profileDir, {
-      channel: "chrome",
+      channel,
       headless,
       viewport: null,
       ignoreDefaultArgs: IGNORED_DEFAULT_ARGS,

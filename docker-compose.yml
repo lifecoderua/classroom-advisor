@@ -1,0 +1,40 @@
+# Example deployment; see docs/DEPLOY.md.
+#
+#   docker compose build
+#   docker compose run --rm -p 127.0.0.1:6080:6080 advisor login   # one-time hand login (noVNC)
+#   docker compose run --rm advisor doctor --session
+#   docker compose up -d                                            # `run` loop
+services:
+  advisor:
+    build:
+      context: .
+      args:
+        # 1 = bake in the `claude` CLI for CA_LLM_PROVIDER=claude-cli.
+        INSTALL_CLAUDE: ${INSTALL_CLAUDE:-0}
+    image: classroom-advisor:local
+    # Fixed hostname: Chrome's SingletonLock and run.lock record `<host>-<pid>`. With a random
+    # container hostname the lock left by a crashed container would look held forever.
+    hostname: classroom-advisor
+    restart: unless-stopped
+    # Chrome needs more shared memory than Docker's 64MB default.
+    shm_size: 1gb
+    # GEMINI_API_KEY, CA_WATCHED_ACCOUNTS, CA_QUIET_HOURS, ... (see .env.example).
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Fixed container paths; these win over a laptop-style .env.
+      CA_PROFILE_DIR: /profile
+      CA_DATA_DIR: /data
+      CA_LLM_PROVIDER: ${CA_LLM_PROVIDER:-gemini}
+    volumes:
+      - profile:/profile
+      - data:/data
+      # claude-cli provider only, if you log the CLI in interactively instead of using
+      # CLAUDE_CODE_OAUTH_TOKEN (see docs/DEPLOY.md):
+      # - claude-home:/home/pwuser/.claude
+
+volumes:
+  profile:
+  data:
+  # claude-home:

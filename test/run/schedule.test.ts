@@ -84,6 +84,13 @@ describe("run lock", () => {
     acquireRunLock(dir, { pid: 2, isAlive: () => true }).release();
   });
 
+  it("treats a lock with its own PID on this host as stale (restarted container)", () => {
+    writeFileSync(lockPath(dir), JSON.stringify({ pid: 7, host: hostname() }));
+    const lock = acquireRunLock(dir, { pid: 7, isAlive: () => true });
+    expect(JSON.parse(readFileSync(lockPath(dir), "utf8")).pid).toBe(7);
+    lock.release();
+  });
+
   it("keeps a lock held by another host", () => {
     writeFileSync(lockPath(dir), JSON.stringify({ pid: 1, host: "elsewhere.invalid" }));
     expect(() => acquireRunLock(dir, { pid: 2, isAlive: () => false })).toThrow(RunLockedError);

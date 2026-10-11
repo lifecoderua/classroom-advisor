@@ -30,6 +30,7 @@ describe("loadConfig", () => {
   it("returns defaults with no files and no env", () => {
     expect(load()).toEqual({
       profileDir: "/home/tester/.classroom-advisor/chrome-profile",
+      chromeChannel: "chrome",
       dataDir: join(dir, ".data"),
       watchedAccounts: [],
       llmProvider: "claude-cli",

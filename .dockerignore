@@ -1,0 +1,24 @@
+# Real data and secrets never go into the image.
+.data
+**/.data
+config.local.json
+.env
+.env.*
+captures
+**/captures
+*.db
+*.db-journal
+.claude
+
+# Build/VCS noise
+.git
+.github
+node_modules
+src/store/generated
+coverage
+*.log
+docs
+fixtures
+test
+scripts
+README.md

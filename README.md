@@ -12,7 +12,7 @@ Status: early PoC. See the [issues](https://github.com/lifecoderua/classroom-adv
 
 There is no Classroom API (the school domain blocks it, and Apps Script too). Instead, a **dedicated Chrome profile** stays logged in to the kids' accounts. We log in by hand **once**; the tool never automates logins. A collector drives that profile with Playwright over CDP and reads Classroom's own network responses. The data goes into SQLite, which is diffed so each assignment is cached and only re-checked when it changes. It's then checked by heuristics plus an LLM second pass (`claude -p` by default, Gemini optional). Alerts go to the console now and Telegram next.
 
-Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/DECISIONS.md](docs/DECISIONS.md) · [docs/CLASSROOM-INTERNALS.md](docs/CLASSROOM-INTERNALS.md)
+Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/DECISIONS.md](docs/DECISIONS.md) · [docs/CLASSROOM-INTERNALS.md](docs/CLASSROOM-INTERNALS.md) · [docs/DEPLOY.md](docs/DEPLOY.md) (Docker, microVM)
 
 ## Setup
 

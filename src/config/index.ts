@@ -11,6 +11,12 @@ export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
 
 export const configSchema = z.strictObject({
   profileDir: z.string().min(1).default("~/.classroom-advisor/chrome-profile"),
+  /**
+   * Playwright browser channel for the collector: `chrome` (installed Google Chrome, the default)
+   * or `chromium` (Playwright's bundled Chromium, e.g. on linux/arm64 where Chrome has no build).
+   * The profile must be logged in with the same browser.
+   */
+  chromeChannel: z.string().min(1).default("chrome"),
   dataDir: z.string().min(1).default("./.data"),
   watchedAccounts: z.array(z.email()).default([]),
   llmProvider: z.enum(LLM_PROVIDERS).default("claude-cli"),
@@ -50,6 +56,7 @@ export type Config = z.infer<typeof configSchema> & {
 /** Env var → config key. Env values override `config.local.json`. */
 const ENV_KEYS = {
   CA_PROFILE_DIR: "profileDir",
+  CA_CHROME_CHANNEL: "chromeChannel",
   CA_DATA_DIR: "dataDir",
   CA_WATCHED_ACCOUNTS: "watchedAccounts",
   CA_LLM_PROVIDER: "llmProvider",

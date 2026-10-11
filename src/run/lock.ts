@@ -74,8 +74,13 @@ export function acquireRunLock(dataDir: string, opts: AcquireOptions = {}): RunL
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
     }
     const info = readInfo(path);
-    // A lock from another host can't be probed; trust it.
-    const live = info && (info.host !== undefined && info.host !== host ? true : isAlive(info.pid));
+    // A lock from another host can't be probed; trust it. Our own PID on this host is stale: in a
+    // restarted container the new process often gets the same PID as the one that left the lock.
+    const live =
+      info &&
+      (info.host !== undefined && info.host !== host
+        ? true
+        : info.pid !== pid && isAlive(info.pid));
     if (live) {
       throw new RunLockedError(
         `another run is active (pid ${info.pid}${info.startedAt ? `, since ${info.startedAt}` : ""}); remove ${path} if that's wrong`,

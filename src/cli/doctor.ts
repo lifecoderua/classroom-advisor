@@ -1,6 +1,7 @@
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
+import { chromium } from "playwright";
 import type { Config } from "../config/index.ts";
 import { databasePath, openDbAt } from "../store/index.ts";
 
@@ -63,9 +64,33 @@ export function which(
   return undefined;
 }
 
+/** Google Chrome for the `chrome` channel; Playwright's bundled build for `chromium`. */
+export function chromeCheck(
+  channel: string,
+  bundledPath: () => string = () => chromium.executablePath(),
+): CheckResult {
+  if (channel === "chrome") {
+    const chrome = chromeCandidates().find((p) => existsSync(p));
+    return {
+      name: "Chrome",
+      ok: Boolean(chrome),
+      detail: chrome ?? "not found in the usual locations",
+    };
+  }
+  if (channel === "chromium") {
+    const path = bundledPath();
+    const ok = existsSync(path);
+    return {
+      name: "Chrome",
+      ok,
+      detail: `chromium channel: ${path}${ok ? "" : " missing (pnpm exec playwright install chromium)"}`,
+    };
+  }
+  return { name: "Chrome", ok: true, detail: `channel ${channel} (not checked)` };
+}
+
 export function runDoctor(config: Config): CheckResult[] {
   const nodeMajor = Number(process.versions.node.split(".")[0]);
-  const chrome = chromeCandidates().find((p) => existsSync(p));
   const claude = which(config.claudeBin);
   return [
     {
@@ -73,7 +98,7 @@ export function runDoctor(config: Config): CheckResult[] {
       ok: nodeMajor >= 22,
       detail: `${process.version}${nodeMajor >= 22 ? "" : " (need >= 22)"}`,
     },
-    { name: "Chrome", ok: Boolean(chrome), detail: chrome ?? "not found in the usual locations" },
+    chromeCheck(config.chromeChannel),
     {
       name: "Profile dir",
       ok: existsSync(config.profileDir),

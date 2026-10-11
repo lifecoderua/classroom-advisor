@@ -41,7 +41,8 @@ export function formatRows(rows: AccountRow[]): string[] {
 }
 
 export async function listSessionAccounts(config: Config, headless: boolean): Promise<Discovery> {
-  return withSession({ profileDir: config.profileDir, headless }, (s) =>
-    discoverAccounts(contextDeps(s.context)),
+  return withSession(
+    { profileDir: config.profileDir, channel: config.chromeChannel, headless },
+    (s) => discoverAccounts(contextDeps(s.context)),
   );
 }

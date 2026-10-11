@@ -9,6 +9,7 @@ import { pendingQualityVersions } from "../../src/checks/quality.ts";
 import type { ClassroomSession, Transport } from "../../src/collector/classroom/rpc.ts";
 import type { AssignmentSummary } from "../../src/collector/classroom/todo.ts";
 import { type HttpGet, SessionExpiredError } from "../../src/collector/files.ts";
+import { buildReport } from "../../src/notify/console.ts";
 import {
   type Account,
   type Db,
@@ -34,6 +35,7 @@ const fixture = (name: string): J => JSON.parse(readFileSync(join(DIR, name), "u
 
 const STUDENT = "831760658545";
 const COURSE = "342275451769";
+const TEACHER = "744240834250";
 const H = 3_600_000;
 const NOW = new Date("2025-10-16T12:00:00Z");
 
@@ -55,8 +57,14 @@ class FakeClassroom {
     (fixture("submissions.Zj93ge.json")[2] as J[]).map((s) => [s[0][1][0], structuredClone(s)]),
   );
   atts = new Map<string, J[]>();
+  /** Private comments per item id (`sLc6hf` rows). */
+  comments = new Map<string, J[]>();
   calls: string[] = [];
   failWith: Error | undefined;
+  /** Makes `sLc6hf` answer this payload instead (e.g. a drifted one). */
+  commentsPayload: unknown;
+  /** More submission keys than this in one `sLc6hf` call answer "has more". */
+  commentsMaxKeys = Number.POSITIVE_INFINITY;
 
   readonly transport: Transport = async (url, body) => {
     const rpcid = new URL(url, "https://classroom.google.com").searchParams.get("rpcids") ?? "";
@@ -90,6 +98,14 @@ class FakeClassroom {
         for (const row of res[1]) row[2][0] = [String(itemId), [String(courseId)]];
         return res;
       }
+      case "sLc6hf": {
+        if (this.commentsPayload !== undefined) return this.commentsPayload;
+        const ids = (args[2][3] as J[]).map((k) => String(k[1][0]));
+        const rows = ids.flatMap((id) => this.comments.get(id) ?? []);
+        // Pretend a page holds fewer comments: answer "more" with a partial page.
+        if (ids.length > this.commentsMaxKeys) return ["hrq.cmt", [true], rows.slice(0, 1)];
+        return ["hrq.cmt", [false], rows];
+      }
       default:
         throw new Error(`unexpected rpc ${rpcid}`);
     }
@@ -115,6 +131,26 @@ class FakeClassroom {
     sub[20] = opts.bucket ?? 1;
     sub[21] = null;
     this.subs.set(id, sub);
+  }
+
+  /** Adds a private comment (synthetic) on the student's submission of `itemId`. */
+  addComment(itemId: string, id: string, by: "teacher" | "student", at: Date, text: string): void {
+    const key = [STUDENT, [itemId, [COURSE]]];
+    const row = [
+      [id, null, key, 3],
+      at.getTime(),
+      at.getTime(),
+      at.getTime(),
+      [by === "teacher" ? TEACHER : STUDENT],
+      null,
+      null,
+      2,
+      [1],
+      `c:${COURSE}:s:${itemId}:su:${STUDENT}:co:${id}`,
+      null,
+      ["edu.rt", text, null, null, [null, `<div>${text}</div>`]],
+    ];
+    this.comments.set(itemId, [...(this.comments.get(itemId) ?? []), row]);
   }
 
   /** Sets submission state `[5]`, bucket `[20]` and bumps `[2]`/`[21]`. */
@@ -345,6 +381,114 @@ describe("syncAccount: errors", () => {
     expect((await db.alert.findMany()).map((a) => a.key)).toEqual([
       expect.stringMatching(/^sync:\d+:drift:Zj93ge:/),
     ]);
+  });
+});
+
+describe("syncAccount: private comments", () => {
+  const at = (h: number) => new Date(NOW.getTime() + h * H);
+  const commentAlerts = () =>
+    db.alert.findMany({ where: { key: { startsWith: "comment:" } }, orderBy: { id: "asc" } });
+
+  it("baseline stores comments silently; later only fresh ones raise events and alerts", async () => {
+    await watchedAccount();
+    const cr = new FakeClassroom();
+    cr.addComment("200322958360", "111111111101", "teacher", at(-48), "lorem old note");
+    const res = await sync(cr, NOW);
+    expect(res.stats.comments).toEqual({
+      fetched: 1,
+      new: 0,
+      teacherAlerts: 0,
+      skipped: 0,
+      errors: 0,
+    });
+    expect(cr.calls.filter((c) => c === "sLc6hf")).toHaveLength(1); // one batch for 12 items
+    expect(await db.comment.count({ where: { baseline: true } })).toBe(1);
+    expect(await listEvents(db)).toEqual([]);
+    expect(await commentAlerts()).toEqual([]);
+
+    const t1 = at(3);
+    cr.addComment(
+      "200322958360",
+      "111111111102",
+      "teacher",
+      at(1),
+      "redo exercise 3, attach photo",
+    );
+    cr.addComment("200322958360", "111111111103", "student", at(2), "ipsum ok");
+    // Shows up only now but was posted before the baseline: old news.
+    cr.addComment("664328137076", "111111111104", "teacher", at(-24), "lorem older");
+    // A new item: its comments are fresh whatever their time.
+    cr.addItem("999999999901", at(-1));
+    cr.addComment("999999999901", "111111111105", "teacher", at(-0.5), "dolor new item");
+    const r2 = await sync(cr, t1);
+    expect(r2.stats.comments).toMatchObject({ fetched: 5, new: 3, teacherAlerts: 2, errors: 0 });
+    expect(r2.stats.events["comment.new"]).toBe(3);
+    const roles = await db.comment.findMany({
+      where: { baseline: false },
+      orderBy: { classroomId: "asc" },
+    });
+    expect(roles.map((c) => [c.classroomId, c.authorRole])).toEqual([
+      ["111111111102", "teacher"],
+      ["111111111103", "student"],
+      ["111111111105", "teacher"],
+    ]);
+    const alerts = await commentAlerts();
+    expect(alerts.map((a) => a.level)).toEqual(["alert", "alert"]);
+    expect(alerts.map((x) => x.message)).toContainEqual(
+      expect.stringMatching(/^Teacher comment on ".+" \(.+\): redo exercise 3, attach photo$/),
+    );
+
+    // Rerun, with one comment edited: no new events or alerts, the text follows the edit.
+    (cr.comments.get("200322958360") as J[])[1][11][1] = "redo exercise 4";
+    const r3 = await sync(cr, at(4));
+    expect(r3.stats.comments.new).toBe(0);
+    expect(r3.stats.events).toEqual({});
+    expect(await commentAlerts()).toHaveLength(2);
+    const edited = await db.comment.findFirstOrThrow({ where: { classroomId: "111111111102" } });
+    expect(edited.text).toBe("redo exercise 4");
+
+    // The digest files the alerts under the account.
+    const report = await buildReport(db, { now: at(4), watchedEmails: [SESSION.authuser] });
+    expect(report.other).toEqual([]);
+    expect(report.accounts[0]?.alerts.map((a) => a.key)).toEqual(
+      expect.arrayContaining(alerts.map((a) => a.key)),
+    );
+
+    // The review snapshot carries the comments, oldest first.
+    const a = await db.assignment.findFirstOrThrow({
+      where: { classroomId: "200322958360" },
+      include: { submission: { include: { versions: true } } },
+    });
+    const vid = a.submission?.versions[0]?.id as number;
+    const snapshot = await loadTurnedInInput(db, vid, async () => undefined);
+    expect(snapshot?.comments?.map((c) => [c.authorRole, c.text])).toEqual([
+      ["teacher", "lorem old note"],
+      ["teacher", "redo exercise 4"],
+      ["student", "ipsum ok"],
+    ]);
+  });
+
+  it("splits a batch whose answer has more pages", async () => {
+    await watchedAccount();
+    const cr = new FakeClassroom();
+    cr.commentsMaxKeys = 4;
+    cr.addComment("200322958360", "111111111101", "teacher", at(-48), "lorem");
+    cr.addComment("233229031112", "111111111102", "student", at(-47), "ipsum");
+    const res = await sync(cr, NOW);
+    expect(res.stats.comments.fetched).toBe(2);
+    expect(cr.calls.filter((c) => c === "sLc6hf").length).toBeGreaterThan(1);
+  });
+
+  it("a drifted comments answer raises a drift alert and the sync still succeeds", async () => {
+    await watchedAccount();
+    const cr = new FakeClassroom();
+    cr.commentsPayload = ["hrq.sub", [false], []];
+    const res = await sync(cr, NOW);
+    expect(res.status).toBe("ok");
+    expect(res.stats.comments.errors).toBe(1);
+    expect((await db.alert.findMany()).map((a) => a.key)).toContainEqual(
+      expect.stringMatching(/^sync:\d+:drift:sLc6hf:/),
+    );
   });
 });
 

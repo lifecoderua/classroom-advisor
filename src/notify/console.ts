@@ -71,8 +71,8 @@ export function accountLabel(a: { email: string; displayName: string | null }): 
 }
 
 /**
- * `deadline:<assignmentId>:…` / `quality:<submissionVersionId>[:…]` / `sync:<accountId>:…`
- * → the referenced id.
+ * `deadline:<assignmentId>:…` / `quality:<submissionVersionId>[:…]` / `sync:<accountId>:…` /
+ * `comment:<commentId>` → the referenced id.
  */
 export function parseAlertKey(
   key: string,
@@ -80,6 +80,7 @@ export function parseAlertKey(
   | { kind: "deadline"; assignmentId: number }
   | { kind: "quality"; versionId: number }
   | { kind: "sync"; accountId: number }
+  | { kind: "comment"; commentId: number }
   | null {
   const [kind, raw] = key.split(":");
   const id = Number(raw);
@@ -87,6 +88,7 @@ export function parseAlertKey(
   if (kind === "deadline") return { kind, assignmentId: id };
   if (kind === "quality") return { kind, versionId: id };
   if (kind === "sync") return { kind, accountId: id };
+  if (kind === "comment") return { kind, commentId: id };
   return null;
 }
 
@@ -94,7 +96,8 @@ async function alertAccounts(db: Db, alerts: readonly ReportAlert[]): Promise<Ma
   const parsed = alerts.map((a) => [a.id, parseAlertKey(a.key)] as const);
   const assignmentIds = parsed.flatMap(([, p]) => (p?.kind === "deadline" ? [p.assignmentId] : []));
   const versionIds = parsed.flatMap(([, p]) => (p?.kind === "quality" ? [p.versionId] : []));
-  const [assignments, versions] = await Promise.all([
+  const commentIds = parsed.flatMap(([, p]) => (p?.kind === "comment" ? [p.commentId] : []));
+  const [assignments, versions, comments] = await Promise.all([
     db.assignment.findMany({
       where: { id: { in: assignmentIds } },
       select: { id: true, accountId: true },
@@ -103,9 +106,14 @@ async function alertAccounts(db: Db, alerts: readonly ReportAlert[]): Promise<Ma
       where: { id: { in: versionIds } },
       select: { id: true, submission: { select: { assignment: { select: { accountId: true } } } } },
     }),
+    db.comment.findMany({
+      where: { id: { in: commentIds } },
+      select: { id: true, assignment: { select: { accountId: true } } },
+    }),
   ]);
   const byAssignment = new Map(assignments.map((a) => [a.id, a.accountId]));
   const byVersion = new Map(versions.map((v) => [v.id, v.submission.assignment.accountId]));
+  const byComment = new Map(comments.map((c) => [c.id, c.assignment.accountId]));
   const out = new Map<number, number>();
   for (const [id, p] of parsed) {
     const accountId =
@@ -113,9 +121,11 @@ async function alertAccounts(db: Db, alerts: readonly ReportAlert[]): Promise<Ma
         ? byAssignment.get(p.assignmentId)
         : p?.kind === "quality"
           ? byVersion.get(p.versionId)
-          : p?.kind === "sync"
-            ? p.accountId
-            : undefined;
+          : p?.kind === "comment"
+            ? byComment.get(p.commentId)
+            : p?.kind === "sync"
+              ? p.accountId
+              : undefined;
     if (accountId !== undefined) out.set(id, accountId);
   }
   return out;

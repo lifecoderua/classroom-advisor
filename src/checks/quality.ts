@@ -13,7 +13,7 @@ import { type ImagePathOf, loadTurnedInInput, type ReadText } from "./evaluate-h
 import { type TurnedInInput, type TurnedInResult, turnedInSignals } from "./heuristics.ts";
 
 /** Versioned domain prompt; the id is stored with every LLM CheckResult. */
-export const REVIEW_PROMPT_VERSION = "review.v1";
+export const REVIEW_PROMPT_VERSION = "review.v2";
 
 let promptCache: string | undefined;
 
@@ -35,9 +35,16 @@ export interface TextBudget {
   instructions: number;
   /** Share of what's left after the instructions that goes to the student's work first. */
   studentShare: number;
+  /** Max characters of all private comments together (on top of `total`). */
+  comments: number;
 }
 
-export const DEFAULT_BUDGET: TextBudget = { total: 24_000, instructions: 4_000, studentShare: 0.6 };
+export const DEFAULT_BUDGET: TextBudget = {
+  total: 24_000,
+  instructions: 4_000,
+  studentShare: 0.6,
+  comments: 4_000,
+};
 
 export function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
@@ -95,6 +102,12 @@ export function buildReviewInput(
   const withText = <T extends object>(item: T, text: string | null | undefined, cap: number) =>
     text == null ? item : { ...item, text: truncate(text, cap) };
 
+  const comments = snapshot.comments ?? [];
+  const commentCaps = allocate(
+    comments.map((c) => c.text.length),
+    budget.comments,
+  );
+
   const locale = detectLocale(`${a.title}\n${a.instructions}`);
   return {
     assignment: {
@@ -118,6 +131,15 @@ export function buildReviewInput(
       turnedInAt: s.turnedInAt ? s.turnedInAt.toISOString() : "unknown",
     },
     signals: heuristics.signals,
+    ...(comments.length
+      ? {
+          comments: comments.map((c, i) => ({
+            author: c.authorRole,
+            postedAt: c.postedAt.toISOString(),
+            text: truncate(c.text, commentCaps[i] ?? 0),
+          })),
+        }
+      : {}),
     ...(locale ? { locale } : {}),
   };
 }

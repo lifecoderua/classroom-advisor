@@ -110,8 +110,13 @@ Materials (`t51ITc` → `[null, [[attachment, null, [itemKey, materialId]]…]]`
 **"Make a copy for each student"**: not seen in any capture (no Google Docs/Sheets/Slides student attachments in either account). It is expected as a student attachment (`Zj93ge [4]`, `[15]`=2) with a `vnd.google-apps.*` mime, plus a teacher material of the same title. The share-mode field is unknown. This needs a capture when one shows up.
 
 ### Comments (`sLc6hf` → `["hrq.cmt", [false], [comment…]]`)
-- Private comments: request filter `[[null,null,[2,3]], null, null, [submissionKey], [[1]]]`. Class comments: `[[null,null,[2,3]], [itemKey], null, null, [[2]]]`.
-- Comment: `[0]` `[commentId, null, submissionKey, 3 (private)]` · `[1]`/`[2]`/`[3]` ms · `[4][0]` author id (look up with `UG41I`) · `[7]` 2 · `[9]` `c:…:s:…:su:<studentId>:co:<commentId>` · `[11]` rich text `["edu.rt", plain, null, null, [null, html]]`
+- Request: `[[pageSize=100, null, 1, 0], <mask>, <filter>]`, mask `[1,1,1,1,null,null,[1],1,null,3,[1,null,1]]`.
+- Private comments: filter `[[null,null,[2,3]], null, null, [submissionKey…], [[1]]]`. Class comments: `[[null,null,[2,3]], [itemKey], null, null, [[2]]]`.
+- **Batching works**: the page sends one submission key, but `[3]` takes many. Live (#39, 2 accounts, ~170-185 submissions each), 100 keys per call answered all comments of those submissions in one response, so a full sweep is 2 calls per account.
+- Response `[1]` is `[hasMore]`: always `[false]` so far (the largest batch returned ~50 comments with page size 100). No page token was seen.
+- Comment (array of 12, identical shape on every live row): `[0]` `[commentId, null, submissionKey, 3 (private)]` · `[1]`/`[2]`/`[3]` ms (equal on every row seen; `[1]` is taken as the post time) · `[4][0]` author id (look up with `UG41I`) · `[7]` 2 · `[8]` `[1]` · `[9]` `c:…:s:…:su:<studentId>:co:<commentId>` · `[11]` rich text `["edu.rt", plain, null, null, [null, html]]`. Rows come newest first.
+- Author role: the student when `[4][0]` equals the submission key's student id, else a teacher (private comments have no third party). Live mix was roughly 40% teacher.
+- **A comment doesn't reliably bump the submission's `[2]`** (updated ms): on the live data 5 of 24 commented submissions had a newer comment than their `[2]`. So comment changes can't be detected from the `Zj93ge` listing; sweep them instead.
 
 ### Course membership (`O1Xqee`)
 `[2][0]`: `[0]` `[[courseId],[userId]]` · `[1]` role (3 student) · `[2]` the student's class Drive folder.
@@ -121,7 +126,7 @@ Materials (`t51ITc` → `[null, [[attachment, null, [itemKey, materialId]]…]]`
 - `source-path` is the page's pathname **including** the `/u/<n>` prefix. Requests send `x-same-domain: 1`. `_reqid` starts at a random 4-digit number and steps by 100000, as the page does.
 - `createRpcClient(transport, session)` sends only allow-listed rpcids (`READ_ONLY_RPCIDS`; anything else throws `RpcNotAllowedError` before a request is built). `Transport` is `(url, body) => Promise<string>`; `playwrightTransport(page)` runs `fetch` in the page. Ids are sent as JSON numbers via `num(id)` (textual, so ids beyond 2^53 survive).
 - `unwrapResponse`: `wrb.fr` row for the rpcid → payload; `null` payload → `RpcError` with the code at `[5]`; a login page → `SessionExpiredError`; anything else unexpected → `ParseDriftError`.
-- Request templates (`todoArgs`, `coursesArgs`, `submissionsArgs`, `materialsArgs`) are tested to equal the recorded requests in `fixtures/classroom/`.
+- Request templates (`todoArgs`, `coursesArgs`, `submissionsArgs`, `materialsArgs`, `privateCommentsArgs`) are tested to equal the recorded requests in `fixtures/classroom/`.
 - `pONvgf` items use the same mask as `tQShAc` and carry the description and material refs, so sync builds details from the listing plus `Zj93ge` (both masks) and `t51ITc`, without `tQShAc`. `listTodo` returns the parsed items (`items[].item`) next to the summaries.
 - Gotcha: functions passed to `page.evaluate` must not define named helpers. tsx (esbuild `keepNames`) wraps them in `__name(...)`, which doesn't exist in the page.
 
@@ -133,7 +138,7 @@ Materials (`t51ITc` → `[null, [[attachment, null, [itemKey, materialId]]…]]`
 - item kind: type 2 → `assignment` (→ `quiz` when a material is a Google Forms link), 7 → `material`, 5 → `question` (unverified), else `unknown`.
 - submission `[5]`: 2 `turned_in`, 3 `returned`, 4 `new`, 5 `reclaimed`. Bucket `[20]`: 1 `assigned`, 2 `missing`, 3 `turned_in`, 4 `done_late`, 7 `returned`, 8 `graded`, 10 `graded_late`, 11 `excused`. `late` comes from the bucket only. `[21]` becomes `turnedInAt` (state 2) or `returnedAt` (state 3).
 - attachment origin `[15]` and type `[3]` as above; Forms links become type/kind `form`. Annotated copies carry `annotatedSourceId` from `[14][3][1]`.
-- comment author: `student` when `[4][0]` equals the submission key's student id, else `teacher`.
+- comment author: `student` when `[4][0]` equals the submission key's student id, else `teacher` (`unknown` when either id is missing). `parsePrivateComments` also returns each comment's `itemId`, `courseId` and `studentId` (from `[0][2]`), so one batched response can be split per submission; `commentsHaveMore` reads `[1][0]`.
 - "Copy for each student" (unverified): a student Google-native file is linked to a Google-native material by `[14][3][1]` or by title (`<title>` or `… - <title>`) and gets `templateSourceId`; the material gets `isTemplate`.
 - Unknown enum values map to `unknown`; structural mismatches throw `ParseDriftError` with the rpcid and positional path.
 
@@ -150,7 +155,7 @@ Rendering pages is slow, about 24 XHRs per detail page, and the DOM is lossy (co
    - `Zj93ge` (list mask) in batches of about 100 keys → state, bucket and grade.
    - `Zj93ge` (mask `[null,1,null,1]`) for turned-in or returned submissions → student files.
    - `t51ITc` once per item with material refs (`base[27][0][4]`), only when `base[2]` (updated) changed.
-   - `sLc6hf` (private comments) per submission, only when the submission's `[2]` changed.
+   - `sLc6hf` (private comments) for all submissions, 100 keys per call. A new comment doesn't always change the submission's `[2]`, so this is a sweep, not a diff.
 3. Use the exact request templates (masks) from `fixtures/classroom/*.json`. Allow-list these read rpcids in code and never send any other rpcid.
 4. Keep the recon capture (`pnpm cli recon`) as the fallback and as a diagnostic when shapes drift. It renders the pages and records everything passively.
 

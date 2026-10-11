@@ -501,6 +501,32 @@ export function materialsArgs(itemId: string, courseId: string): unknown {
   return [[null, null, 1, 0], [[num(itemId), [num(courseId)]]], [MATERIALS_MASK]];
 }
 
+/** `sLc6hf` field mask for a comment. */
+export const COMMENTS_MASK = [1, 1, 1, 1, null, null, [1], 1, null, 3, [1, null, 1]];
+/** `sLc6hf` page size (`[0][0]`); a batch never came close to it. */
+export const COMMENTS_PAGE_SIZE = 100;
+/** Submission keys per `sLc6hf` call (tested live with 100 keys). */
+export const COMMENTS_BATCH = 100;
+
+/**
+ * `sLc6hf` args: the private comments of some submissions (≤ {@link COMMENTS_BATCH} keys).
+ * Filter `[3]` is a list of submission keys; `[4]` `[[1]]` picks private comments
+ * (`[[2]]` with `[1]` item keys are class comments).
+ */
+export function privateCommentsArgs(keys: readonly SubmissionKey[]): unknown {
+  return [
+    [COMMENTS_PAGE_SIZE, null, 1, 0],
+    COMMENTS_MASK,
+    [
+      [null, null, [2, 3]],
+      null,
+      null,
+      keys.map((k) => [num(k.studentId), [num(k.itemId), [num(k.courseId)]]]),
+      [[1]],
+    ],
+  ];
+}
+
 // ---- Playwright -------------------------------------------------------------------------
 
 export const SESSION_PAGE = "/a/not-turned-in/all";

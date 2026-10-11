@@ -2,6 +2,7 @@ export * from "./accounts.ts";
 export * from "./assignments.ts";
 export * from "./attachments.ts";
 export * from "./checks.ts";
+export * from "./comments.ts";
 export * from "./db.ts";
 export * from "./events.ts";
 export type {
@@ -11,6 +12,7 @@ export type {
   AssignmentVersion,
   Attachment,
   CheckResult,
+  Comment,
   Course,
   Event,
   Submission,

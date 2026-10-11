@@ -39,6 +39,7 @@ describe("loadConfig", () => {
       llmTimeoutMs: 180_000,
       runIntervalMin: 60,
       alertLookbackDays: 14,
+      backlogForgetDays: 14,
       fullRefreshDays: 7,
       syncDelayMs: 300,
       telegramChatIds: [],
@@ -70,6 +71,11 @@ describe("loadConfig", () => {
     expect(c.llmProvider).toBe("gemini");
     expect(c.claudeBin).toBe("from-env");
     expect(c.watchedAccounts).toEqual(["a@x.example", "b@x.example"]);
+  });
+
+  it("reads CA_BACKLOG_FORGET_DAYS", () => {
+    expect(load({ CA_BACKLOG_FORGET_DAYS: "21" }).backlogForgetDays).toBe(21);
+    expect(() => load({ CA_BACKLOG_FORGET_DAYS: "0" })).toThrow(/backlogForgetDays/);
   });
 
   it("ignores empty env values", () => {

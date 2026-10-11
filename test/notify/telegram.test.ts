@@ -342,6 +342,61 @@ describe("TelegramNotifier", () => {
     expect(await sentAt(byHand.alert.id)).not.toBeNull();
   });
 
+  it("repeats open debts in every digest until acked, and counts them in /status", async () => {
+    const { account } = await seed();
+    await muteAlert(db, (await db.alert.findFirstOrThrow({ where: { level: "alert" } })).id, clock);
+    await db.alert.updateMany({ data: { sentAt: clock } }); // nothing new pending
+    const course = await db.course.findFirstOrThrow();
+    const { assignment } = await upsertAssignment(db, {
+      accountId: account.id,
+      courseId: course.id,
+      classroomId: "333",
+      kind: "assignment",
+      title: "Overdue <map>",
+      status: "assigned",
+      dueAt: at(18, 0, 7),
+      hash: "o",
+      payload: {},
+    });
+    const missing = await raiseAlert(
+      db,
+      { key: `deadline:${assignment.id}:missing`, level: "panic", message: "missing" },
+      at(18, 0, 7),
+    );
+    await db.alert.update({ where: { id: missing.alert.id }, data: { sentAt: at(18, 0, 7) } });
+    const f = fakeFetch();
+    const n = notifier(f);
+
+    clock = at(19, 5);
+    await n.afterCycle();
+    expect(f.sent()).toHaveLength(1);
+    const digest = String(f.sent()[0]?.body.text);
+    expect(digest).toContain("Daily digest");
+    expect(digest).toContain(
+      `📌 <i>Open debts</i>\n⏰ not turned in: &quot;Overdue &lt;map&gt;&quot; (Math) · 3 days · <a href="https://classroom.google.com/c/MTEx/a/MzMz/details?authuser=student-one%40school.example">open</a> · /ack_${missing.alert.id}`,
+    );
+
+    // Next day: repeated, a day older.
+    clock = at(19, 5, 11);
+    await n.afterCycle();
+    expect(f.sent()).toHaveLength(2);
+    expect(String(f.sent()[1]?.body.text)).toContain("· 4 days ·");
+
+    const msg = (text: string): TgUpdate => ({
+      update_id: 1,
+      message: { message_id: 1, date: 0, chat: { id: Number(CHAT), type: "private" }, text },
+    });
+    await n.handleUpdate(msg("/status"));
+    expect(String(f.sent()[2]?.body.text)).toContain("📌 Open debts: 1");
+
+    // Acked: gone from the digest and /status.
+    await n.handleUpdate(msg(`/ack_${missing.alert.id}`));
+    await n.handleUpdate(msg("/digest"));
+    expect(String(f.sent()[4]?.body.text)).toBe("Nothing pending.");
+    await n.handleUpdate(msg("/status"));
+    expect(String(f.sent()[5]?.body.text)).toContain("📌 Open debts: 0");
+  });
+
   it("holds the digest during quiet hours; panics still go out", async () => {
     await seed();
     const f = fakeFetch();

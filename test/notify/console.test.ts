@@ -361,6 +361,41 @@ describe("report", () => {
     expect(formatReport(digest, { timeZone: TZ })).toContain("🔍 Check by hand");
   });
 
+  it("adds an open debts block, leaving out debts whose alert is already listed", async () => {
+    await seed();
+    const past = await db.assignment.findFirstOrThrow({ where: { title: "Past" } });
+    const fractions = await db.assignment.findFirstOrThrow({ where: { title: "Fractions" } });
+    // "Past" went missing 5h ago: a debt; its panic was sent and is out of a 1h window.
+    const missing = await raiseAlert(
+      db,
+      { key: `deadline:${past.id}:missing`, level: "panic", message: "Missing: Past" },
+      ago(5),
+    );
+    await db.alert.update({ where: { id: missing.alert.id }, data: { sentAt: ago(5) } });
+    // An old overdue item (posted before the forget window) is forgotten.
+    await db.assignment.update({
+      where: { id: fractions.id },
+      data: { dueAt: new Date(NOW.getTime() - 20 * 24 * H) },
+    });
+
+    const report = await buildReport(db, { now: NOW, since: ago(1), backlog: { forgetDays: 14 } });
+    const one = report.accounts[0];
+    expect(one?.backlog.map((d) => [d.kind, d.title, d.alertId])).toEqual([
+      ["missing", "Past", missing.alert.id],
+    ]);
+    const text = formatReport(report, { timeZone: TZ });
+    expect(text).toContain(
+      `📌 Open debts\n  • ⏰ not turned in: "Past" (Math) · today · #${missing.alert.id}\n      https://classroom.google.com/c/`,
+    );
+
+    // In a wider window the panic itself is listed, so the debt isn't repeated.
+    const wide = await buildReport(db, { now: NOW, since: ago(24), backlog: { forgetDays: 14 } });
+    expect(wide.accounts[0]?.panics.map((a) => a.message)).toContain("Missing: Past");
+    expect(wide.accounts[0]?.backlog).toEqual([]);
+    // Without the option there's no backlog at all.
+    expect((await buildReport(db, { now: NOW, since: ago(1) })).accounts[0]?.backlog).toEqual([]);
+  });
+
   it("says so when nothing is watched", async () => {
     const text = formatReport(await buildReport(db, { now: NOW }), { timeZone: TZ });
     expect(text).toContain("No watched accounts");

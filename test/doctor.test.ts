@@ -50,6 +50,7 @@ const base: Config = {
   llmTimeoutMs: 1000,
   runIntervalMin: 60,
   alertLookbackDays: 14,
+  backlogForgetDays: 14,
   fullRefreshDays: 7,
   syncDelayMs: 0,
   telegramChatIds: [],

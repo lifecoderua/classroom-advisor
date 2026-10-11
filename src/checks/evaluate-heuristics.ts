@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { extname, join } from "node:path";
+import { officeSummaryPath } from "../collector/files.ts";
+import { isOfficeSummary, type OfficeSummary } from "../collector/office.ts";
 import {
   type Attachment,
   COMMENT_AUTHOR_ROLES,
@@ -48,6 +50,29 @@ export function cachedImagePath(dataDir: string): ImagePathOf {
       : undefined;
 }
 
+/** Structure summary of an Office/Slides attachment, when one is cached. */
+export type ReadOffice = (attachment: Attachment) => Promise<OfficeSummary | undefined>;
+
+/** Reads `<stem>.office.json` next to a cached `<stem>.txt` (see `fetchAttachment`). */
+export function cachedOfficeReader(dataDir: string): ReadOffice {
+  return async (a) => {
+    if (!a.contentPath?.endsWith(".txt")) return undefined;
+    try {
+      const v: unknown = JSON.parse(
+        await readFile(join(dataDir, officeSummaryPath(a.contentPath)), "utf8"),
+      );
+      return isOfficeSummary(v) ? v : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+}
+
+export interface LoadOptions {
+  imagePathOf?: ImagePathOf | undefined;
+  readOffice?: ReadOffice | undefined;
+}
+
 function instructionsOf(payload: string | undefined): string {
   if (!payload) return "";
   try {
@@ -67,7 +92,7 @@ export async function loadTurnedInInput(
   db: Db,
   submissionVersionId: number,
   readText: ReadText,
-  imagePathOf?: ImagePathOf,
+  { imagePathOf, readOffice }: LoadOptions = {},
 ): Promise<TurnedInInput | null> {
   const v = await db.submissionVersion.findUnique({
     where: { id: submissionVersionId },
@@ -93,6 +118,7 @@ export async function loadTurnedInInput(
   const { assignment } = v.submission;
   const toItem = async (a: Attachment): Promise<HeuristicAttachment & HeuristicMaterial> => {
     const imagePath = imagePathOf?.(a);
+    const office = await readOffice?.(a);
     return {
       kind: kindFromMime(a.mime, a.url),
       title: a.title ?? a.url,
@@ -101,6 +127,7 @@ export async function loadTurnedInInput(
       ...(a.isTemplate ? { isTemplate: true } : {}),
       ...(a.templateSourceId ? { templateSourceId: a.templateSourceId } : {}),
       ...(imagePath ? { imagePath } : {}),
+      ...(office ? { office } : {}),
     };
   };
   const byOwner = (owner: string) =>
@@ -134,7 +161,8 @@ export async function evaluateTurnedIn(
   db: Db,
   submissionVersionId: number,
   readText: ReadText,
+  opts: LoadOptions = {},
 ): Promise<TurnedInResult | null> {
-  const input = await loadTurnedInInput(db, submissionVersionId, readText);
+  const input = await loadTurnedInInput(db, submissionVersionId, readText, opts);
   return input && turnedInSignals(input);
 }

@@ -1,6 +1,7 @@
 // Turned-in heuristics (D6): pure functions over a plain snapshot. They emit signals with a
 // confidence for the LLM pass; only clear-cut cases (an untouched template) carry a direct verdict.
 
+import { type OfficeStats, type OfficeSummary, officeStats } from "../collector/office.ts";
 import type { ReviewInput } from "../llm/types.ts";
 
 /** Same shape as `ReviewInput.signals[number]`. */
@@ -28,6 +29,8 @@ export interface HeuristicMaterial {
   text?: string | null | undefined;
   /** "Make a copy for each student". */
   isTemplate?: boolean | undefined;
+  /** Structure of an Office file or Google Slides (slides, pictures, animations). */
+  office?: OfficeSummary | undefined;
 }
 
 export interface HeuristicAttachment {
@@ -41,6 +44,8 @@ export interface HeuristicAttachment {
   bytes?: number | null | undefined;
   /** Absolute path to a local image of the attachment (carried for the LLM pass). */
   imagePath?: string | undefined;
+  /** Structure of an Office file or Google Slides (slides, pictures, animations). */
+  office?: OfficeSummary | undefined;
 }
 
 export interface TurnedInInput {
@@ -198,6 +203,38 @@ export function kindHints(input: TurnedInInput): Signal[] {
   return out;
 }
 
+const STRUCTURE_PARTS: ReadonlyArray<[keyof OfficeStats, string]> = [
+  ["slides", "slides"],
+  ["pictures", "pictures"],
+  ["shapes", "shapes"],
+  ["animations", "animation effects"],
+  ["slidesWithTransition", "slide transitions"],
+];
+
+/**
+ * Non-text work in an Office file / Slides beyond its template (`base`), e.g.
+ * `["+2 pictures", "+5 animation effects"]`. Empty without a structure summary.
+ */
+export function structureAdded(
+  office: OfficeSummary | undefined,
+  base?: OfficeSummary | undefined,
+): string[] {
+  if (!office) return [];
+  const own = officeStats(office);
+  const tpl = base ? officeStats(base) : undefined;
+  const out: string[] = [];
+  for (const [key, label] of STRUCTURE_PARTS) {
+    // Slide and shape counts alone don't show work when there is no template to compare with.
+    if (!tpl && (key === "slides" || key === "shapes")) continue;
+    const d = own[key] - (tpl?.[key] ?? 0);
+    if (d > 0) out.push(`${tpl ? "+" : ""}${d} ${label}`);
+  }
+  return out;
+}
+
+/** Confidence of `empty_or_tiny_doc` / `template_unchanged` when pictures or effects were added. */
+const WITH_STRUCTURE_CONFIDENCE = 0.3;
+
 const clamp = (x: number) => Math.round(Math.min(0.95, Math.max(0.05, x)) * 100) / 100;
 
 function hasHint(hints: readonly Signal[], ...details: KindHint[]): boolean {
@@ -287,6 +324,17 @@ export function turnedInSignals(input: TurnedInInput): TurnedInResult {
       if (!best || sim > best.sim) best = { m, sim };
     }
     if (best && best.sim >= UNCHANGED_SIMILARITY) {
+      // Same text, but pictures/animations were added (e.g. "add animation effects"): not a
+      // returned template, the LLM judges the structure.
+      const added = best.m.office ? structureAdded(att.office, best.m.office) : [];
+      if (added.length > 0) {
+        signals.push({
+          code: "template_unchanged",
+          confidence: WITH_STRUCTURE_CONFIDENCE,
+          detail: `"${att.title}" has the text of "${best.m.title}" (similarity ${best.sim.toFixed(3)}), but ${added.join(", ")}`,
+        });
+        continue;
+      }
       unchanged++;
       const same = best.sim >= IDENTICAL_SIMILARITY;
       if (same && tokenize(best.m.text).length >= MIN_TEMPLATE_WORDS) identical++;
@@ -298,13 +346,17 @@ export function turnedInSignals(input: TurnedInInput): TurnedInResult {
       continue;
     }
 
-    const base = best && best.sim >= 0.3 ? best.m.text : "";
-    const words = addedWordCount(att.text, base);
+    const baseM = best && best.sim >= 0.3 ? best.m : undefined;
+    const words = addedWordCount(att.text, baseM?.text ?? "");
     if (words < TINY_WORDS) {
+      // Few words can still be real work on slides: pictures, animations.
+      const added = structureAdded(att.office, baseM?.office);
       signals.push({
         code: "empty_or_tiny_doc",
-        confidence: clamp(words === 0 ? 0.8 : 0.6 - (0.3 * words) / TINY_WORDS),
-        detail: `"${att.title}" has ${words} own words`,
+        confidence: added.length
+          ? WITH_STRUCTURE_CONFIDENCE
+          : clamp(words === 0 ? 0.8 : 0.6 - (0.3 * words) / TINY_WORDS),
+        detail: `"${att.title}" has ${words} own words${added.length ? `, but ${added.join(", ")}` : ""}`,
       });
     }
   }

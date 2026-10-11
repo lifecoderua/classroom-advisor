@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -11,6 +11,7 @@ import {
   fetchAttachmentContents,
   type HttpGet,
   type HttpResponse,
+  officeSummaryPath,
   SessionExpiredError,
 } from "../src/collector/files.ts";
 import {
@@ -21,9 +22,11 @@ import {
   upsertAssignment,
   upsertCourse,
 } from "../src/store/index.ts";
+import { makeDocx, makePptx, makeXlsx } from "./ooxml.ts";
 import { migratedTemplate } from "./store/helpers.ts";
 
 const ID = "1AbCdEfGhIjKlMnOp";
+const PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 const MOD = new Date("2026-10-01T08:00:00.000Z");
 
 /** Minimal valid one-page PDF with a Helvetica text line. */
@@ -137,20 +140,125 @@ describe("fetchAttachment", () => {
     expect(newer.cached).toBe(false);
   });
 
-  it("uses the right export urls for Slides and Sheets", async () => {
+  it("exports Sheets as csv", async () => {
     const s = stub(() => res("a,b\n1,2", { type: "text/csv" }));
-    const slides = ok(
-      await fetchAttachment({ driveFileId: ID, url: "u", kind: "slides" }, { get: s.get, dataDir }),
-    );
     const sheet = ok(
       await fetchAttachment({ driveFileId: ID, url: "u", kind: "sheet" }, { get: s.get, dataDir }),
     );
-    expect(s.calls).toEqual([
-      `https://docs.google.com/presentation/d/${ID}/export/txt`,
-      `https://docs.google.com/spreadsheets/d/${ID}/export?format=csv`,
-    ]);
-    expect(slides.contentPath).toBe(`files/${ID}/nomod.txt`);
+    expect(s.calls).toEqual([`https://docs.google.com/spreadsheets/d/${ID}/export?format=csv`]);
     expect(sheet.contentPath).toBe(`files/${ID}/nomod.csv`);
+  });
+
+  it("exports Slides as pptx and stores text + structure", async () => {
+    const deck = Buffer.from(
+      makePptx([
+        { texts: ["Тема"], transition: "fade" },
+        { texts: ["Мій об'єкт"], pictures: 1, animations: ["entr", "emph"] },
+      ]),
+    );
+    const s = stub(() => res(deck, { type: PPTX_MIME }));
+    const target = { driveFileId: ID, url: "u", kind: "slides" as const, modifiedAt: MOD };
+    const r = ok(await fetchAttachment(target, { get: s.get, dataDir }));
+    expect(s.calls).toEqual([`https://docs.google.com/presentation/d/${ID}/export/pptx`]);
+    const stem = `files/${ID}/2026-10-01T08-00-00-000Z`;
+    expect(r).toMatchObject({ contentPath: `${stem}.txt`, rawPath: `${stem}.pptx` });
+    expect(readFileSync(join(dataDir, r.contentPath), "utf8")).toBe("Тема\n\nМій об'єкт");
+    const summary = JSON.parse(
+      readFileSync(join(dataDir, officeSummaryPath(r.contentPath)), "utf8"),
+    );
+    expect(summary.slides[1]).toMatchObject({ pictures: 1, animations: 2 });
+
+    const again = ok(await fetchAttachment(target, { get: s.get, dataDir }));
+    expect(again).toMatchObject({ cached: true, contentPath: r.contentPath, rawPath: r.rawPath });
+    expect(s.calls).toHaveLength(1);
+  });
+
+  it("falls back to the Slides text export when the pptx export fails", async () => {
+    const s = stub((url) =>
+      url.includes("/export/pptx") ? res(Buffer.alloc(20)) : res("Слайд 1", { type: "text/plain" }),
+    );
+    const r = ok(
+      await fetchAttachment(
+        { driveFileId: ID, url: "u", kind: "slides" },
+        { get: s.get, dataDir, maxBytes: 15 },
+      ),
+    );
+    expect(s.calls).toEqual([
+      `https://docs.google.com/presentation/d/${ID}/export/pptx`,
+      `https://docs.google.com/presentation/d/${ID}/export/txt`,
+    ]);
+    expect(r.contentPath).toBe(`files/${ID}/nomod.txt`);
+    expect(r.rawPath).toBeUndefined();
+  });
+
+  it("recognizes uploaded Office files whatever the mime and extracts text", async () => {
+    for (const [body, ext, text] of [
+      [makeDocx(["Твір про осінь"], { images: 1 }), "docx", "Твір про осінь"],
+      [makePptx([{ texts: ["Слайд"] }]), "pptx", "Слайд"],
+      [makeXlsx("S", [["a", 1]]), "xlsx", "a\t1"],
+    ] as const) {
+      const dir = mkdtempSync(join(tmpdir(), "ca-files-office-"));
+      try {
+        const s = stub(() => res(Buffer.from(body), { type: "application/octet-stream" }));
+        const target = { driveFileId: ID, url: "u", kind: "other" as const, modifiedAt: MOD };
+        const r = ok(await fetchAttachment(target, { get: s.get, dataDir: dir }));
+        const stem = `files/${ID}/2026-10-01T08-00-00-000Z`;
+        expect(r).toMatchObject({ contentPath: `${stem}.txt`, rawPath: `${stem}.${ext}` });
+        expect(readFileSync(join(dir, r.contentPath), "utf8")).toBe(text);
+        expect(readdirSync(join(dir, "files", ID)).sort()).toEqual(
+          [
+            `2026-10-01T08-00-00-000Z.${ext}`,
+            "2026-10-01T08-00-00-000Z.office.json",
+            "2026-10-01T08-00-00-000Z.txt",
+          ].sort(),
+        );
+        const again = ok(await fetchAttachment(target, { get: s.get, dataDir: dir }));
+        expect(again).toMatchObject({
+          cached: true,
+          contentPath: r.contentPath,
+          rawPath: r.rawPath,
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("upgrades a cached .bin that is an Office file without refetching", async () => {
+    const dir = join(dataDir, "files", ID);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "2026-10-01T08-00-00-000Z.bin"), makeDocx(["Старий файл"]));
+    const s = stub(() => res("should not be fetched"));
+    const target = { driveFileId: ID, url: "u", kind: "other" as const, modifiedAt: MOD };
+    const r = ok(await fetchAttachment(target, { get: s.get, dataDir }));
+    expect(s.calls).toHaveLength(0);
+    expect(r).toMatchObject({
+      cached: true,
+      contentPath: `files/${ID}/2026-10-01T08-00-00-000Z.txt`,
+      rawPath: `files/${ID}/2026-10-01T08-00-00-000Z.docx`,
+    });
+    expect(readFileSync(join(dataDir, r.contentPath), "utf8")).toBe("Старий файл");
+  });
+
+  it("keeps a non-Office .bin as it is", async () => {
+    const dir = join(dataDir, "files", ID);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "2026-10-01T08-00-00-000Z.bin"), "opaque");
+    const s = stub(() => res("x"));
+    const target = { driveFileId: ID, url: "u", kind: "other" as const, modifiedAt: MOD };
+    const r = ok(await fetchAttachment(target, { get: s.get, dataDir }));
+    expect(r).toMatchObject({
+      cached: true,
+      contentPath: `files/${ID}/2026-10-01T08-00-00-000Z.bin`,
+    });
+    expect(s.calls).toHaveLength(0);
+  });
+
+  it("rejects a Slides export that is not a pptx", async () => {
+    const s = stub(() => res(Buffer.from("not a pptx"), { type: PPTX_MIME }));
+    expect(
+      await fetchAttachment({ driveFileId: ID, url: "u", kind: "slides" }, { get: s.get, dataDir }),
+    ).toMatchObject({ ok: false, error: "Slides export is not a pptx file" });
   });
 
   it("refetches unversioned (nomod) files every time", async () => {

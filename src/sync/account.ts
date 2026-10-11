@@ -448,7 +448,14 @@ export async function syncAccount(
     // are never reviewed, so their files are not downloaded.
     if (source.httpGet && !baseline && turnedIn.length > 0) {
       const rows = await db.attachment.findMany({
-        where: { assignmentId: { in: turnedIn }, contentPath: null },
+        // `.bin` = an untyped file cached before Office detection: re-examined locally (no refetch).
+        where: {
+          assignmentId: { in: turnedIn },
+          OR: [
+            { contentPath: null },
+            { contentPath: { endsWith: ".bin" }, modifiedAt: { not: null } },
+          ],
+        },
         orderBy: { id: "asc" },
       });
       const outcomes = await fetchAttachmentContents(

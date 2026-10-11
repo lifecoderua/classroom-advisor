@@ -17,6 +17,7 @@ import {
   reviewSubmission,
   truncate,
 } from "../../src/checks/quality.ts";
+import type { PptxSummary } from "../../src/collector/office.ts";
 import { FakeProvider, LlmError, type ReviewOutput } from "../../src/llm/index.ts";
 import {
   type Db,
@@ -131,10 +132,54 @@ describe("pure helpers", () => {
     expect(total).toBeLessThanOrEqual(DEFAULT_BUDGET.comments);
   });
 
+  it("passes presentation structure and slide-labelled text to the LLM", () => {
+    const office: PptxSummary = {
+      format: "pptx",
+      slides: [
+        {
+          index: 1,
+          text: "Мій об'єкт",
+          pictures: 1,
+          shapes: 2,
+          animations: 3,
+          animationClasses: { entr: 2, emph: 1 },
+          transition: "fade",
+        },
+      ],
+    };
+    const s = snapshot();
+    const input = buildReviewInput(
+      {
+        ...s,
+        assignment: { ...s.assignment, materials: [{ kind: "slides", title: "Шаблон" }] },
+        submission: {
+          ...s.submission,
+          attachments: [{ kind: "slides", title: "Анімація", text: "Мій об'єкт", office }],
+        },
+        comments: [{ authorRole: "teacher", postedAt: T0, text: "Додай анімацію." }],
+      },
+      { signals: [] },
+    );
+    // Comments and structure travel together.
+    expect(input.comments).toEqual([
+      { author: "teacher", postedAt: T0.toISOString(), text: "Додай анімацію." },
+    ]);
+    expect(input.submission.attachments[0]).toEqual({
+      kind: "slides",
+      title: "Анімація",
+      text: "[slide 1]\nМій об'єкт",
+      structure: expect.stringContaining(
+        "slide 1: 1 pictures, 2 shapes, 3 animations (entr 2, emph 1), transition fade",
+      ),
+    });
+    expect(input.materials[0]).toEqual({ kind: "slides", title: "Шаблон" });
+  });
+
   it("loads the versioned prompt", () => {
     expect(REVIEW_PROMPT_VERSION).toBe("review.v2");
     expect(reviewPrompt()).toContain("hints, not facts");
     expect(reviewPrompt()).toContain("`comments`");
+    expect(reviewPrompt()).toContain("`structure`");
   });
 });
 

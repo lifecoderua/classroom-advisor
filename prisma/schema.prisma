@@ -206,7 +206,12 @@ model Alert {
   level     String
   message   String
   createdAt DateTime  @default(now())
+  /// Delivered to Telegram (the only push channel; the console never sets it). Also set by
+  /// `/ack`, so a muted alert never goes out.
   sentAt    DateTime?
+  /// Muted with the Telegram `/ack <id>` command: left out of digests, `/status` and the
+  /// default console report.
+  mutedAt   DateTime?
 
   @@index([sentAt])
 }

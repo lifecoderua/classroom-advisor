@@ -52,3 +52,24 @@ export function setWatched(cwd: string, email: string, watched: boolean): WatchC
   writeFileSync(path, `${JSON.stringify({ ...raw, watchedAccounts: next }, null, 2)}\n`);
   return { changed: true, watchedAccounts: next };
 }
+
+/**
+ * Adds a Telegram chat id to `telegramChatIds` of `config.local.json`, keeping other keys.
+ * Returns whether it changed and the resulting list.
+ */
+export function addTelegramChat(
+  cwd: string,
+  chatId: string,
+): { changed: boolean; chatIds: string[] } {
+  const path = join(cwd, LOCAL_CONFIG_FILE);
+  const raw = readRaw(path);
+  const id = chatId.trim();
+  if (!/^-?\d+$/.test(id)) throw new ConfigError(`Not a Telegram chat id: ${chatId}`);
+  const parsed = z.array(z.string()).optional().safeParse(raw.telegramChatIds);
+  if (!parsed.success) throw new ConfigError(`${path}: telegramChatIds must be a list of ids`);
+  const current = parsed.data ?? [];
+  if (current.includes(id)) return { changed: false, chatIds: current };
+  const next = [...current, id];
+  writeFileSync(path, `${JSON.stringify({ ...raw, telegramChatIds: next }, null, 2)}\n`);
+  return { changed: true, chatIds: next };
+}

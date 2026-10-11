@@ -41,6 +41,8 @@ describe("loadConfig", () => {
       alertLookbackDays: 14,
       fullRefreshDays: 7,
       syncDelayMs: 300,
+      telegramChatIds: [],
+      telegramDigestTime: "19:00",
     });
   });
 
@@ -92,6 +94,25 @@ describe("loadConfig", () => {
     expect(load({ GEMINI_API_KEY: "from-env" }).geminiApiKey).toBe("from-env");
     writeJson({ geminiApiKey: "in-json" });
     expect(() => load()).toThrow(ConfigError);
+  });
+
+  it("reads TELEGRAM_BOT_TOKEN from env or .env only, chat ids from CA_TELEGRAM_CHAT_IDS", () => {
+    expect(load()).not.toHaveProperty("telegramBotToken");
+    writeFileSync(
+      join(dir, ".env"),
+      "TELEGRAM_BOT_TOKEN=from-dotenv\nCA_TELEGRAM_CHAT_IDS=111, -222\nCA_TELEGRAM_DIGEST_TIME=20:30\n",
+    );
+    expect(load()).toMatchObject({
+      telegramBotToken: "from-dotenv",
+      telegramChatIds: ["111", "-222"],
+      telegramDigestTime: "20:30",
+    });
+    expect(load({ TELEGRAM_BOT_TOKEN: "from-env" }).telegramBotToken).toBe("from-env");
+    writeJson({ telegramBotToken: "in-json" });
+    expect(() => load()).toThrow(ConfigError);
+    writeFileSync(join(dir, ".env"), "");
+    writeJson({ telegramChatIds: ["@channel"] });
+    expect(() => load()).toThrow(/telegramChatIds/);
   });
 
   it("rejects malformed JSON", () => {

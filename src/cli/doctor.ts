@@ -119,6 +119,16 @@ export function runDoctor(config: Config): CheckResult[] {
         ? `GEMINI_API_KEY set (model ${config.geminiModel})`
         : `GEMINI_API_KEY not set${config.llmProvider === "gemini" ? " (required by llmProvider gemini)" : ""}`,
     },
+    {
+      // Optional notifier; never print the token. A token without a linked chat is a half setup.
+      name: "Telegram",
+      ok: !config.telegramBotToken || config.telegramChatIds.length > 0,
+      detail: !config.telegramBotToken
+        ? "TELEGRAM_BOT_TOKEN not set (console only)"
+        : config.telegramChatIds.length > 0
+          ? `token set, ${config.telegramChatIds.length} chat(s), digest at ${config.telegramDigestTime}`
+          : "token set, no chat linked (run telegram link)",
+    },
   ];
 }
 

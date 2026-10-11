@@ -56,7 +56,10 @@ export interface Report {
 
 export interface BuildReportOptions {
   now?: Date;
-  /** Window start: alerts created since then (plus any unsent) and work turned in since then. */
+  /**
+   * Window start: alerts created since then (plus any unsent; muted ones left out) and work
+   * turned in since then.
+   */
   since?: Date | null;
   /** Config watch list; accounts marked watched in the DB are always included. */
   watchedEmails?: readonly string[];
@@ -169,7 +172,7 @@ export async function buildReport(db: Db, opts: BuildReportOptions = {}): Promis
     where: alertsOnly
       ? { id: { in: [...(opts.alertIds ?? [])] } }
       : since
-        ? { OR: [{ sentAt: null }, { createdAt: { gte: since } }] }
+        ? { mutedAt: null, OR: [{ sentAt: null }, { createdAt: { gte: since } }] }
         : {},
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   });

@@ -10,7 +10,7 @@ Status: early PoC. See the [issues](https://github.com/lifecoderua/classroom-adv
 
 ## How it works (short)
 
-There is no Classroom API (the school domain blocks it, and Apps Script too). Instead, a **dedicated Chrome profile** stays logged in to the kids' accounts. We log in by hand **once**; the tool never automates logins. A collector drives that profile with Playwright over CDP and reads Classroom's own network responses. The data goes into SQLite, which is diffed so each assignment is cached and only re-checked when it changes. It's then checked by heuristics plus an LLM second pass (`claude -p` by default, Gemini optional). Alerts go to the console now and Telegram next.
+There is no Classroom API (the school domain blocks it, and Apps Script too). Instead, a **dedicated Chrome profile** stays logged in to the kids' accounts. We log in by hand **once**; the tool never automates logins. A collector drives that profile with Playwright over CDP and reads Classroom's own network responses. The data goes into SQLite, which is diffed so each assignment is cached and only re-checked when it changes. It's then checked by heuristics plus an LLM second pass (`claude -p` by default, Gemini optional). Alerts go to the console and, when configured, to a Telegram bot (panics at once, the rest in a daily digest).
 
 Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/DECISIONS.md](docs/DECISIONS.md) · [docs/CLASSROOM-INTERNALS.md](docs/CLASSROOM-INTERNALS.md) · [docs/DEPLOY.md](docs/DEPLOY.md) (Docker, microVM)
 
@@ -24,6 +24,7 @@ Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/DECISIONS.md](doc
 2. Install the `claude` CLI and log in, if you want the default LLM provider.
 3. `pnpm i`, then `pnpm db:migrate`, then `pnpm cli doctor`. Commands are documented in the CLI's `--help` as they land.
 4. `pnpm cli accounts watch <email>` for each kid, then `pnpm cli sync`. The first sync per account is a baseline: it stores everything and only raises alerts for work that is missing or due within 24h. After that, `pnpm cli run` keeps syncing and checking every hour.
+5. Optional, Telegram: create a bot with @BotFather, put its token in `.env` as `TELEGRAM_BOT_TOKEN`, send `/start` to the bot from your Telegram, then `pnpm cli telegram link` (saves your chat id to `config.local.json`; `--chat <id>` when several chats wrote to it) and `pnpm cli telegram test`. While `run` is going, the bot answers `/status`, `/digest` and `/ack <id>` in linked chats only.
 
 ## Privacy
 

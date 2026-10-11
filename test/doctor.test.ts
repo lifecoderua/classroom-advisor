@@ -52,6 +52,8 @@ const base: Config = {
   alertLookbackDays: 14,
   fullRefreshDays: 7,
   syncDelayMs: 0,
+  telegramChatIds: [],
+  telegramDigestTime: "19:00",
 };
 
 describe("runDoctor", () => {
@@ -63,6 +65,7 @@ describe("runDoctor", () => {
       "Profile dir",
       "claude CLI",
       "Gemini key",
+      "Telegram",
     ]);
     expect(results.find((r) => r.name === "Node")?.ok).toBe(true);
     expect(results.find((r) => r.name === "Profile dir")?.ok).toBe(false);
@@ -80,6 +83,18 @@ describe("runDoctor", () => {
     expect(set?.ok).toBe(true);
     expect(set?.detail).toContain("set");
     expect(set?.detail).not.toContain("sekret-123");
+  });
+});
+
+describe("runDoctor Telegram", () => {
+  it("reports the token and linked chats without printing the token", () => {
+    const tg = (c: Config) => runDoctor(c).find((r) => r.name === "Telegram");
+    expect(tg(base)).toMatchObject({ ok: true, detail: expect.stringContaining("not set") });
+    const unlinked = tg({ ...base, telegramBotToken: "123:sekret" });
+    expect(unlinked).toMatchObject({ ok: false, detail: expect.stringContaining("telegram link") });
+    const linked = tg({ ...base, telegramBotToken: "123:sekret", telegramChatIds: ["42"] });
+    expect(linked?.ok).toBe(true);
+    expect(linked?.detail).not.toContain("sekret");
   });
 });
 

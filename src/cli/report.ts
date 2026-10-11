@@ -7,7 +7,8 @@ import {
 import { loadConfig } from "../config/index.ts";
 import { createProvider } from "../llm/index.ts";
 import { buildReport, formatReport } from "../notify/console.ts";
-import { runCycle, runLoop } from "../run/cycle.ts";
+import { TelegramApi, TelegramNotifier, telegramStatePath } from "../notify/telegram.ts";
+import { abortableSleep, runCycle, runLoop } from "../run/cycle.ts";
 import { acquireRunLock } from "../run/lock.ts";
 import { parseDuration, parseQuietHours } from "../run/schedule.ts";
 import { openDb } from "../store/index.ts";
@@ -84,6 +85,26 @@ export function registerReportCommands(program: Command): void {
       const log = (line: string) => console.log(`[${stamp()}] ${line}`);
       try {
         const provider = createProvider(config);
+        const notifier =
+          config.telegramBotToken && config.telegramChatIds.length > 0
+            ? new TelegramNotifier({
+                db,
+                api: new TelegramApi(config.telegramBotToken),
+                chatIds: config.telegramChatIds,
+                digestTime: config.telegramDigestTime,
+                ...(quietHours ? { quietHours } : {}),
+                statePath: telegramStatePath(config.dataDir),
+                watchedEmails: config.watchedAccounts,
+                log,
+              })
+            : undefined;
+        if (notifier) {
+          log(
+            `telegram: ${config.telegramChatIds.length} chat(s), digest at ${config.telegramDigestTime}`,
+          );
+        } else if (config.telegramBotToken) {
+          log("telegram: token set but no chat linked (run telegram link); console only");
+        }
         if (!opts.once) {
           const quiet = config.quietHours ? `, quiet ${config.quietHours}` : "";
           log(`every ${config.runIntervalMin} min${quiet}; Ctrl-C to stop`);
@@ -94,6 +115,8 @@ export function registerReportCommands(program: Command): void {
           once: Boolean(opts.once),
           signal: controller.signal,
           log,
+          // With Telegram, the wait between cycles long-polls for commands and sends the digest.
+          sleep: notifier ? (ms, signal) => notifier.idle(ms, signal) : abortableSleep,
           cycle: async () => {
             log("cycle start");
             const res = await runCycle({
@@ -111,6 +134,7 @@ export function registerReportCommands(program: Command): void {
               log,
             });
             if (res.digest) console.log(res.digest);
+            await notifier?.afterCycle();
             const errs = res.errors.length ? `, ${res.errors.length} error(s)` : "";
             log(
               `cycle done: ${res.newAlertIds.length} new alert(s), ${res.reviewed} reviewed${errs}`,

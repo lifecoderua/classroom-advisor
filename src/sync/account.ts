@@ -432,13 +432,22 @@ export async function syncAccount(
           classroomId: true,
           baseline: true,
           title: true,
+          dueAt: true,
           course: { select: { name: true } },
+          submission: { select: { state: true, turnedInAt: true } },
         },
       });
       const targets = new Map<string, CommentTarget>(
         rows.map((r) => [
           r.classroomId,
-          { id: r.id, baseline: r.baseline, title: r.title, courseName: r.course.name },
+          {
+            id: r.id,
+            baseline: r.baseline,
+            title: r.title,
+            courseName: r.course.name,
+            dueAt: r.dueAt,
+            submission: r.submission,
+          },
         ]),
       );
       const created = await applyComments(

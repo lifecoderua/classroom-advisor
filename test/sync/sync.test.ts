@@ -433,7 +433,11 @@ describe("syncAccount: private comments", () => {
       ["111111111105", "teacher"],
     ]);
     const alerts = await commentAlerts();
-    expect(alerts.map((a) => a.level)).toEqual(["alert", "alert"]);
+    // A request to redo/attach is a panic; other teacher comments stay alerts.
+    expect(alerts.map((a) => [a.level, a.message.includes("redo")]).sort()).toEqual([
+      ["alert", false],
+      ["panic", true],
+    ]);
     expect(alerts.map((x) => x.message)).toContainEqual(
       expect.stringMatching(/^Teacher comment on ".+" \(.+\): redo exercise 3, attach photo$/),
     );
@@ -450,9 +454,8 @@ describe("syncAccount: private comments", () => {
     // The digest files the alerts under the account.
     const report = await buildReport(db, { now: at(4), watchedEmails: [SESSION.authuser] });
     expect(report.other).toEqual([]);
-    expect(report.accounts[0]?.alerts.map((a) => a.key)).toEqual(
-      expect.arrayContaining(alerts.map((a) => a.key)),
-    );
+    const filed = [...(report.accounts[0]?.alerts ?? []), ...(report.accounts[0]?.panics ?? [])];
+    expect(filed.map((a) => a.key)).toEqual(expect.arrayContaining(alerts.map((a) => a.key)));
 
     // The review snapshot carries the comments, oldest first.
     const a = await db.assignment.findFirstOrThrow({

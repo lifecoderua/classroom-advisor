@@ -6,11 +6,13 @@ import { cachedImagePath, cachedTextReader } from "../../src/checks/evaluate-heu
 import type { TurnedInInput, TurnedInResult } from "../../src/checks/heuristics.ts";
 import {
   allocate,
+  applyRedoFloor,
   buildReviewInput,
   DEFAULT_BUDGET,
   detectLocale,
   heuristicVerdict,
   mergeVerdict,
+  openRedoRequest,
   pendingQualityVersions,
   REVIEW_PROMPT_VERSION,
   reviewPrompt,
@@ -26,6 +28,7 @@ import {
   syncAttachments,
   upsertAccount,
   upsertAssignment,
+  upsertComment,
   upsertCourse,
   upsertSubmission,
 } from "../../src/store/index.ts";
@@ -425,5 +428,208 @@ describe("reviewSubmission", () => {
     await run(id, new FakeProvider());
     expect(await pendingQualityVersions(db, "llm:fake")).toEqual([]);
     expect(await pendingQualityVersions(db, "llm:claude-cli")).toEqual([id]);
+  });
+});
+
+describe("re-review on a new teacher comment (#44)", () => {
+  let template: ReturnType<typeof migratedTemplate>;
+  let db: Db;
+  let dataDir: string;
+  let n = 0;
+
+  beforeAll(() => {
+    template = migratedTemplate();
+    dataDir = mkdtempSync(join(tmpdir(), "ca-rereview-"));
+    mkdirSync(join(dataDir, "files"));
+    writeFileSync(join(dataDir, "files/work.txt"), "1) 5 + 7 = 12\n2) 9 - 4 = 5");
+  }, 60_000);
+  afterAll(async () => {
+    await template.cleanup();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+  beforeEach(async () => {
+    db = await template.fresh();
+  });
+
+  async function seed(dueAt: Date | null = null) {
+    const account = await upsertAccount(db, { email: "student-one@school.example" });
+    await db.account.update({ where: { id: account.id }, data: { watched: true } });
+    const course = await upsertCourse(db, {
+      accountId: account.id,
+      classroomId: "c1",
+      name: "Математика",
+    });
+    const { assignment } = await upsertAssignment(
+      db,
+      {
+        accountId: account.id,
+        courseId: course.id,
+        classroomId: "a1",
+        kind: "assignment",
+        title: "Приклади",
+        status: "turned_in",
+        dueAt,
+        hash: "a",
+        payload: { instructions: "Розв'яжи приклади 1-2." },
+      },
+      T0,
+    );
+    const { submission, version } = await upsertSubmission(
+      db,
+      { assignmentId: assignment.id, state: "turned_in", turnedInAt: T0, hash: "s", payload: {} },
+      T0,
+    );
+    const [work] = await syncAttachments(
+      db,
+      { owner: "submission", assignmentId: assignment.id, submissionId: submission.id },
+      [{ url: "https://docs.example/w", title: "Робота", driveFileId: "d1", mime: DOC }],
+      T0,
+    );
+    if (!work || !version) throw new Error("seed failed");
+    await setAttachmentContent(db, work.id, { contentPath: "files/work.txt", contentHash: "h" });
+    return { versionId: version.id, assignmentId: assignment.id };
+  }
+
+  const comment = async (
+    assignmentId: number,
+    text: string,
+    o: { role?: "teacher" | "student"; baseline?: boolean; at?: Date } = {},
+  ) =>
+    (
+      await upsertComment(db, {
+        assignmentId,
+        classroomId: `cm${++n}`,
+        authorRole: o.role ?? "teacher",
+        text,
+        postedAt: o.at ?? new Date(T0.getTime() + 60 * 60 * 1000),
+        baseline: o.baseline ?? false,
+      })
+    ).comment.id;
+
+  const run = (id: number, provider: FakeProvider, now = NOW) =>
+    reviewSubmission(db, id, provider, cachedTextReader(dataDir), now);
+  const pending = () => pendingQualityVersions(db, "llm:fake");
+
+  it("re-reviews once per new teacher comment, with the comments in the input", async () => {
+    const { versionId: id, assignmentId } = await seed();
+    await comment(assignmentId, "lorem student note", { role: "student" });
+    await run(id, new FakeProvider());
+    expect(await pending()).toEqual([]);
+
+    // Student and baseline teacher comments don't re-queue.
+    await comment(assignmentId, "ipsum student", { role: "student" });
+    await comment(assignmentId, "dolor old", { baseline: true });
+    expect(await pending()).toEqual([]);
+
+    const cid = await comment(assignmentId, "Молодець, гарно.");
+    expect(await pending()).toEqual([id]);
+    const provider = new FakeProvider();
+    const res = await run(id, provider);
+    expect(res).toEqual({
+      status: "reviewed",
+      verdict: "ok",
+      alertCreated: false,
+      triggerCommentId: cid,
+    });
+    expect(provider.calls[0]?.input.comments?.map((c) => c.text)).toEqual([
+      "lorem student note",
+      "ipsum student",
+      "dolor old",
+      "Молодець, гарно.",
+    ]);
+    const results = await listCheckResults(db, id);
+    expect(results.map((r) => r.source)).toEqual(["heuristic", "llm:fake", "llm:fake"]);
+    expect(results[2]?.throughCommentId).toBe(cid);
+    expect(JSON.parse(results[2]?.findings ?? "{}").trigger).toEqual({ commentId: cid });
+
+    expect(await pending()).toEqual([]);
+    expect(await run(id, provider)).toEqual({ status: "already_reviewed" });
+    expect(provider.calls).toHaveLength(1);
+  });
+
+  it("a comment present at the first review doesn't trigger a re-review", async () => {
+    const { versionId: id, assignmentId } = await seed();
+    await comment(assignmentId, "Молодець.");
+    expect(await pending()).toEqual([id]);
+    expect(await run(id, new FakeProvider())).toMatchObject({ status: "reviewed" });
+    expect(await pending()).toEqual([]);
+  });
+
+  it("alerts a re-review only when the verdict gets worse", async () => {
+    const { versionId: id, assignmentId } = await seed();
+    await run(id, new FakeProvider());
+    const c1 = await comment(assignmentId, "Чому так мало?");
+    const warn = new FakeProvider({ respond: out({ verdict: "warn", summaryForParent: "Мало." }) });
+    expect(await run(id, warn)).toMatchObject({ verdict: "warn", alertCreated: true });
+    const alert = await db.alert.findUniqueOrThrow({ where: { key: `quality:${id}:c${c1}` } });
+    expect(alert.level).toBe("alert");
+    expect(alert.message).toContain("Мало.");
+
+    // Same verdict again: stored, but no new alert.
+    await comment(assignmentId, "Чекаю.");
+    expect(await run(id, warn)).toMatchObject({ verdict: "warn", alertCreated: false });
+    expect(await db.alert.count()).toBe(1);
+  });
+
+  it("an unaddressed redo request is at least warn, with a note when overdue", async () => {
+    const due = new Date(T0.getTime() + 2 * 60 * 60 * 1000);
+    const { versionId: id, assignmentId } = await seed(due);
+    await run(id, new FakeProvider());
+    const cid = await comment(assignmentId, "Переробіть, будь ласка, приклад 2.");
+    const res = await run(id, new FakeProvider()); // the LLM says ok
+    expect(res).toMatchObject({ verdict: "warn", alertCreated: true, triggerCommentId: cid });
+    expect(res.message).toContain("past due");
+    const llm = (await listCheckResults(db, id)).at(-1);
+    expect(JSON.parse(llm?.findings ?? "{}").merge.notes).toEqual([
+      expect.stringContaining("Переробіть"),
+    ]);
+  });
+
+  it("a re-review failure retries without repeating the first review's alerts", async () => {
+    const { versionId: id, assignmentId } = await seed();
+    await run(id, new FakeProvider());
+    const cid = await comment(assignmentId, "Додай фото.");
+    const failing = new FakeProvider({ respond: () => new LlmError("down") });
+    expect(await run(id, failing)).toEqual({
+      status: "fallback",
+      llmFailures: 1,
+      triggerCommentId: cid,
+    });
+    expect(await pending()).toEqual([id]);
+    const heur = (await listCheckResults(db, id))[0];
+    expect(JSON.parse(heur?.findings ?? "{}").llmFailures).toEqual({ [`llm:fake:c${cid}`]: 1 });
+    expect(await db.alert.count()).toBe(0);
+  });
+});
+
+describe("redo helpers", () => {
+  const snap = (comments: NonNullable<TurnedInInput["comments"]>): TurnedInInput => ({
+    ...snapshot(),
+    comments,
+  });
+  const at = (h: number) => new Date(T0.getTime() + h * 60 * 60 * 1000);
+
+  it("finds an open redo request: the latest teacher comment, after the turn-in", () => {
+    const redo = { authorRole: "teacher" as const, postedAt: at(1), text: "Виправ приклад 2" };
+    expect(openRedoRequest(snap([redo]))).toBe(redo);
+    expect(openRedoRequest(snap([{ ...redo, postedAt: at(-1) }]))).toBeUndefined();
+    expect(
+      openRedoRequest(
+        snap([redo, { authorRole: "teacher", postedAt: at(2), text: "Тепер добре" }]),
+      ),
+    ).toBeUndefined();
+    expect(
+      openRedoRequest(snap([redo, { authorRole: "student", postedAt: at(2), text: "ок" }])),
+    ).toBe(redo);
+    expect(openRedoRequest(snap([{ ...redo, text: "Молодець" }]))).toBeUndefined();
+  });
+
+  it("raises an ok LLM verdict to warn only", () => {
+    const redo = { authorRole: "teacher" as const, postedAt: at(1), text: "redo" };
+    const ok = { verdict: "ok" as const, basis: "llm" as const, notes: [] };
+    expect(applyRedoFloor(ok, redo).verdict).toBe("warn");
+    expect(applyRedoFloor(ok, undefined)).toBe(ok);
+    const panic = { ...ok, verdict: "panic" as const };
+    expect(applyRedoFloor(panic, redo)).toBe(panic);
   });
 });

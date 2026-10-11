@@ -15,7 +15,13 @@ import {
   type Transport,
 } from "../collector/classroom/rpc.ts";
 import { type AssignmentSummary, listTodo, type StreamItem } from "../collector/classroom/todo.ts";
-import { fetchAttachmentContents, type HttpGet, SessionExpiredError } from "../collector/files.ts";
+import {
+  attachmentKind,
+  fetchAttachmentContents,
+  type HttpGet,
+  isStaleSlidesText,
+  SessionExpiredError,
+} from "../collector/files.ts";
 import {
   type Account,
   type Db,
@@ -447,17 +453,28 @@ export async function syncAccount(
     // Contents of turned-in work and of its materials (template comparison). Baseline items
     // are never reviewed, so their files are not downloaded.
     if (source.httpGet && !baseline && turnedIn.length > 0) {
-      const rows = await db.attachment.findMany({
-        // `.bin` = an untyped file cached before Office detection: re-examined locally (no refetch).
+      const candidates = await db.attachment.findMany({
+        // `.bin` = an untyped file cached before Office detection: re-examined locally (no
+        // refetch). `.txt` Slides without a structure summary came from the old text export:
+        // refetched once as pptx.
         where: {
           assignmentId: { in: turnedIn },
           OR: [
             { contentPath: null },
             { contentPath: { endsWith: ".bin" }, modifiedAt: { not: null } },
+            { contentPath: { endsWith: ".txt" } },
           ],
         },
         orderBy: { id: "asc" },
       });
+      const rows: typeof candidates = [];
+      for (const row of candidates) {
+        const path = row.contentPath;
+        const stale =
+          !path?.endsWith(".txt") ||
+          (attachmentKind(row) === "slides" && (await isStaleSlidesText(options.dataDir, path)));
+        if (stale) rows.push(row);
+      }
       const outcomes = await fetchAttachmentContents(
         db,
         rows,

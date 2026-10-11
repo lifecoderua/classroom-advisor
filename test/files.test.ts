@@ -11,6 +11,7 @@ import {
   fetchAttachmentContents,
   type HttpGet,
   type HttpResponse,
+  isStaleSlidesText,
   officeSummaryPath,
   SessionExpiredError,
 } from "../src/collector/files.ts";
@@ -177,18 +178,36 @@ describe("fetchAttachment", () => {
     const s = stub((url) =>
       url.includes("/export/pptx") ? res(Buffer.alloc(20)) : res("Слайд 1", { type: "text/plain" }),
     );
-    const r = ok(
-      await fetchAttachment(
-        { driveFileId: ID, url: "u", kind: "slides" },
-        { get: s.get, dataDir, maxBytes: 15 },
-      ),
-    );
+    const target = { driveFileId: ID, url: "u", kind: "slides" as const, modifiedAt: MOD };
+    const r = ok(await fetchAttachment(target, { get: s.get, dataDir, maxBytes: 15 }));
     expect(s.calls).toEqual([
       `https://docs.google.com/presentation/d/${ID}/export/pptx`,
       `https://docs.google.com/presentation/d/${ID}/export/txt`,
     ]);
-    expect(r.contentPath).toBe(`files/${ID}/nomod.txt`);
+    expect(r.contentPath).toBe(`files/${ID}/2026-10-01T08-00-00-000Z.txt`);
     expect(r.rawPath).toBeUndefined();
+    // Marked text-only: not stale, so the cache is used and pptx is not retried.
+    expect(await isStaleSlidesText(dataDir, r.contentPath)).toBe(false);
+    const again = ok(await fetchAttachment(target, { get: s.get, dataDir, maxBytes: 15 }));
+    expect(again).toMatchObject({ cached: true, contentPath: r.contentPath });
+    expect(s.calls).toHaveLength(2);
+  });
+
+  it("refetches Slides cached by the old text export as pptx once", async () => {
+    const dir = join(dataDir, "files", ID);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "2026-10-01T08-00-00-000Z.txt"), "старий текст");
+    const content = `files/${ID}/2026-10-01T08-00-00-000Z.txt`;
+    expect(await isStaleSlidesText(dataDir, content)).toBe(true);
+    const deck = Buffer.from(makePptx([{ texts: ["Новий"], animations: ["entr"] }]));
+    const s = stub(() => res(deck, { type: PPTX_MIME }));
+    const target = { driveFileId: ID, url: "u", kind: "slides" as const, modifiedAt: MOD };
+    const r = ok(await fetchAttachment(target, { get: s.get, dataDir }));
+    expect(r).toMatchObject({ cached: false, contentPath: content });
+    expect(readFileSync(join(dataDir, content), "utf8")).toBe("Новий");
+    expect(await isStaleSlidesText(dataDir, content)).toBe(false);
+    expect(ok(await fetchAttachment(target, { get: s.get, dataDir })).cached).toBe(true);
+    expect(s.calls).toHaveLength(1);
   });
 
   it("recognizes uploaded Office files whatever the mime and extracts text", async () => {

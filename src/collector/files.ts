@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import type { APIRequestContext } from "playwright";
 import { extractText } from "unpdf";
@@ -181,6 +181,30 @@ export function officeSummaryPath(contentPath: string): string {
   return contentPath.replace(/\.txt$/, OFFICE_SUMMARY_SUFFIX);
 }
 
+/** Empty marker next to a Slides `.txt` that came from the text fallback (don't retry pptx). */
+export const TEXT_ONLY_SUFFIX = ".text-only";
+
+/** Sidecars that sit next to the content file and are never content themselves. */
+const SIDECARS = [OFFICE_SUMMARY_SUFFIX, TEXT_ONLY_SUFFIX];
+
+async function exists(path: string): Promise<boolean> {
+  return access(path).then(
+    () => true,
+    () => false,
+  );
+}
+
+/**
+ * A Slides `.txt` without a structure summary or a text-only marker: cached by the old plain
+ * text export, so it is refetched once as pptx.
+ */
+export async function isStaleSlidesText(dataDir: string, contentPath: string): Promise<boolean> {
+  if (!contentPath.endsWith(".txt")) return false;
+  const stem = join(dataDir, contentPath.slice(0, -".txt".length));
+  for (const suffix of SIDECARS) if (await exists(`${stem}${suffix}`)) return false;
+  return true;
+}
+
 function versionStem(modifiedAt: Date | null | undefined): string {
   return modifiedAt ? modifiedAt.toISOString().replace(/[:.]/g, "-") : "nomod";
 }
@@ -282,7 +306,7 @@ async function findCached(dir: string, stem: string, ext: string | undefined) {
     return undefined;
   }
   const own = names.filter(
-    (n) => n.startsWith(`${stem}.`) && !n.endsWith(".tmp") && !n.endsWith(OFFICE_SUMMARY_SUFFIX),
+    (n) => n.startsWith(`${stem}.`) && !n.endsWith(".tmp") && !SIDECARS.some((s) => n.endsWith(s)),
   );
   if (ext) return own.includes(`${stem}.${ext}`) ? { content: `${stem}.${ext}`, own } : undefined;
   // Unknown extension: a `.txt` next to the raw file means we extracted text (PDF, Office).
@@ -345,7 +369,9 @@ export async function fetchAttachment(
         : extFor(kind, undefined);
 
   if (target.modifiedAt) {
-    const hit = await findCached(dir, stem, contentExt);
+    let hit = await findCached(dir, stem, contentExt);
+    // Slides cached by the old text export have no structure: refetch as pptx.
+    if (hit && kind === "slides" && (await isStaleSlidesText(dir, hit.content))) hit = undefined;
     // An opaque `.bin` from before Office extraction: detect and extract locally, no refetch.
     if (hit?.content.endsWith(".bin")) {
       const body = await readFile(join(dir, hit.content));
@@ -390,6 +416,7 @@ export async function fetchAttachment(
       const txt = await download(withAuthuser(slidesTextUrl(id), options.authuser), false, opts);
       await mkdir(dir, { recursive: true });
       await writeAtomic(join(dir, `${stem}.txt`), txt.body);
+      await writeAtomic(join(dir, `${stem}${TEXT_ONLY_SUFFIX}`), "");
       return {
         ok: true,
         kind,

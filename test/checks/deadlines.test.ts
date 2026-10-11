@@ -125,6 +125,14 @@ const cases: { name: string; in: DeadlineInput; codes: string[] }[] = [
     codes: ["missing"],
   },
   {
+    name: "returned without being turned in, missing bucket: missing",
+    in: input({
+      assignment: { dueAt: ago(DAY_MS), status: "missing", baseline: true },
+      submission: { state: "returned", studentWorkSignals: { attachmentCount: 0 } },
+    }),
+    codes: ["missing"],
+  },
+  {
     name: "reclaimed submission after due: missing",
     in: input({
       assignment: { dueAt: ago(HOUR_MS), status: "turned_in" },
@@ -165,7 +173,7 @@ const cases: { name: string; in: DeadlineInput; codes: string[] }[] = [
   {
     name: "returned is ignored",
     in: input({
-      assignment: { dueAt: ago(HOUR_MS), status: "missing" },
+      assignment: { dueAt: ago(HOUR_MS), status: "returned" },
       submission: { state: "returned", studentWorkSignals: { attachmentCount: 0 } },
     }),
     codes: [],

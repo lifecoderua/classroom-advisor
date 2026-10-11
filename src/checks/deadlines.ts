@@ -48,9 +48,11 @@ export interface AlertDraft {
 
 /**
  * Turned in when the submission says so; without a submission row, falls back to the
- * assignment status. A reclaimed (unsubmitted) submission counts as not turned in.
+ * assignment status. A reclaimed (unsubmitted) submission counts as not turned in. The
+ * `missing` bucket wins: a teacher can return work that was never turned in.
  */
 export function isTurnedIn(input: DeadlineInput): boolean {
+  if (input.assignment.status === "missing") return false;
   if (input.submission) return DONE.has(input.submission.state);
   return DONE.has(input.assignment.status);
 }

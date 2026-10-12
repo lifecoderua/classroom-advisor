@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
+import { attachmentKind, TEXT_CONTENT_KINDS } from "../collector/files.ts";
 import type { LlmProvider } from "../llm/types.ts";
 import type { Attachment, Db } from "../store/index.ts";
 import { EXPECTS_WORK, type ExpectsWork } from "./deadlines.ts";
@@ -14,7 +15,7 @@ import { kindFromMime } from "./heuristics.ts";
 import { allocate, truncate } from "./quality.ts";
 
 /** Versioned domain prompt (`src/checks/prompts/<id>.md`). */
-export const EXPECTS_WORK_PROMPT_VERSION = "expects-work.v1";
+export const EXPECTS_WORK_PROMPT_VERSION = "expects-work.v2";
 
 let promptCache: string | undefined;
 
@@ -193,6 +194,8 @@ export interface ClassifierAttachment {
   title: string;
   kind: string;
   text?: string;
+  /** The content couldn't be read (not downloaded, failed, not text): only the title is known. */
+  contentUnavailable?: true;
 }
 
 export interface ClassifierInput {
@@ -208,6 +211,26 @@ export interface VersionSnapshot {
   skeleton: SkeletonInput;
   expectsWork: ExpectsWork | null;
   skeletonHash: string | null;
+  /**
+   * A text-bearing material (Doc, Slides, PDF, Office file…) hasn't been downloaded or tried
+   * yet: sync fetches it (`pickMaterialPrefetch`), so classifying waits for it.
+   */
+  awaitingContent: boolean;
+  /** Some material other than a call link has no readable text (safety net for `no`). */
+  missingContent: boolean;
+}
+
+/** Video-call hosts: an invite link carries no task, so its missing "content" doesn't matter. */
+const CALL_HOSTS = ["zoom.us", "meet.google.com", "teams.microsoft.com", "teams.live.com"];
+
+export function isCallLink(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return CALL_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
 }
 
 const asString = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
@@ -255,16 +278,22 @@ export async function loadVersionSnapshot(
 
   const attachments: ClassifierAttachment[] = [];
   const keys: string[] = [];
+  let awaitingContent = false;
+  let missingContent = false;
   for (const m of materials) {
     const url = asString(m.url) ?? "";
     const row = rowByUrl.get(url);
     const driveFileId = asString(m.driveFileId) ?? row?.driveFileId ?? null;
     keys.push(row?.contentHash ? `hash:${row.contentHash}` : `id:${driveFileId ?? url}`);
     const text = row && readText ? await readText(row) : undefined;
+    if (row && !row.contentPath && !row.fetchError && TEXT_CONTENT_KINDS.has(attachmentKind(row))) {
+      awaitingContent = true;
+    }
+    if (!text && !isCallLink(url)) missingContent = true;
     attachments.push({
       title: asString(m.title) ?? row?.title ?? url,
       kind: kindFromMime(asString(m.mime) ?? row?.mime ?? null, url),
-      ...(text ? { text } : {}),
+      ...(text ? { text } : { contentUnavailable: true as const }),
     });
   }
 
@@ -277,6 +306,8 @@ export async function loadVersionSnapshot(
       ? (v.expectsWork as ExpectsWork)
       : null,
     skeletonHash: v.skeletonHash,
+    awaitingContent,
+    missingContent,
   };
 }
 
@@ -293,6 +324,7 @@ export function buildClassifierInput(input: ClassifierInput): ClassifierInput {
       title: a.title,
       kind: a.kind,
       ...(a.text ? { text: truncate(a.text, caps[i] ?? 0) } : {}),
+      ...(a.contentUnavailable ? { contentUnavailable: true as const } : {}),
     })),
   };
 }
@@ -311,6 +343,8 @@ export type ClassifyStatus =
   | "failed"
   /** Over this run's LLM budget; left unclassified. */
   | "deferred"
+  /** A teacher attachment isn't downloaded yet; left unclassified until sync fetches it. */
+  | "awaiting"
   /** The version doesn't exist. */
   | "missing";
 
@@ -342,6 +376,7 @@ export async function classifyVersion(
   const snap = await loadVersionSnapshot(db, versionId, opts.readText);
   if (!snap) return { status: "missing" };
   if (snap.expectsWork) return { status: "cached", expectsWork: snap.expectsWork };
+  if (snap.awaitingContent) return { status: "awaiting" };
   const now = opts.now ?? new Date();
   const hash = skeletonHash(snap.skeleton);
   if (snap.skeletonHash !== hash) {
@@ -360,9 +395,12 @@ export async function classifyVersion(
     select: { expectsWork: true, expectsWorkReason: true },
   });
   if (earlier?.expectsWork) {
-    const expectsWork = earlier.expectsWork as ExpectsWork;
-    await store(db, versionId, expectsWork, earlier.expectsWorkReason ?? "", SKELETON_SOURCE, now);
-    return { status: "skeleton", expectsWork };
+    const v = safetyNet(
+      { expectsWork: earlier.expectsWork as ExpectsWork, reason: earlier.expectsWorkReason ?? "" },
+      snap.missingContent,
+    );
+    await store(db, versionId, v.expectsWork, v.reason, SKELETON_SOURCE, now);
+    return { status: "skeleton", expectsWork: v.expectsWork };
   }
 
   if (opts.allowLlm === false) return { status: "deferred" };
@@ -373,11 +411,23 @@ export async function classifyVersion(
       schema: expectsWorkOutputSchema,
       jsonSchema: expectsWorkJsonSchema,
     });
-    await store(db, versionId, out.expectsWork, out.reason, `llm:${opts.provider.name}`, now);
-    return { status: "llm", expectsWork: out.expectsWork };
+    const v = safetyNet(out, snap.missingContent);
+    await store(db, versionId, v.expectsWork, v.reason, `llm:${opts.provider.name}`, now);
+    return { status: "llm", expectsWork: v.expectsWork };
   } catch (err) {
     return { status: "failed", error: `${(err as Error).name}: ${(err as Error).message}` };
   }
+}
+
+export const DOWNGRADE_NOTE = "[no -> unclear: attachment content not available]";
+
+/**
+ * Deterministic safety net: never `no` when an attachment other than a call link couldn't be
+ * read (its content may hold the homework). Such a `no` becomes `unclear` (reminders as before).
+ */
+export function safetyNet(out: ExpectsWorkOutput, missingContent: boolean): ExpectsWorkOutput {
+  if (out.expectsWork !== "no" || !missingContent) return out;
+  return { expectsWork: "unclear", reason: `${DOWNGRADE_NOTE} ${out.reason}`.trim() };
 }
 
 async function store(

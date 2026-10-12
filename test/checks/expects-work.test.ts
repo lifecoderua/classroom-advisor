@@ -4,10 +4,13 @@ import { evaluateDeadlines } from "../../src/checks/evaluate-deadlines.ts";
 import {
   buildClassifierInput,
   classifyVersion,
+  DOWNGRADE_NOTE,
   EXPECTS_WORK_BUDGET,
   expectsWorkPrompt,
+  isCallLink,
   normalizeSkeleton,
   SKELETON_SOURCE,
+  safetyNet,
   skeletonHash,
 } from "../../src/checks/expects-work.ts";
 import { FakeProvider, type JsonTask, LlmError } from "../../src/llm/index.ts";
@@ -20,6 +23,7 @@ import {
   upsertAssignment,
   upsertCourse,
 } from "../../src/store/index.ts";
+import { pickMaterialPrefetch } from "../../src/sync/account.ts";
 import { migratedTemplate } from "../store/helpers.ts";
 
 // Synthetic weekly lesson invites: only the time, topic, meeting id and passcode differ.
@@ -113,7 +117,27 @@ describe("buildClassifierInput", () => {
     const p = expectsWorkPrompt();
     expect(p).toContain("call invite");
     expect(p).toMatch(/`unclear`/);
-    expect(p).toMatch(/page or exercise numbers/);
+    expect(p).toMatch(/page or exercise numbers/i);
+    expect(p).toContain("рекомендовано для виконання вдома");
+    expect(p).toContain("contentUnavailable");
+  });
+});
+
+describe("safetyNet", () => {
+  it("downgrades `no` to `unclear` when an attachment's content is missing", () => {
+    expect(safetyNet({ expectsWork: "no", reason: "invite" }, true)).toEqual({
+      expectsWork: "unclear",
+      reason: `${DOWNGRADE_NOTE} invite`,
+    });
+    expect(safetyNet({ expectsWork: "no", reason: "invite" }, false).expectsWork).toBe("no");
+    expect(safetyNet({ expectsWork: "yes", reason: "task" }, true).expectsWork).toBe("yes");
+  });
+
+  it("call links don't count as missing content", () => {
+    expect(isCallLink("https://us02web.zoom.us/j/1")).toBe(true);
+    expect(isCallLink("https://meet.google.com/abc-defg-hij")).toBe(true);
+    expect(isCallLink("https://docs.google.com/presentation/d/x")).toBe(false);
+    expect(isCallLink("not a url")).toBe(false);
   });
 });
 
@@ -313,6 +337,144 @@ describe("classifyVersion", () => {
     expect(await classifyVersion(db, f.versionId, { provider, allowLlm: false })).toEqual({
       status: "deferred",
     });
+  });
+});
+
+// Synthetic Math lesson: a short body, the tasks only in an attached deck.
+const PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+const DECK_URL = "https://drive.google.com/file/d/deck1/view";
+const deck = [{ title: "Приклади.pptx", url: DECK_URL, driveFileId: "deck1", mime: PPTX }];
+const MATH_BODY = "Самостійно розв'язати приклади";
+
+/** A strict classifier: `yes` only on visible tasks, else `no` (the safety net must catch it). */
+const strict = () =>
+  new FakeProvider({
+    respondJson: (task: JsonTask<unknown>) => {
+      const input = task.input as { attachments: { text?: string }[] };
+      const tasks = input.attachments.some((a) => /\d+\s*[+-]\s*\d+/.test(a.text ?? ""));
+      return tasks
+        ? { expectsWork: "yes", reason: "the deck lists examples to solve" }
+        : { expectsWork: "no", reason: "nothing visible to do" };
+    },
+  });
+
+describe("posts whose tasks sit in an attachment", () => {
+  async function mathPost(over: { contentPath?: string; fetchError?: string } = {}) {
+    const { add } = await seed();
+    const post = await add(MATH_BODY, { materials: deck });
+    await syncAttachments(
+      db,
+      { owner: "material", assignmentId: post.assignment.id },
+      [{ url: DECK_URL, driveFileId: "deck1", title: "Приклади.pptx", mime: PPTX }],
+      T0,
+    );
+    if (over.contentPath || over.fetchError) {
+      await db.attachment.updateMany({
+        data: {
+          ...(over.contentPath ? { contentPath: over.contentPath, contentHash: "d1" } : {}),
+          ...(over.fetchError ? { fetchError: over.fetchError } : {}),
+        },
+      });
+    }
+    return post;
+  }
+
+  it("waits for the deck to be downloaded instead of guessing", async () => {
+    const post = await mathPost();
+    const provider = strict();
+    expect(await classifyVersion(db, post.versionId, { provider })).toEqual({
+      status: "awaiting",
+    });
+    expect(provider.jsonCalls).toHaveLength(0);
+    // The reminder still fires meanwhile.
+    const created = await evaluateDeadlines(db, NOW, {
+      lookbackDays: 14,
+      expectsWork: { provider, maxPerRun: 20 },
+    });
+    expect(created.map((d) => d.code)).toEqual(["untouched_24h"]);
+  });
+
+  it("never stores `no` when the deck couldn't be read (safety net)", async () => {
+    const post = await mathPost({ fetchError: "HTTP 403" });
+    const provider = strict();
+    expect(await classifyVersion(db, post.versionId, { provider })).toEqual({
+      status: "llm",
+      expectsWork: "unclear",
+    });
+    expect(provider.jsonCalls[0]?.input).toMatchObject({
+      description: MATH_BODY,
+      attachments: [{ title: "Приклади.pptx", contentUnavailable: true }],
+    });
+    const v = await version(post.versionId);
+    expect(v.expectsWorkReason?.startsWith(DOWNGRADE_NOTE)).toBe(true);
+  });
+
+  it("reads the deck's extracted text and finds the tasks", async () => {
+    const post = await mathPost({ contentPath: "files/deck1/nomod.txt" });
+    const provider = strict();
+    const readText = async () => "[slide 1]\n1) 12 + 7 =\n2) 30 - 14 =";
+    expect(await classifyVersion(db, post.versionId, { provider, readText })).toEqual({
+      status: "llm",
+      expectsWork: "yes",
+    });
+    expect(provider.jsonCalls[0]?.input).toMatchObject({
+      attachments: [{ title: "Приклади.pptx", text: "[slide 1]\n1) 12 + 7 =\n2) 30 - 14 =" }],
+    });
+  });
+});
+
+describe("pickMaterialPrefetch", () => {
+  it("picks unread text materials of open, recent, unclassified posts, newest first, capped", async () => {
+    const { account, add } = await seed();
+    const attach = async (assignmentId: number, url: string, mime = PPTX) => {
+      await syncAttachments(db, { owner: "material", assignmentId }, [{ url, mime }], T0);
+    };
+    const day = (n: number) => new Date(NOW.getTime() - n * DAY);
+    const older = await add("a", { postedAt: day(5) });
+    await attach(older.assignment.id, "https://drive.google.com/file/d/old/view");
+    const newer = await add("b", { postedAt: day(1) });
+    await syncAttachments(
+      db,
+      { owner: "material", assignmentId: newer.assignment.id },
+      [
+        { url: "https://drive.google.com/file/d/new/view", mime: PPTX },
+        { url: "https://example.test/link", mime: "text/html" },
+      ],
+      T0,
+    );
+    const stale = await add("c", { postedAt: day(30) });
+    await attach(stale.assignment.id, "https://drive.google.com/file/d/stale/view");
+    const classified = await add("d", { postedAt: day(1) });
+    await attach(classified.assignment.id, "https://drive.google.com/file/d/cls/view");
+    await db.assignmentVersion.update({
+      where: { id: classified.versionId },
+      data: { expectsWork: "no" },
+    });
+    const done = await add("e", { postedAt: day(1) });
+    await attach(done.assignment.id, "https://drive.google.com/file/d/done/view");
+    await db.assignment.update({
+      where: { id: done.assignment.id },
+      data: { status: "turned_in" },
+    });
+    const failed = await add("f", { postedAt: day(1) });
+    await attach(failed.assignment.id, "https://drive.google.com/file/d/fail/view");
+    await db.attachment.updateMany({
+      where: { assignmentId: failed.assignment.id },
+      data: { fetchError: "HTTP 403" },
+    });
+    const base = await add("g", { postedAt: day(1) });
+    await attach(base.assignment.id, "https://drive.google.com/file/d/base/view");
+    await db.assignment.update({ where: { id: base.assignment.id }, data: { baseline: true } });
+
+    const pick = (max: number) =>
+      pickMaterialPrefetch(db, account.id, NOW, { lookbackDays: 14, max }).then((rows) =>
+        rows.map((r) => r.url),
+      );
+    expect(await pick(10)).toEqual([
+      "https://drive.google.com/file/d/new/view",
+      "https://drive.google.com/file/d/old/view",
+    ]);
+    expect(await pick(1)).toEqual(["https://drive.google.com/file/d/new/view"]);
   });
 });
 

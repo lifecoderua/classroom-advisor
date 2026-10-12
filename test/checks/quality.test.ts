@@ -182,7 +182,7 @@ describe("pure helpers", () => {
   });
 
   it("loads the versioned prompt", () => {
-    expect(REVIEW_PROMPT_VERSION).toBe("review.v4");
+    expect(REVIEW_PROMPT_VERSION).toBe("review.v5");
     expect(reviewPrompt()).toContain("hints, not facts");
     expect(reviewPrompt()).toContain("`comments`");
     expect(reviewPrompt()).toContain("`structure`");
@@ -310,7 +310,7 @@ describe("reviewSubmission", () => {
     expect(res).toMatchObject({ status: "reviewed", verdict: "panic", alertCreated: true });
 
     const call = provider.calls[0];
-    expect(call?.opts.instructions).toContain("review.v4");
+    expect(call?.opts.instructions).toContain("review.v5");
     expect(call?.input.locale).toBe("uk");
     expect(call?.input.assignment.courseName).toBe("Математика");
     expect(call?.input.submission.attachments).toEqual([
@@ -324,7 +324,7 @@ describe("reviewSubmission", () => {
       ["llm:fake", "panic"],
     ]);
     expect(JSON.parse(results[1]?.findings ?? "{}")).toMatchObject({
-      promptVersion: "review.v4",
+      promptVersion: "review.v5",
       output: { missingParts: ["Приклад 3"] },
     });
 

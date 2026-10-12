@@ -8,7 +8,7 @@ import {
 } from "../../src/checks/expects-work.ts";
 import { ClaudeCliProvider } from "../../src/llm/index.ts";
 
-// Opt-in: runs the expects-work.v1 prompt through the real `claude` CLI on synthetic lesson posts
+// Opt-in: runs the expects-work.v2 prompt through the real `claude` CLI on synthetic lesson posts
 // (costs tokens). `CA_LLM_IT=1 pnpm test expects-work.integration`.
 const enabled = process.env.CA_LLM_IT === "1";
 const it = enabled ? itBase : itBase.skip;
@@ -39,7 +39,7 @@ const INVITE = [
   "Код доступу: k3Lm9",
 ].join("\n");
 
-describe("expects-work.v1 live (claude-cli)", () => {
+describe("expects-work.v2 live (claude-cli)", () => {
   it("a call invite alone asks for no work", async () => {
     expect(await classify({ title: "Технології 6-А", description: INVITE, attachments: [] })).toBe(
       "no",
@@ -49,6 +49,20 @@ describe("expects-work.v1 live (claude-cli)", () => {
   it("an invite with an exercise asks for work", async () => {
     const description = `${INVITE}\n\nД/з: вправа 5 на ст. 45, письмово.`;
     expect(await classify({ title: "Технології 6-А", description, attachments: [] })).toBe("yes");
+  }, 200_000);
+
+  it("recommended homework counts as work", async () => {
+    const description = "Рекомендовано для виконання вдома: ст. 112, № 4, 5.";
+    expect(await classify({ title: "Математика 14.10", description, attachments: [] })).toBe("yes");
+  }, 200_000);
+
+  it("a short instruction with an unreadable deck is never `no`", async () => {
+    const out = await classify({
+      title: "Математика 14.10 Розв'язок завдань",
+      description: "Самостійно розв'язати приклади",
+      attachments: [{ title: "Приклади.pptx", kind: "file", contentUnavailable: true }],
+    });
+    expect(out).not.toBe("no");
   }, 200_000);
 
   it("a task in an attachment asks for work", async () => {

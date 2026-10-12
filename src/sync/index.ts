@@ -139,6 +139,10 @@ export async function runSync(
               label,
               log,
               ...(options.force?.length ? { force: options.force } : {}),
+              materials: {
+                lookbackDays: config.alertLookbackDays,
+                max: config.expectsWorkMaxPerRun,
+              },
             },
           );
         } finally {

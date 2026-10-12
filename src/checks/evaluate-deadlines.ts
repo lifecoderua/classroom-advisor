@@ -203,6 +203,7 @@ export async function evaluateDeadlines(
     skeleton: 0,
     failed: 0,
     deferred: 0,
+    awaiting: 0,
     muted: 0,
     revived: 0,
   };
@@ -224,7 +225,7 @@ export async function evaluateDeadlines(
   const log = options.expectsWork?.log;
   if (log && Object.values(stats).some((n) => n > 0)) {
     log(
-      `expects-work: ${stats.llm} llm, ${stats.skeleton} skeleton, ${stats.failed} failed, ${stats.deferred} deferred; ${stats.muted} reminder(s) muted, ${stats.revived} revived`,
+      `expects-work: ${stats.llm} llm, ${stats.skeleton} skeleton, ${stats.failed} failed, ${stats.deferred} deferred, ${stats.awaiting} awaiting files; ${stats.muted} reminder(s) muted, ${stats.revived} revived`,
     );
   }
   return created;

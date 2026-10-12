@@ -24,6 +24,15 @@ export type AttachmentKind = (typeof ATTACHMENT_KINDS)[number];
 /** Kinds we never download: only their metadata (url, title) is used. */
 const METADATA_ONLY: ReadonlySet<AttachmentKind> = new Set(["form", "link", "youtube", "video"]);
 
+/** Kinds whose download yields extracted text (Docs, Slides, Sheets, PDFs, Office files). */
+export const TEXT_CONTENT_KINDS: ReadonlySet<AttachmentKind> = new Set([
+  "doc",
+  "slides",
+  "sheet",
+  "pdf",
+  "other",
+]);
+
 export const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
 export const DEFAULT_FETCH_TIMEOUT_MS = 60_000;
 

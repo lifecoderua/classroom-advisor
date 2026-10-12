@@ -109,6 +109,12 @@ export const en: Messages = {
     nothing: "Nothing to report.",
     heuristicsOnly: "(heuristics only)",
     partsNotChecked: (n) => `🔍 ${n} part${n === 1 ? "" : "s"} not checked automatically`,
+    autoClosed: (n) => `✔️ Closed automatically: ${n}`,
+    muted: {
+      manual: "(acked)",
+      auto: "(closed automatically)",
+      superseded: "(replaced by a newer turn-in)",
+    },
     verdict: {
       ok: "✅ ok",
       warn: "🟠 warn",

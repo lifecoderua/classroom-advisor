@@ -112,7 +112,7 @@ describe("runCycle", () => {
     // Idempotent: nothing new on the second cycle, so no digest and no second review.
     const second = await runCycle(deps);
     expect(calls).toEqual(["sync", "sync"]);
-    expect(second).toEqual({ newAlertIds: [], reviewed: 0, errors: [] });
+    expect(second).toEqual({ newAlertIds: [], reviewed: 0, autoAcked: 0, errors: [] });
     expect(provider.calls).toHaveLength(1);
   });
 

@@ -78,6 +78,10 @@ export interface Messages {
     nothing: string;
     heuristicsOnly: string;
     partsNotChecked(n: number): string;
+    /** `✔️ Closed automatically: N` (#51). */
+    autoClosed(n: number): string;
+    /** Marker after a muted alert in `report --all`, by mute reason. */
+    muted: Record<"manual" | "auto" | "superseded", string>;
     verdict: Record<VerdictMark, string>;
     debt: Record<Debt, string>;
   };

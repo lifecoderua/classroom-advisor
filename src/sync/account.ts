@@ -21,9 +21,11 @@ import {
   type HttpGet,
   isStaleSlidesText,
   SessionExpiredError,
+  TEXT_CONTENT_KINDS,
 } from "../collector/files.ts";
 import {
   type Account,
+  type Attachment,
   type Db,
   type EventType,
   finishSyncRun,
@@ -92,6 +94,8 @@ export interface SyncAccountOptions {
    * submission files downloaded again, ignoring the file cache.
    */
   force?: readonly number[];
+  /** Download teacher attachments of open recent posts for the expects-work classifier (#61). */
+  materials?: MaterialPrefetchOptions;
 }
 
 export interface SyncStats {
@@ -131,6 +135,65 @@ export function emptyStats(baseline: boolean): SyncStats {
 }
 
 const dayOf = (d: Date) => d.toISOString().slice(0, 10);
+
+export interface MaterialPrefetchOptions {
+  /** `alertLookbackDays`: only posts the reminders (and so the classifier) can still reach. */
+  lookbackDays: number;
+  /** At most this many files per account and sync (`expectsWorkMaxPerRun`). */
+  max: number;
+}
+
+/**
+ * Teacher attachments to download for the expects-work classifier (#61): text-bearing materials
+ * (Docs, Slides, Sheets, PDFs, Office files) never fetched and never failed, of open
+ * (not turned in, returned or excused), non-baseline, non-material posts of the account posted
+ * within the lookback whose current version isn't classified yet. Newest posts first, capped.
+ */
+export async function pickMaterialPrefetch(
+  db: Db,
+  accountId: number,
+  now: Date,
+  opts: MaterialPrefetchOptions,
+): Promise<Attachment[]> {
+  const since = new Date(now.getTime() - opts.lookbackDays * DAY_MS);
+  const rows = await db.attachment.findMany({
+    where: {
+      owner: "material",
+      contentPath: null,
+      fetchError: null,
+      assignment: {
+        accountId,
+        baseline: false,
+        kind: { not: "material" },
+        status: { notIn: ["turned_in", "returned", "excused"] },
+        OR: [{ postedAt: { gte: since } }, { postedAt: null, firstSeenAt: { gte: since } }],
+      },
+    },
+    include: {
+      assignment: {
+        select: {
+          postedAt: true,
+          firstSeenAt: true,
+          versions: {
+            orderBy: [{ seenAt: "desc" }, { id: "desc" }],
+            take: 1,
+            select: { expectsWork: true },
+          },
+        },
+      },
+    },
+    orderBy: { id: "asc" },
+  });
+  const posted = (r: (typeof rows)[number]) =>
+    (r.assignment.postedAt ?? r.assignment.firstSeenAt).getTime();
+  return rows
+    .filter(
+      (r) => TEXT_CONTENT_KINDS.has(attachmentKind(r)) && !r.assignment.versions[0]?.expectsWork,
+    )
+    .sort((a, b) => posted(b) - posted(a))
+    .slice(0, opts.max)
+    .map(({ assignment: _, ...row }) => row);
+}
 
 interface Known {
   id: number;
@@ -519,6 +582,24 @@ export async function syncAccount(
           now,
         )),
       ];
+      for (const { result } of outcomes) {
+        if (!result.ok) stats.files.failed++;
+        else if ("metadataOnly" in result) stats.files.metadataOnly++;
+        else if (result.cached) stats.files.cached++;
+        else stats.files.fetched++;
+      }
+    }
+
+    // Teacher attachments of open posts the expects-work classifier will look at (#61): the
+    // homework of a lesson post often sits only in an attached deck or doc.
+    if (source.httpGet && !baseline && options.materials && options.materials.max > 0) {
+      const rows = await pickMaterialPrefetch(db, account.id, now, options.materials);
+      const outcomes = await fetchAttachmentContents(
+        db,
+        rows,
+        { get: source.httpGet, dataDir: options.dataDir, authuser: source.session.authuser },
+        now,
+      );
       for (const { result } of outcomes) {
         if (!result.ok) stats.files.failed++;
         else if ("metadataOnly" in result) stats.files.metadataOnly++;

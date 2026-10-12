@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import { type ReviewInput, reviewOutputJsonSchema } from "./types.ts";
+import { type JsonTask, type ReviewInput, reviewOutputJsonSchema } from "./types.ts";
 
 /** Generic fallback; the real domain prompt is supplied by the caller via `ReviewOptions.instructions`. */
 export const DEFAULT_INSTRUCTIONS =
@@ -44,12 +44,29 @@ export function buildPrompt(
   return parts.join("\n\n");
 }
 
-export function outputFormatInstructions(): string {
+export function outputFormatInstructions(
+  jsonSchema: Record<string, unknown> = reviewOutputJsonSchema,
+): string {
   return (
     "## Output format\n\nRespond with a single JSON object and nothing else (no prose, no code fences). " +
     "It must match this JSON Schema:\n\n" +
-    JSON.stringify(reviewOutputJsonSchema)
+    JSON.stringify(jsonSchema)
   );
+}
+
+/** Prompt of a generic `JsonTask`: instructions, the input as JSON, the output format. */
+export function buildJsonTaskPrompt(task: JsonTask<unknown>): string {
+  return [
+    task.instructions.trim(),
+    `## Input\n\n\`\`\`json\n${JSON.stringify(task.input, null, 2)}\n\`\`\``,
+    outputFormatInstructions(task.jsonSchema),
+  ].join("\n\n");
+}
+
+/** JSON Schema without `$schema`, for APIs that accept only a subset of it (Gemini). */
+export function bareJsonSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  const { $schema: _, ...rest } = schema;
+  return rest;
 }
 
 /** Follow-up prompt after an invalid answer: the original prompt plus what went wrong. */

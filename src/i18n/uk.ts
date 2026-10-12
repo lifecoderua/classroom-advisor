@@ -119,6 +119,7 @@ export const uk: Messages = {
       manual: "(переглянуто)",
       auto: "(закрито автоматично)",
       superseded: "(замінено новішою здачею)",
+      no_work_expected: "(у дописі немає домашнього завдання)",
     },
     partsNotChecked: (n) =>
       `🔍 не перевірено автоматично: ${n} ${plural(LOCALE, n, { one: "частина", few: "частини", many: "частин", other: "частини" })}`,

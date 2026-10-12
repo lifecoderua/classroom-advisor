@@ -92,9 +92,31 @@ export interface ReviewOptions {
   timeoutMs?: number;
 }
 
+/**
+ * A generic structured-output task: the caller owns the instructions, the input and the output
+ * schema (e.g. the expects-work classification, #61). Text only, no images or tools.
+ */
+export interface JsonTask<T> {
+  /** Task instructions (the domain prompt). */
+  instructions: string;
+  /** Serialized as JSON into the prompt. */
+  input: unknown;
+  /** Validates the model's answer. */
+  schema: z.ZodType<T>;
+  /** JSON Schema (draft-07) of `schema`, for providers that support structured output. */
+  jsonSchema: Record<string, unknown>;
+}
+
+export interface GenerateOptions {
+  /** Overrides the provider's default timeout. */
+  timeoutMs?: number;
+}
+
 export interface LlmProvider {
   readonly name: string;
   review(input: ReviewInput, opts?: ReviewOptions): Promise<ReviewOutput>;
+  /** Runs a `JsonTask`: validated output, one corrective retry on an invalid answer. */
+  generate<T>(task: JsonTask<T>, opts?: GenerateOptions): Promise<T>;
 }
 
 export class LlmError extends Error {

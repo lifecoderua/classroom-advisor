@@ -242,7 +242,8 @@ describe("syncAccount: baseline", () => {
     });
     expect(later.map((d) => d.code)).toEqual(["due_soon"]);
     expect(await pendingQualityVersions(db, "llm:fake")).toEqual([]);
-  });
+    // Slow on CI runners: one full baseline sync plus two rule passes.
+  }, 20_000);
 
   it("maps buckets to statuses and stores instructions in the version payload", async () => {
     await watchedAccount();

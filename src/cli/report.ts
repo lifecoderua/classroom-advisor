@@ -141,7 +141,16 @@ export function registerReportCommands(program: Command): void {
             const work = runCycle({
               db,
               sync: playwrightSync(config),
-              deadlineOptions: { lookbackDays: config.alertLookbackDays },
+              deadlineOptions: {
+                lookbackDays: config.alertLookbackDays,
+                // Lesson posts without homework don't get reminders (#61).
+                expectsWork: {
+                  provider,
+                  maxPerRun: config.expectsWorkMaxPerRun,
+                  readText: cachedTextReader(config.dataDir),
+                  log,
+                },
+              },
               provider,
               readText: cachedTextReader(config.dataDir),
               reviewOptions: {

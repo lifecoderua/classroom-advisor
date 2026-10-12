@@ -7,15 +7,20 @@ import {
   GoogleGenAI,
   type Part,
 } from "@google/genai";
+import type { z } from "zod";
 import { DEFAULT_GEMINI_MODEL } from "../config/index.ts";
 import {
+  bareJsonSchema,
   buildCorrectivePrompt,
+  buildJsonTaskPrompt,
   buildPrompt,
   extractJson,
   formatZodIssues,
   imagePaths,
 } from "./prompt.ts";
 import {
+  type GenerateOptions,
+  type JsonTask,
   LlmError,
   type LlmProvider,
   type ReviewInput,
@@ -70,10 +75,9 @@ export interface GeminiOptions {
  * `ReviewOutput` as a Gemini `responseJsonSchema`. The API supports a JSON Schema subset;
  * `$schema` is not part of it, everything else zod emits for this schema is.
  */
-export const geminiResponseSchema: Record<string, unknown> = (() => {
-  const { $schema: _, ...rest } = reviewOutputJsonSchema as Record<string, unknown>;
-  return rest;
-})();
+export const geminiResponseSchema: Record<string, unknown> = bareJsonSchema(
+  reviewOutputJsonSchema as Record<string, unknown>,
+);
 
 /** Full-jitter exponential backoff, at least the server's hint when it gave one. */
 export function backoffDelay(
@@ -94,6 +98,12 @@ export function retryDelayHint(message: string): number | undefined {
 }
 
 class InvalidOutput extends Error {}
+
+/** Output validation plus the `responseJsonSchema` sent to the API. */
+interface Shape<T> {
+  schema: z.ZodType<T>;
+  responseSchema: Record<string, unknown>;
+}
 class Retryable extends Error {
   constructor(
     message: string,
@@ -105,8 +115,13 @@ class Retryable extends Error {
 
 const trim = (s: string, n = 1_000) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
-/** Turns a Gemini response into a validated `ReviewOutput`. */
-export function parseGeminiResponse(res: GenerateContentResponse): ReviewOutput {
+/** Turns a Gemini response into a validated `ReviewOutput` (or the `schema`'s output). */
+export function parseGeminiResponse(res: GenerateContentResponse): ReviewOutput;
+export function parseGeminiResponse<T>(res: GenerateContentResponse, schema: z.ZodType<T>): T;
+export function parseGeminiResponse(
+  res: GenerateContentResponse,
+  schema: z.ZodType<unknown> = reviewOutputSchema,
+): unknown {
   const blocked = res.promptFeedback?.blockReason;
   if (blocked) throw new LlmError(`Gemini blocked the prompt (${blocked})`);
   const text = res.text;
@@ -120,7 +135,7 @@ export function parseGeminiResponse(res: GenerateContentResponse): ReviewOutput 
   } catch (err) {
     throw new InvalidOutput((err as Error).message);
   }
-  const parsed = reviewOutputSchema.safeParse(payload);
+  const parsed = schema.safeParse(payload);
   if (!parsed.success) throw new InvalidOutput(formatZodIssues(parsed.error));
   return parsed.data;
 }
@@ -166,12 +181,34 @@ export class GeminiProvider implements LlmProvider {
     const timeoutMs = options.timeoutMs ?? this.opts.timeoutMs;
     const prompt = buildPrompt(input, options.instructions, "inline");
     const images = await imageParts(imagePaths(input));
+    const shape = { schema: reviewOutputSchema, responseSchema: geminiResponseSchema };
+    return this.run(prompt, images, shape, timeoutMs);
+  }
+
+  async generate<T>(task: JsonTask<T>, options: GenerateOptions = {}): Promise<T> {
+    const shape = { schema: task.schema, responseSchema: bareJsonSchema(task.jsonSchema) };
+    const timeoutMs = options.timeoutMs ?? this.opts.timeoutMs;
+    return this.run(buildJsonTaskPrompt(task), [], shape, timeoutMs);
+  }
+
+  /** A call with one corrective retry on invalid output. */
+  private async run<T>(
+    prompt: string,
+    images: Part[],
+    shape: Shape<T>,
+    timeoutMs: number,
+  ): Promise<T> {
     try {
-      return await this.call(prompt, images, timeoutMs);
+      return await this.call(prompt, images, shape, timeoutMs);
     } catch (err) {
       if (!(err instanceof InvalidOutput)) throw err;
       try {
-        return await this.call(buildCorrectivePrompt(prompt, err.message), images, timeoutMs);
+        return await this.call(
+          buildCorrectivePrompt(prompt, err.message),
+          images,
+          shape,
+          timeoutMs,
+        );
       } catch (retryErr) {
         if (retryErr instanceof InvalidOutput) {
           throw new LlmError(`invalid model output after retry: ${retryErr.message}`);
@@ -182,10 +219,18 @@ export class GeminiProvider implements LlmProvider {
   }
 
   /** One logical call: transient HTTP failures are retried with backoff. */
-  private async call(prompt: string, images: Part[], timeoutMs: number): Promise<ReviewOutput> {
+  private async call<T>(
+    prompt: string,
+    images: Part[],
+    shape: Shape<T>,
+    timeoutMs: number,
+  ): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       try {
-        return parseGeminiResponse(await this.request(prompt, images, timeoutMs));
+        return parseGeminiResponse(
+          await this.request(prompt, images, shape.responseSchema, timeoutMs),
+          shape.schema,
+        );
       } catch (err) {
         if (!(err instanceof Retryable)) throw err;
         if (attempt >= this.backoff.maxRetries) {
@@ -201,13 +246,14 @@ export class GeminiProvider implements LlmProvider {
   private async request(
     prompt: string,
     images: Part[],
+    responseSchema: Record<string, unknown>,
     timeoutMs: number,
   ): Promise<GenerateContentResponse> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const config: GenerateContentConfig = {
       responseMimeType: "application/json",
-      responseJsonSchema: geminiResponseSchema,
+      responseJsonSchema: responseSchema,
       abortSignal: controller.signal,
     };
     try {

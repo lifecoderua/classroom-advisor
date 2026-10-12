@@ -113,8 +113,21 @@ model AssignmentVersion {
   /// Normalized assignment object as JSON.
   payload      String
   seenAt       DateTime   @default(now())
+  /// Does this content state ask the student to do anything (#61)? yes | no | unclear; null =
+  /// not classified yet. Classified lazily, only when a reminder (`untouched_24h`,
+  /// `no_due_date`) would fire. `no` suppresses those reminders for this version.
+  expectsWork       String?
+  /// Short reason from the classifier.
+  expectsWorkReason String?
+  /// llm:<provider> | skeleton (reused from an earlier version with the same `skeletonHash`).
+  expectsWorkSource String?
+  expectsWorkAt     DateTime?
+  /// Hash of the normalized title + description + attachment hashes (`skeletonHash` in
+  /// src/checks/expects-work.ts): a weekly call invite that only changes times and ids keeps it.
+  skeletonHash      String?
 
   @@index([assignmentId, seenAt])
+  @@index([skeletonHash])
 }
 
 /// The watched student's own submission; one per assignment (the account is the student).

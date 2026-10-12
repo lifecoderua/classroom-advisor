@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   ClaudeCliProvider,
   GeminiProvider,
@@ -186,6 +187,23 @@ describe.each([claudeHarness, geminiHarness])("LlmProvider contract: $name", (h)
     const s = h.make([{ fail: "fatal" }]);
     await expect(s.provider.review(input)).rejects.toThrow(LlmError);
     expect(s.prompts()).toHaveLength(1);
+  });
+
+  it("generate: runs a JSON task against the caller's schema, with a corrective retry", async () => {
+    const schema = z.strictObject({ answer: z.enum(["yes", "no"]) });
+    const task = {
+      instructions: "Classify.",
+      input: { title: "Lesson 3" },
+      schema,
+      jsonSchema: z.toJSONSchema(schema, { target: "draft-07" }) as Record<string, unknown>,
+    };
+    const s = h.make([{ text: '{"answer":"maybe"}' }, { text: '{"answer":"no"}' }]);
+    await expect(s.provider.generate(task)).resolves.toEqual({ answer: "no" });
+    expect(s.prompts()).toHaveLength(2);
+    expect(s.prompts()[0]?.startsWith("Classify.")).toBe(true);
+    expect(s.prompts()[0]).toContain('"Lesson 3"');
+    expect(s.prompts()[0]).toContain('"answer"');
+    expect(s.prompts()[1]).toContain("## Correction");
   });
 
   it("reports timeouts as LlmError", async () => {

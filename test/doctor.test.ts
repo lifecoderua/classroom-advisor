@@ -48,6 +48,7 @@ const base: Config = {
   claudeBin: "definitely-not-a-real-binary-xyz",
   geminiModel: "gemini-test",
   llmTimeoutMs: 1000,
+  expectsWorkMaxPerRun: 20,
   runIntervalMin: 60,
   alertLookbackDays: 14,
   digestLang: "en",

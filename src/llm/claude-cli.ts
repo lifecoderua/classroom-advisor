@@ -2,14 +2,18 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { z } from "zod";
 import {
   buildCorrectivePrompt,
+  buildJsonTaskPrompt,
   buildPrompt,
   extractJson,
   formatZodIssues,
   imagePaths,
 } from "./prompt.ts";
 import {
+  type GenerateOptions,
+  type JsonTask,
   LlmError,
   type LlmProvider,
   type ReviewInput,
@@ -78,13 +82,15 @@ export interface ClaudeCliOptions {
 export function buildClaudeArgs(opts: {
   model?: string | undefined;
   imageDirs: string[];
+  /** Output schema; the `ReviewOutput` one by default. */
+  jsonSchema?: Record<string, unknown>;
 }): string[] {
   const args = [
     "-p",
     "--output-format",
     "json",
     "--json-schema",
-    JSON.stringify(reviewOutputJsonSchema),
+    JSON.stringify(opts.jsonSchema ?? reviewOutputJsonSchema),
     "--no-session-persistence",
     "--strict-mcp-config",
   ];
@@ -101,8 +107,13 @@ class InvalidOutput extends Error {}
 
 const tail = (s: string, n = 2_000) => (s.length > n ? `…${s.slice(-n)}` : s).trim();
 
-/** Turns the CLI's JSON envelope into a validated `ReviewOutput`. */
-export function parseEnvelope(stdout: string): ReviewOutput {
+/** Turns the CLI's JSON envelope into a validated `ReviewOutput` (or the `schema`'s output). */
+export function parseEnvelope(stdout: string): ReviewOutput;
+export function parseEnvelope<T>(stdout: string, schema: z.ZodType<T>): T;
+export function parseEnvelope(
+  stdout: string,
+  schema: z.ZodType<unknown> = reviewOutputSchema,
+): unknown {
   let envelope: Record<string, unknown>;
   try {
     envelope = JSON.parse(stdout) as Record<string, unknown>;
@@ -123,7 +134,7 @@ export function parseEnvelope(stdout: string): ReviewOutput {
       throw new InvalidOutput((err as Error).message);
     }
   }
-  const parsed = reviewOutputSchema.safeParse(payload);
+  const parsed = schema.safeParse(payload);
   if (!parsed.success) throw new InvalidOutput(formatZodIssues(parsed.error));
   return parsed.data;
 }
@@ -144,16 +155,41 @@ export class ClaudeCliProvider implements LlmProvider {
       imageDirs: [...new Set(images.map((p) => dirname(p)))],
     });
     const prompt = buildPrompt(input, options.instructions);
+    return this.run(args, prompt, reviewOutputSchema, timeoutMs);
+  }
 
+  async generate<T>(task: JsonTask<T>, options: GenerateOptions = {}): Promise<T> {
+    const args = buildClaudeArgs({
+      model: this.opts.model,
+      imageDirs: [],
+      jsonSchema: task.jsonSchema,
+    });
+    const prompt = buildJsonTaskPrompt(task);
+    return this.run(args, prompt, task.schema, options.timeoutMs ?? this.opts.timeoutMs);
+  }
+
+  /** One logical call: a corrective retry on invalid output, from an empty scratch cwd. */
+  private async run<T>(
+    args: string[],
+    prompt: string,
+    schema: z.ZodType<T>,
+    timeoutMs: number,
+  ): Promise<T> {
     // Empty scratch cwd: no project CLAUDE.md, nothing readable beyond --add-dir.
     const cwd = mkdtempSync(join(tmpdir(), "ca-llm-"));
     try {
       try {
-        return await this.call(args, prompt, cwd, timeoutMs);
+        return await this.call(args, prompt, cwd, timeoutMs, schema);
       } catch (err) {
         if (!(err instanceof InvalidOutput)) throw err;
         try {
-          return await this.call(args, buildCorrectivePrompt(prompt, err.message), cwd, timeoutMs);
+          return await this.call(
+            args,
+            buildCorrectivePrompt(prompt, err.message),
+            cwd,
+            timeoutMs,
+            schema,
+          );
         } catch (retryErr) {
           if (retryErr instanceof InvalidOutput) {
             throw new LlmError(`invalid model output after retry: ${retryErr.message}`);
@@ -166,12 +202,13 @@ export class ClaudeCliProvider implements LlmProvider {
     }
   }
 
-  private async call(
+  private async call<T>(
     args: string[],
     stdin: string,
     cwd: string,
     timeoutMs: number,
-  ): Promise<ReviewOutput> {
+    schema: z.ZodType<T>,
+  ): Promise<T> {
     const res = await this.runner(this.opts.bin, { args, stdin, cwd, timeoutMs });
     if (res.timedOut) {
       throw new LlmError(
@@ -188,6 +225,6 @@ export class ClaudeCliProvider implements LlmProvider {
       }
       throw new LlmError(`claude CLI exited with code ${res.code}: ${detail || "(no output)"}`);
     }
-    return parseEnvelope(res.stdout);
+    return parseEnvelope(res.stdout, schema);
   }
 }

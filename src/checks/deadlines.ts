@@ -26,6 +26,12 @@ export interface DeadlineInput {
      * panics (`missing`, `due_soon`) apply to it.
      */
     baseline?: boolean;
+    /**
+     * Expects-work verdict of the current content version (#61): `no` (a lesson invite or a
+     * schedule entry without homework) suppresses the reminders (`untouched_24h`,
+     * `no_due_date`). `yes`, `unclear` or unknown (null/absent) change nothing. Panics stay.
+     */
+    expectsWork?: ExpectsWork | null;
   };
   submission?: {
     state: string;
@@ -37,7 +43,13 @@ export interface DeadlineInput {
   } | null;
 }
 
+export const EXPECTS_WORK = ["yes", "no", "unclear"] as const;
+export type ExpectsWork = (typeof EXPECTS_WORK)[number];
+
 export type DeadlineCode = "untouched_24h" | "due_soon" | "missing" | "no_due_date";
+
+/** Codes a `no` expects-work verdict suppresses (#61); the panics are never suppressed. */
+export const REMINDER_CODES: ReadonlySet<DeadlineCode> = new Set(["untouched_24h", "no_due_date"]);
 
 export interface AlertDraft {
   key: string;
@@ -88,8 +100,12 @@ export function deadlineAlerts(
   const t = now.getTime();
   const posted = (a.postedAt ?? a.firstSeenAt).getTime();
   const due = a.dueAt?.getTime();
-  // Reminders only for recent, post-baseline items; old lesson posts would flood the digest.
-  const remind = !a.baseline && t - posted <= (options.lookbackMs ?? Number.POSITIVE_INFINITY);
+  // Reminders only for recent, post-baseline items that may ask for work; old lesson posts and
+  // posts without homework (#61) would flood the digest.
+  const remind =
+    !a.baseline &&
+    a.expectsWork !== "no" &&
+    t - posted <= (options.lookbackMs ?? Number.POSITIVE_INFINITY);
   const item = { title: a.title, course: a.courseName };
   const key = (code: DeadlineCode, suffix?: string) =>
     `deadline:${a.id}:${code}${suffix ? `:${suffix}` : ""}`;

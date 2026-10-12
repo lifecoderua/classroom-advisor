@@ -26,7 +26,7 @@ import { type TurnedInInput, type TurnedInResult, turnedInSignals } from "./heur
 import { isRedoRequest, redoDue } from "./redo.ts";
 
 /** Versioned domain prompt; the id is stored with every LLM CheckResult. */
-export const REVIEW_PROMPT_VERSION = "review.v4";
+export const REVIEW_PROMPT_VERSION = "review.v5";
 
 let promptCache: string | undefined;
 

@@ -107,10 +107,10 @@ export const ru: Messages = {
     panics: "🔴 Срочно",
     alerts: "🟠 Внимание",
     turnedIn: "📥 Сдано",
-    upcoming: "📅 Срок сдачи в ближайшие 7 дней",
+    upcoming: (days) => `🟢 К сведению: срок впереди (${days} ${plural(LOCALE, days, DAYS)})`,
     checkByHand: "🔍 Проверьте сами",
     debts: "📌 Хвосты",
-    info: "ℹ️  К сведению",
+    info: "ℹ️  Напоминания",
     other: "Другое",
     nothing: "Ничего нового.",
     heuristicsOnly: "(только автоматические признаки)",
@@ -157,6 +157,9 @@ export const ru: Messages = {
     },
     openCounts: (p, a, i, u) => `Открытые: 🔴 ${p} · 🟠 ${a} · ℹ️ ${i} (не отправлено: ${u})`,
     debtCount: (n) => `📌 Хвосты: ${n}`,
+    upcoming: (days) =>
+      `🟢 <i>К сведению: срок впереди (${days} ${plural(LOCALE, days, DAYS)})</i>`,
+    upcomingCount: (n) => `🟢 Срок впереди: ${n}`,
     statusFooter: (time, days) =>
       `Сводка дня в ${time}. Открытые — ещё не отмеченные через /ack, за 7 дней; хвосты забываются через ${days} ${plural(LOCALE, days, DAYS)}.`,
     nothingPending: "Ничего нового.",

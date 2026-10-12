@@ -465,6 +465,50 @@ describe("TelegramNotifier", () => {
     expect(String(f.sent().at(-1)?.body.text)).toBe("Nothing pending.");
   });
 
+  it("lists upcoming work (beyond a day, within the horizon) in the digest and /status", async () => {
+    const { account } = await seed();
+    await db.alert.updateMany({ data: { sentAt: clock, mutedAt: clock } }); // nothing pending
+    const course = await db.course.findFirstOrThrow();
+    const add = async (classroomId: string, title: string, dueAt: Date, extra = {}) =>
+      upsertAssignment(db, {
+        accountId: account.id,
+        courseId: course.id,
+        classroomId,
+        kind: "assignment",
+        title,
+        status: "assigned",
+        dueAt,
+        hash: title,
+        payload: {},
+        ...extra,
+      });
+    await add("301", "Poem", at(10, 0, 13));
+    await add("302", "Old baseline", at(10, 0, 12), { baseline: true });
+    await add("303", "Soon", at(20, 0, 10)); // within a day: its own panic
+    await add("304", "Far", at(10, 0, 30)); // beyond 14 days
+    await add("305", "Excused", at(10, 0, 13), { status: "excused" });
+    const f = fakeFetch();
+    const n = notifier(f, { lang: "uk" });
+    clock = at(19, 5);
+    await n.afterCycle();
+    const digest = String(f.sent()[0]?.body.text);
+    expect(digest).toContain("🟢 <i>До відома: термін попереду (14 днів)</i>");
+    const lines = digest.split("\n").filter((l) => l.startsWith("🟢 ") && !l.includes("<i>"));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("пн, 12 жовт., 10:00 (через 39 год) «Old baseline» (Math)");
+    expect(lines[1]).toContain("«Poem» (Math) · <a href=");
+    await n.handleUpdate({
+      update_id: 1,
+      message: {
+        message_id: 1,
+        date: 0,
+        chat: { id: Number(CHAT), type: "private" },
+        text: "/status",
+      },
+    });
+    expect(String(f.sent()[1]?.body.text)).toContain("🟢 Термін попереду: 2");
+  });
+
   it("answers commands in a linked group, also with @bot", async () => {
     await seed();
     const GROUP = "-1001234567890";

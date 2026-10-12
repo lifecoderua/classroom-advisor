@@ -70,7 +70,8 @@ export interface Messages {
     panics: string;
     alerts: string;
     turnedIn: string;
-    upcoming: string;
+    /** The green "upcoming" block header (#53). */
+    upcoming(days: number): string;
     checkByHand: string;
     debts: string;
     info: string;
@@ -101,6 +102,8 @@ export interface Messages {
     syncStatus: Record<string, string>;
     openCounts(panic: number, alert: number, info: number, unsent: number): string;
     debtCount(n: number): string;
+    upcoming(days: number): string;
+    upcomingCount(n: number): string;
     statusFooter(digestTime: string, forgetDays: number): string;
     nothingPending: string;
     acked(id: number): string;

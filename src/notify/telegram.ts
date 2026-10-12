@@ -6,6 +6,7 @@ import {
   DEFAULT_LANG,
   formatAge,
   formatAgo,
+  formatIn,
   formatTime,
   itemLabel,
   type Lang,
@@ -20,11 +21,12 @@ import type { AlertLevel } from "../store/types.ts";
 import {
   alertText,
   buildReport,
+  DEFAULT_UPCOMING_DAYS,
   parseAlertKey,
   type Report,
   type ReportAlert,
   reportHasAlerts,
-  reportHasBacklog,
+  type UpcomingItem,
 } from "./console.ts";
 
 // Telegram notifier over the plain Bot API (fetch, no SDK). Panics go out right after each `run`
@@ -49,6 +51,8 @@ export interface Sent {
   debts: number;
   /** Alerts closed automatically since the previous digest (a count line, #51). */
   closed: number;
+  /** Items in the upcoming block (#53). */
+  upcoming: number;
 }
 
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
@@ -259,6 +263,13 @@ function debtLine(d: Debt, now: Date, lang: Lang): string {
   }</a>${ack}`;
 }
 
+function upcomingLine(u: UpcomingItem, now: Date, loc: Locale): string {
+  const when = `${formatTime(u.dueAt, loc)} (${formatIn(u.dueAt.getTime() - now.getTime(), loc.lang)})`;
+  return `🟢 ${escapeHtml(when)} ${escapeHtml(
+    truncate(itemLabel(u.title, u.courseName, loc.lang), LINE_CAP),
+  )} · <a href="${escapeHtml(u.url)}">${messages(loc.lang).telegram.open}</a>`;
+}
+
 /**
  * The alerts of a report, grouped per kid (panics, alerts, info), as Telegram HTML. "Check by
  * hand" items (`quality:<id>:unchecked`, level `info`, so never sent at once) get their own
@@ -274,7 +285,9 @@ export function formatAlertsHtml(
   const out = [`${opts.title} · ${escapeHtml(formatTime(report.generatedAt, loc))}`];
   for (const a of report.accounts) {
     const alerts = [...a.panics, ...a.alerts, ...a.info];
-    if (alerts.length + a.checkByHand.length + a.backlog.length === 0) continue;
+    if (alerts.length + a.checkByHand.length + a.backlog.length + a.upcoming.length === 0) {
+      continue;
+    }
     out.push(
       "",
       `👤 <b>${escapeHtml(a.label)}</b>`,
@@ -285,6 +298,12 @@ export function formatAlertsHtml(
     }
     if (a.backlog.length) {
       out.push(t.debts, ...a.backlog.map((d) => debtLine(d, report.generatedAt, loc.lang)));
+    }
+    if (a.upcoming.length) {
+      out.push(
+        t.upcoming(report.upcomingDays),
+        ...a.upcoming.map((u) => upcomingLine(u, report.generatedAt, loc)),
+      );
     }
   }
   if (report.other.length) {
@@ -443,6 +462,8 @@ export interface NotifierOptions {
   lang?: Lang;
   /** Open debts older than this are left out of digests and `/status` (default 14). */
   backlogForgetDays?: number;
+  /** Horizon of the upcoming block in digests and `/status`, in days (default 14). */
+  upcomingDays?: number;
   quietHours?: QuietHours;
   /** JSON file for the update offset and the last digest day (`<dataDir>/telegram.json`). */
   statePath: string;
@@ -577,7 +598,7 @@ export class TelegramNotifier {
       select: { id: true },
       orderBy: { id: "asc" },
     });
-    const none = { alerts: 0, debts: 0, closed: 0 };
+    const none = { alerts: 0, debts: 0, closed: 0, upcoming: 0 };
     if (rows.length === 0 && !backlog) return none;
     const closedSince = this.state.lastDigestAt
       ? new Date(this.state.lastDigestAt)
@@ -588,11 +609,16 @@ export class TelegramNotifier {
       alertIds: ids,
       ...(this.opts.watchedEmails ? { watchedEmails: this.opts.watchedEmails } : {}),
       ...(backlog
-        ? { backlog: { forgetDays: this.forgetDays }, autoClosedSince: closedSince }
+        ? {
+            backlog: { forgetDays: this.forgetDays },
+            autoClosedSince: closedSince,
+            upcoming: { days: this.opts.upcomingDays ?? DEFAULT_UPCOMING_DAYS },
+          }
         : {}),
     });
     const debts = report.accounts.reduce((n, a) => n + a.backlog.length, 0);
-    if (!reportHasAlerts(report) && !reportHasBacklog(report) && !report.autoClosed) return none;
+    const upcoming = report.accounts.reduce((n, a) => n + a.upcoming.length, 0);
+    if (!reportHasAlerts(report) && !debts && !upcoming && !report.autoClosed) return none;
     const all = report.accounts.flatMap((a) => [
       ...a.panics,
       ...a.alerts,
@@ -607,7 +633,7 @@ export class TelegramNotifier {
       this.state.lastDigestAt = now.toISOString();
       this.saveState();
     }
-    return { alerts: ids.length, debts, closed: report.autoClosed };
+    return { alerts: ids.length, debts, closed: report.autoClosed, upcoming };
   }
 
   /** Unsent panics, right away (also during quiet hours). Returns the count. */
@@ -632,7 +658,7 @@ export class TelegramNotifier {
   /** Sends the daily digest when due; failures are logged and retried after 5 minutes. */
   async maybeSendDigest(): Promise<Sent> {
     const now = this.now();
-    const none = { alerts: 0, debts: 0, closed: 0 };
+    const none = { alerts: 0, debts: 0, closed: 0, upcoming: 0 };
     if (!this.digestDue(now) || now.getTime() < this.digestRetryAt) return none;
     try {
       const sent = await this.sendDigest(messages(this.lang).telegram.dailyDigest);
@@ -647,9 +673,9 @@ export class TelegramNotifier {
   }
 
   private logDigest(sent: Sent): void {
-    if (sent.alerts + sent.debts + sent.closed) {
+    if (sent.alerts + sent.debts + sent.closed + sent.upcoming) {
       this.log(
-        `telegram: digest with ${sent.alerts} alert(s), ${sent.debts} open debt(s), ${sent.closed} auto-closed sent`,
+        `telegram: digest with ${sent.alerts} alert(s), ${sent.debts} open debt(s), ${sent.upcoming} upcoming, ${sent.closed} auto-closed sent`,
       );
     }
   }
@@ -679,6 +705,7 @@ export class TelegramNotifier {
     const report = await buildReport(db, {
       now,
       alertIds: open.map((a) => a.id),
+      upcoming: { days: this.opts.upcomingDays ?? DEFAULT_UPCOMING_DAYS },
       ...(this.opts.watchedEmails ? { watchedEmails: this.opts.watchedEmails } : {}),
     });
     const accounts = await db.account.findMany({
@@ -720,6 +747,7 @@ export class TelegramNotifier {
         t.lastSync(sync),
         counts([...a.panics, ...a.alerts, ...a.checkByHand, ...a.info]),
         t.debtCount(debtCount(a.id)),
+        t.upcomingCount(a.upcoming.length),
       );
     }
     if (report.other.length) out.push("", `${t.other}: ${counts(report.other)}`);
@@ -756,8 +784,9 @@ export class TelegramNotifier {
         return;
       case "digest": {
         const sent = await this.sendDigest();
-        if (sent.alerts + sent.debts + sent.closed === 0)
+        if (sent.alerts + sent.debts + sent.closed + sent.upcoming === 0) {
           await this.reply(chatId, t.nothingPending);
+        }
         return;
       }
       case "ack": {

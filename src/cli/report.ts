@@ -60,6 +60,7 @@ export function registerReportCommands(program: Command): void {
           since,
           watchedEmails: config.watchedAccounts,
           backlog: { forgetDays: config.backlogForgetDays },
+          upcoming: { days: config.upcomingDays },
           ...(since ? { autoClosedSince: since } : {}),
         });
         console.log(formatReport(report, { lang: config.digestLang, timeZone: config.timeZone }));
@@ -96,6 +97,7 @@ export function registerReportCommands(program: Command): void {
                 chatIds: config.telegramChatIds,
                 digestTime: config.telegramDigestTime,
                 backlogForgetDays: config.backlogForgetDays,
+                upcomingDays: config.upcomingDays,
                 lang: config.digestLang,
                 timeZone: config.timeZone,
                 onChatMigrated: (from, to) => {

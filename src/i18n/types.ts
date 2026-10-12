@@ -111,5 +111,16 @@ export interface Messages {
     ackUsage: string;
     help: string;
     test: string;
+    /** Bot menu (`setMyCommands`): command → short description. */
+    commands: Record<"status" | "digest" | "refresh" | "recheck" | "ack" | "help", string>;
+    refreshing: string;
+    alreadyRunning: string;
+    cooldown(leftMin: number, everyMin: number): string;
+    freshDigest: string;
+    recheckQueued(item: string): string;
+    recheckUsage: string;
+    recheckNotTurnedIn(item: string): string;
+    recheckDone(item: string, verdict: string): string;
+    recheckFailed(item: string): string;
   };
 }

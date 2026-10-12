@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type Debt, debtAgeDays, loadBacklog } from "../checks/backlog.ts";
+import { findRecheckTarget, type RecheckResult } from "../checks/recheck.ts";
 import { detailsUrl } from "../collector/classroom/todo.ts";
 import {
   DEFAULT_LANG,
@@ -12,6 +13,7 @@ import {
   type Lang,
   type Locale,
   messages,
+  renderAlert,
   zonedClock,
 } from "../i18n/index.ts";
 import { abortableSleep } from "../run/cycle.ts";
@@ -234,16 +236,27 @@ export function splitMessage(html: string, limit = MESSAGE_LIMIT): string[] {
 
 const LEVEL_ICON: Record<AlertLevel, string> = { panic: "🔴", alert: "🟠", info: "ℹ️" };
 
+/**
+ * A tappable command: `/ack_12@my_bot`. In groups Telegram only links underscore commands that
+ * carry the bot's username; in private chats the suffix is harmless.
+ */
+export function commandRef(name: string, id: number, bot?: string): string {
+  return `/${name}_${id}${bot ? `@${bot}` : ""}`;
+}
+
 function alertLine(
   a: ReportAlert,
-  links: ReadonlyMap<number, string>,
-  loc: Locale,
+  targets: ReadonlyMap<number, AlertTarget>,
+  opts: { loc: Locale; bot?: string | undefined },
   icon = LEVEL_ICON[a.level],
 ): string {
-  const url = links.get(a.id);
-  const open = messages(loc.lang).telegram.open;
-  const link = url ? ` · <a href="${escapeHtml(url)}">${open}</a>` : "";
-  return `${icon} ${escapeHtml(truncate(alertText(a, loc), LINE_CAP))}${link} · /ack_${a.id}`;
+  const target = targets.get(a.id);
+  const open = messages(opts.loc.lang).telegram.open;
+  const link = target ? ` · <a href="${escapeHtml(target.url)}">${open}</a>` : "";
+  const recheck = target?.recheck
+    ? ` · ${commandRef("recheck", target.assignmentId, opts.bot)}`
+    : "";
+  return `${icon} ${escapeHtml(truncate(alertText(a, opts.loc), LINE_CAP))}${link}${recheck} · ${commandRef("ack", a.id, opts.bot)}`;
 }
 
 export interface TelegramFormatOptions {
@@ -251,16 +264,27 @@ export interface TelegramFormatOptions {
   title: string;
   lang?: Lang;
   timeZone?: string | undefined;
+  /** Bot username (without `@`), appended to tappable commands so they link in groups. */
+  bot?: string | undefined;
+  /** Assignments with turned-in work: their debt lines get `/recheck_<id>`. */
+  recheckable?: ReadonlySet<number>;
+  /** Shown when the message has nothing else (a `/refresh` digest is always sent). */
+  emptyText?: string;
 }
 
-function debtLine(d: Debt, now: Date, lang: Lang): string {
-  const m = messages(lang);
-  const ack = d.alertId === null ? "" : ` · /ack_${d.alertId}`;
+function debtLine(
+  d: Debt,
+  now: Date,
+  opts: { lang: Lang; bot?: string | undefined; recheck: boolean },
+): string {
+  const m = messages(opts.lang);
+  const recheck = opts.recheck ? ` · ${commandRef("recheck", d.assignmentId, opts.bot)}` : "";
+  const ack = d.alertId === null ? "" : ` · ${commandRef("ack", d.alertId, opts.bot)}`;
   return `${m.report.debt[d.kind]}: ${escapeHtml(
-    truncate(itemLabel(d.title, d.courseName, lang), LINE_CAP),
-  )} · ${formatAge(debtAgeDays(d, now), lang)} · <a href="${escapeHtml(d.url)}">${
+    truncate(itemLabel(d.title, d.courseName, opts.lang), LINE_CAP),
+  )} · ${formatAge(debtAgeDays(d, now), opts.lang)} · <a href="${escapeHtml(d.url)}">${
     m.telegram.open
-  }</a>${ack}`;
+  }</a>${recheck}${ack}`;
 }
 
 function upcomingLine(u: UpcomingItem, now: Date, loc: Locale): string {
@@ -277,12 +301,14 @@ function upcomingLine(u: UpcomingItem, now: Date, loc: Locale): string {
  */
 export function formatAlertsHtml(
   report: Report,
-  links: ReadonlyMap<number, string>,
+  targets: ReadonlyMap<number, AlertTarget>,
   opts: TelegramFormatOptions,
 ): string {
   const loc: Locale = { lang: opts.lang ?? DEFAULT_LANG, timeZone: opts.timeZone };
+  const line = { loc, bot: opts.bot };
   const t = messages(loc.lang).telegram;
   const out = [`${opts.title} · ${escapeHtml(formatTime(report.generatedAt, loc))}`];
+  const head = out.length;
   for (const a of report.accounts) {
     const alerts = [...a.panics, ...a.alerts, ...a.info];
     if (alerts.length + a.checkByHand.length + a.backlog.length + a.upcoming.length === 0) {
@@ -291,13 +317,22 @@ export function formatAlertsHtml(
     out.push(
       "",
       `👤 <b>${escapeHtml(a.label)}</b>`,
-      ...alerts.map((x) => alertLine(x, links, loc)),
+      ...alerts.map((x) => alertLine(x, targets, line)),
     );
     if (a.checkByHand.length) {
-      out.push(t.checkByHand, ...a.checkByHand.map((x) => alertLine(x, links, loc, "🔍")));
+      out.push(t.checkByHand, ...a.checkByHand.map((x) => alertLine(x, targets, line, "🔍")));
     }
     if (a.backlog.length) {
-      out.push(t.debts, ...a.backlog.map((d) => debtLine(d, report.generatedAt, loc.lang)));
+      out.push(
+        t.debts,
+        ...a.backlog.map((d) =>
+          debtLine(d, report.generatedAt, {
+            lang: loc.lang,
+            bot: opts.bot,
+            recheck: opts.recheckable?.has(d.assignmentId) ?? false,
+          }),
+        ),
+      );
     }
     if (a.upcoming.length) {
       out.push(
@@ -307,10 +342,28 @@ export function formatAlertsHtml(
     }
   }
   if (report.other.length) {
-    out.push("", t.other, ...report.other.map((x) => alertLine(x, links, loc)));
+    out.push("", t.other, ...report.other.map((x) => alertLine(x, targets, line)));
   }
   if (report.autoClosed) out.push("", messages(loc.lang).report.autoClosed(report.autoClosed));
+  if (out.length === head && opts.emptyText) out.push("", opts.emptyText);
   return out.join("\n");
+}
+
+/** What a digest line links to: the assignment details page, and whether it can be re-checked. */
+export interface AlertTarget {
+  url: string;
+  assignmentId: number;
+  /** The assignment has turned-in work (`/recheck_<assignmentId>` makes sense). */
+  recheck: boolean;
+}
+
+/** Assignment ids among `ids` with turned-in (or returned) work. */
+export async function recheckableAssignments(db: Db, ids: readonly number[]): Promise<Set<number>> {
+  const rows = await db.submission.findMany({
+    where: { assignmentId: { in: [...new Set(ids)] }, state: { in: ["turned_in", "returned"] } },
+    select: { assignmentId: true },
+  });
+  return new Set(rows.map((r) => r.assignmentId));
 }
 
 /**
@@ -320,7 +373,7 @@ export function formatAlertsHtml(
 export async function alertLinks(
   db: Db,
   alerts: readonly Pick<ReportAlert, "id" | "key">[],
-): Promise<Map<number, string>> {
+): Promise<Map<number, AlertTarget>> {
   const parsed = alerts.map((a) => [a.id, parseAlertKey(a.key)] as const);
   const versionIds = parsed.flatMap(([, p]) => (p?.kind === "quality" ? [p.versionId] : []));
   const commentIds = parsed.flatMap(([, p]) => (p?.kind === "comment" ? [p.commentId] : []));
@@ -356,8 +409,14 @@ export async function alertLinks(
       kind: true,
       account: { select: { email: true } },
       course: { select: { classroomId: true } },
+      submission: { select: { state: true } },
     },
   });
+  const done = new Set(
+    assignments.flatMap((a) =>
+      a.submission && ["turned_in", "returned"].includes(a.submission.state) ? [a.id] : [],
+    ),
+  );
   const urls = new Map(
     assignments.map((a) => [
       a.id,
@@ -369,10 +428,10 @@ export async function alertLinks(
       ),
     ]),
   );
-  const out = new Map<number, string>();
+  const out = new Map<number, AlertTarget>();
   for (const [alertId, assignmentId] of assignmentOf) {
     const url = urls.get(assignmentId);
-    if (url) out.set(alertId, url);
+    if (url) out.set(alertId, { url, assignmentId, recheck: done.has(assignmentId) });
   }
   return out;
 }
@@ -481,7 +540,17 @@ export interface NotifierOptions {
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   /** Long-poll timeout per `getUpdates`, in seconds. */
   pollTimeoutSec?: number;
+  /** At most one manual cycle (`/refresh`, `/recheck`) per this many minutes (default 5). */
+  refreshCooldownMin?: number;
+  /** Bot username (no `@`); `setup()` reads it with `getMe` when not given. */
+  botUsername?: string;
 }
+
+/** Default `refreshCooldownMin`. */
+export const DEFAULT_REFRESH_COOLDOWN_MIN = 5;
+
+/** The bot's commands, for `setMyCommands`. */
+export const BOT_COMMANDS = ["status", "digest", "refresh", "recheck", "ack", "help"] as const;
 
 export class TelegramNotifier {
   private readonly now: () => Date;
@@ -493,6 +562,19 @@ export class TelegramNotifier {
   private chatIds: string[];
   /** After a failed scheduled digest, don't retry before this time. */
   private digestRetryAt = 0;
+  /** A `run` cycle is in progress (commands are polled meanwhile, see `during`). */
+  private busy = false;
+  /** Chats waiting for a fresh digest after the next/current cycle (`/refresh`). */
+  private refreshWaiters = new Set<string>();
+  /** `/refresh` asked for a cycle that hasn't started yet. */
+  private refreshQueued = false;
+  /** `/recheck` requests not handed to a cycle yet: assignment id → chats to answer. */
+  private rechecks = new Map<number, Set<string>>();
+  /** Rechecks handed to the current cycle. */
+  private recheckInFlight = new Map<number, Set<string>>();
+  /** When the last manual cycle started (epoch ms). */
+  private lastManualAt = Number.NEGATIVE_INFINITY;
+  private bot: string | undefined;
 
   constructor(private readonly opts: NotifierOptions) {
     this.now = opts.now ?? (() => new Date());
@@ -502,6 +584,80 @@ export class TelegramNotifier {
     this.state = readState(opts.statePath);
     const moved = this.state.chatMigrations ?? {};
     this.chatIds = [...new Set(opts.chatIds.map((id) => moved[id] ?? id))];
+    this.bot = opts.botUsername;
+  }
+
+  /**
+   * Startup: reads the bot's username (for `/cmd_<id>@bot` links, which groups need) and
+   * registers the command menu for private chats (default scope) and all group chats. Failures
+   * are logged; the bot works without them.
+   */
+  async setup(): Promise<void> {
+    try {
+      if (!this.bot) this.bot = (await this.opts.api.getMe()).username;
+      const t = messages(this.lang).telegram;
+      const commands = BOT_COMMANDS.map((c) => ({ command: c, description: t.commands[c] }));
+      for (const type of ["default", "all_group_chats"]) {
+        await this.opts.api.call("setMyCommands", { commands, scope: { type } });
+      }
+    } catch (err) {
+      this.log(`telegram: setup failed: ${this.describe(err)}`);
+    }
+  }
+
+  private get cooldownMs(): number {
+    return (this.opts.refreshCooldownMin ?? DEFAULT_REFRESH_COOLDOWN_MIN) * 60_000;
+  }
+
+  /** A manual cycle is asked for and the cooldown has passed: the loop should run one now. */
+  manualPending(at: Date = this.now()): boolean {
+    if (this.busy) return false;
+    if (!this.refreshQueued && this.rechecks.size === 0) return false;
+    return at.getTime() >= this.lastManualAt + this.cooldownMs;
+  }
+
+  /**
+   * Called when a cycle starts: hands it the queued rechecks (assignment ids) and, when it was
+   * asked for by hand, starts the cooldown.
+   */
+  startCycle(): number[] {
+    if (this.manualPending()) this.lastManualAt = this.now().getTime();
+    this.refreshQueued = false;
+    for (const [id, chats] of this.rechecks) {
+      const set = this.recheckInFlight.get(id) ?? new Set<string>();
+      for (const c of chats) set.add(c);
+      this.recheckInFlight.set(id, set);
+    }
+    this.rechecks.clear();
+    return [...this.recheckInFlight.keys()];
+  }
+
+  /**
+   * Runs a cycle while answering commands: polls `getUpdates` with short timeouts until `work`
+   * settles (a `/refresh` meanwhile gets "already running" and the digest afterwards).
+   */
+  async during<T>(work: Promise<T>): Promise<T> {
+    this.busy = true;
+    const stop = new AbortController();
+    const settled = work.finally(() => stop.abort());
+    const poll = (async () => {
+      const sleep = this.opts.sleep ?? abortableSleep;
+      while (!stop.signal.aborted) {
+        try {
+          await this.pollOnce(Math.min(this.pollTimeoutSec, 10), stop.signal);
+        } catch (err) {
+          if (stop.signal.aborted) break;
+          this.log(`telegram: polling failed: ${this.describe(err)}`);
+          await sleep(10_000, stop.signal);
+        }
+      }
+    })();
+    try {
+      return await settled;
+    } finally {
+      this.busy = false;
+      await poll;
+    }
   }
 
   private get lang(): Lang {
@@ -580,12 +736,14 @@ export class TelegramNotifier {
 
   /**
    * Sends unsent, unmuted alerts (recent ones only) and marks them sent; with `backlog`, the
-   * open debts too (sent even when no alert is new). Returns what was sent.
+   * open debts too (sent even when no alert is new). `to` sends to that chat only, and `always`
+   * sends even an empty digest (`/refresh`). Returns what was sent.
    */
   private async sendAlerts(
     levels: readonly AlertLevel[] | null,
     title: string,
     backlog = false,
+    target: { to?: string; always?: boolean } = {},
   ): Promise<Sent> {
     const now = this.now();
     const rows = await this.opts.db.alert.findMany({
@@ -599,7 +757,7 @@ export class TelegramNotifier {
       orderBy: { id: "asc" },
     });
     const none = { alerts: 0, debts: 0, closed: 0, upcoming: 0 };
-    if (rows.length === 0 && !backlog) return none;
+    if (rows.length === 0 && !backlog && !target.always) return none;
     const closedSince = this.state.lastDigestAt
       ? new Date(this.state.lastDigestAt)
       : new Date(now.getTime() - DAY_MS);
@@ -618,16 +776,28 @@ export class TelegramNotifier {
     });
     const debts = report.accounts.reduce((n, a) => n + a.backlog.length, 0);
     const upcoming = report.accounts.reduce((n, a) => n + a.upcoming.length, 0);
-    if (!reportHasAlerts(report) && !debts && !upcoming && !report.autoClosed) return none;
+    const empty = !reportHasAlerts(report) && !debts && !upcoming && !report.autoClosed;
+    if (empty && !target.always) return none;
     const all = report.accounts.flatMap((a) => [
       ...a.panics,
       ...a.alerts,
       ...a.checkByHand,
       ...a.info,
     ]);
-    const links = await alertLinks(this.opts.db, [...all, ...report.other]);
-    const html = formatAlertsHtml(report, links, { title, ...this.loc });
-    await this.broadcast(html);
+    const targets = await alertLinks(this.opts.db, [...all, ...report.other]);
+    const recheckable = await recheckableAssignments(
+      this.opts.db,
+      report.accounts.flatMap((a) => a.backlog.map((d) => d.assignmentId)),
+    );
+    const html = formatAlertsHtml(report, targets, {
+      title,
+      ...this.loc,
+      bot: this.bot,
+      recheckable,
+      emptyText: messages(this.lang).telegram.nothingPending,
+    });
+    if (target.to) await this.sendTo(target.to, splitMessage(html));
+    else await this.broadcast(html);
     await markAlertsSent(this.opts.db, ids, this.now());
     if (backlog) {
       this.state.lastDigestAt = now.toISOString();
@@ -680,15 +850,59 @@ export class TelegramNotifier {
     }
   }
 
-  /** After a `run` cycle: panics at once, then the digest if it's due. Never throws. */
-  async afterCycle(): Promise<void> {
+  /**
+   * After a `run` cycle: panics at once, answers the rechecks, sends a fresh digest to every chat
+   * that asked with `/refresh`, then the daily digest if it's due. Never throws.
+   */
+  async afterCycle(result: { rechecked?: readonly RecheckResult[] } = {}): Promise<void> {
     try {
       const n = await this.sendPanics();
       if (n) this.log(`telegram: sent ${n} panic(s)`);
     } catch (err) {
       this.log(`telegram: sending panics failed: ${this.describe(err)}`);
     }
+    await this.answerRechecks(result.rechecked ?? []);
+    const waiters = [...this.refreshWaiters];
+    this.refreshWaiters.clear();
+    for (const chatId of waiters) {
+      try {
+        const title = messages(this.lang).telegram.freshDigest;
+        this.logDigest(await this.sendAlerts(null, title, true, { to: chatId, always: true }));
+      } catch (err) {
+        this.log(`telegram: fresh digest failed: ${this.describe(err)}`);
+      }
+    }
     this.logDigest(await this.maybeSendDigest());
+  }
+
+  private async answerRechecks(results: readonly RecheckResult[]): Promise<void> {
+    const t = messages(this.lang).telegram;
+    const verdicts = messages(this.lang).report.verdict;
+    for (const r of results) {
+      const chats = this.recheckInFlight.get(r.assignmentId) ?? new Set<string>();
+      this.recheckInFlight.delete(r.assignmentId);
+      const item = escapeHtml(itemLabel(r.title, r.course, this.lang));
+      let html: string;
+      if (r.status === "reviewed" && r.verdict) {
+        const alert = r.content
+          ? `\n${escapeHtml(truncate(renderAlert(r.content, this.now(), this.loc), LINE_CAP))}`
+          : "";
+        html = `${t.recheckDone(item, verdicts[r.verdict])}${alert}`;
+      } else if (r.status === "not_turned_in") {
+        html = t.recheckNotTurnedIn(item);
+      } else {
+        html = t.recheckFailed(item);
+      }
+      for (const chatId of chats) {
+        try {
+          await this.reply(chatId, html);
+        } catch (err) {
+          this.log(`telegram: recheck reply failed: ${this.describe(err)}`);
+        }
+      }
+    }
+    // A step that failed returns no result: don't keep the requests forever.
+    this.recheckInFlight.clear();
   }
 
   /** `/status`: last sync per watched account, open (unmuted, last 7 days) and pending alerts. */
@@ -789,6 +1003,41 @@ export class TelegramNotifier {
         }
         return;
       }
+      case "refresh": {
+        if (this.busy) {
+          this.refreshWaiters.add(chatId);
+          await this.reply(chatId, t.alreadyRunning);
+          return;
+        }
+        const left = this.lastManualAt + this.cooldownMs - this.now().getTime();
+        if (left > 0 && !this.refreshQueued) {
+          const every = Math.round(this.cooldownMs / 60_000);
+          await this.reply(chatId, t.cooldown(Math.ceil(left / 60_000), every));
+          return;
+        }
+        this.refreshWaiters.add(chatId);
+        this.refreshQueued = true;
+        await this.reply(chatId, t.refreshing);
+        return;
+      }
+      case "recheck": {
+        const ref = cmd.args.join(" ");
+        const found = ref ? await findRecheckTarget(this.opts.db, ref) : null;
+        if (!found) {
+          await this.reply(chatId, t.recheckUsage);
+          return;
+        }
+        const item = escapeHtml(itemLabel(found.title, found.course, this.lang));
+        if (!found.turnedIn) {
+          await this.reply(chatId, t.recheckNotTurnedIn(item));
+          return;
+        }
+        const chats = this.rechecks.get(found.assignmentId) ?? new Set<string>();
+        chats.add(chatId);
+        this.rechecks.set(found.assignmentId, chats);
+        await this.reply(chatId, t.recheckQueued(item));
+        return;
+      }
       case "ack": {
         const ids = cmd.args.map(Number).filter((n) => Number.isInteger(n) && n > 0);
         if (ids.length === 0) {
@@ -840,6 +1089,8 @@ export class TelegramNotifier {
     const end = this.now().getTime() + ms;
     while (!signal.aborted) {
       this.logDigest(await this.maybeSendDigest());
+      // `/refresh` or `/recheck`: hand control back so the loop runs a cycle now.
+      if (this.manualPending()) return;
       const left = end - this.now().getTime();
       if (left < 1000) {
         if (left > 0) await sleep(left, signal);

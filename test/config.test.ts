@@ -42,6 +42,7 @@ describe("loadConfig", () => {
       alertLookbackDays: 14,
       backlogForgetDays: 14,
       upcomingDays: 14,
+      refreshCooldownMin: 5,
       digestLang: "uk",
       timeZone: "Europe/Kyiv",
       fullRefreshDays: 7,

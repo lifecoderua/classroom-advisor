@@ -45,6 +45,8 @@ export interface SyncOptions {
   headless?: boolean;
   /** Only this index of the watch list. */
   account?: number;
+  /** Assignment ids (DB) whose details and files are re-fetched ignoring caches (`/recheck`). */
+  force?: readonly number[];
 }
 
 /** One line of counts for a sync outcome. No titles, names or emails. */
@@ -136,6 +138,7 @@ export async function runSync(
               delayMs: config.syncDelayMs,
               label,
               log,
+              ...(options.force?.length ? { force: options.force } : {}),
             },
           );
         } finally {
@@ -184,7 +187,7 @@ async function missingSession(
 
 /** The real {@link SyncFn} for `run`: headless sync of every watched account. */
 export function playwrightSync(config: Config): SyncFn {
-  return async ({ db, now, log }) => {
-    await runSync(db, config, { now, log, headless: true });
+  return async ({ db, now, log, force }) => {
+    await runSync(db, config, { now, log, headless: true, ...(force?.length ? { force } : {}) });
   };
 }

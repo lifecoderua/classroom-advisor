@@ -261,7 +261,7 @@ export async function buildReport(db: Db, opts: BuildReportOptions = {}): Promis
   const versionOf = (key: string) => /^quality:(\d+)/.exec(key)?.[1];
   const flagged = new Set(
     alerts.flatMap((a) =>
-      a.level !== "info" && /^quality:\d+(?::c\d+)?$/.test(a.key) ? [versionOf(a.key)] : [],
+      a.level !== "info" && /^quality:\d+(?::[cr]\d+)?$/.test(a.key) ? [versionOf(a.key)] : [],
     ),
   );
   const other: ReportAlert[] = [];

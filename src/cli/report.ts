@@ -98,6 +98,7 @@ export function registerReportCommands(program: Command): void {
                 digestTime: config.telegramDigestTime,
                 backlogForgetDays: config.backlogForgetDays,
                 upcomingDays: config.upcomingDays,
+                refreshCooldownMin: config.refreshCooldownMin,
                 lang: config.digestLang,
                 timeZone: config.timeZone,
                 onChatMigrated: (from, to) => {
@@ -112,6 +113,7 @@ export function registerReportCommands(program: Command): void {
               })
             : undefined;
         if (notifier) {
+          await notifier.setup();
           log(
             `telegram: ${notifier.chats.length} chat(s), digest at ${config.telegramDigestTime} (${config.timeZone}, ${config.digestLang})`,
           );
@@ -126,6 +128,8 @@ export function registerReportCommands(program: Command): void {
           intervalMin: config.runIntervalMin,
           ...(quietHours ? { quietHours } : {}),
           timeZone: config.timeZone,
+          // `/refresh` and `/recheck` run a cycle now, even in quiet hours.
+          ...(notifier ? { manualPending: () => notifier.manualPending() } : {}),
           once: Boolean(opts.once),
           signal: controller.signal,
           log,
@@ -133,7 +137,8 @@ export function registerReportCommands(program: Command): void {
           sleep: notifier ? (ms, signal) => notifier.idle(ms, signal) : abortableSleep,
           cycle: async () => {
             log("cycle start");
-            const res = await runCycle({
+            const recheck = notifier?.startCycle() ?? [];
+            const work = runCycle({
               db,
               sync: playwrightSync(config),
               deadlineOptions: { lookbackDays: config.alertLookbackDays },
@@ -149,9 +154,12 @@ export function registerReportCommands(program: Command): void {
               timeZone: config.timeZone,
               signal: controller.signal,
               log,
+              recheck,
             });
+            // With Telegram, commands keep being answered while the cycle runs.
+            const res = notifier ? await notifier.during(work) : await work;
             if (res.digest) console.log(res.digest);
-            await notifier?.afterCycle();
+            await notifier?.afterCycle(res);
             const errs = res.errors.length ? `, ${res.errors.length} error(s)` : "";
             log(
               `cycle done: ${res.newAlertIds.length} new alert(s), ${res.reviewed} reviewed, ${res.autoAcked} auto-closed, ${res.superseded} superseded${errs}`,

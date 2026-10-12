@@ -118,6 +118,7 @@ describe("runCycle", () => {
       autoAcked: 0,
       superseded: 0,
       errors: [],
+      rechecked: [],
     });
     expect(provider.calls).toHaveLength(1);
   });
@@ -255,6 +256,26 @@ describe("runLoop", () => {
   const quiet = parseQuietHours("22:00-07:00");
   // Local times, matching how quiet hours are evaluated.
   const clock = (hour: number) => () => new Date(2026, 9, 10, hour);
+
+  it("runs a manual cycle (/refresh) even in quiet hours", async () => {
+    const controller = new AbortController();
+    const ran: number[] = [];
+    let manual = true;
+    await runLoop({
+      intervalMin: 60,
+      quietHours: quiet,
+      signal: controller.signal,
+      log: () => {},
+      now: () => new Date(2026, 9, 10, 23),
+      manualPending: () => manual,
+      cycle: async () => {
+        ran.push(1);
+        manual = false;
+      },
+      sleep: async () => controller.abort(),
+    });
+    expect(ran).toEqual([1]);
+  });
 
   it("runs every interval, skips quiet hours and stops on abort", async () => {
     const controller = new AbortController();

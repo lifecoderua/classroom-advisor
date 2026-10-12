@@ -54,6 +54,7 @@ const base: Config = {
   timeZone: "UTC",
   backlogForgetDays: 14,
   upcomingDays: 14,
+  refreshCooldownMin: 5,
   fullRefreshDays: 7,
   syncDelayMs: 0,
   telegramChatIds: [],

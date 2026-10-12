@@ -380,7 +380,7 @@ function debtLines(debts: readonly Debt[], now: Date, lang: Lang): string[] {
     `  • ${m.report.debt[d.kind]}: ${itemLabel(d.title, d.courseName, lang)} · ${formatAge(
       debtAgeDays(d, now),
       lang,
-    )}${d.alertId === null ? "" : ` · #${d.alertId}`}`,
+    )}${d.alertId === null || d.muted ? "" : ` · #${d.alertId}`}`,
     `      ${d.url}`,
   ]);
 }

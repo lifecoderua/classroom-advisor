@@ -1,6 +1,7 @@
 // Open debts ("хвости", #48): what a kid still owes, derived from the current state at digest
-// time (D17). Repeated in every digest until resolved, acked (its alert muted) or older than the
-// forget window.
+// time (D17). Repeated in every digest until the state resolves it (work turned in) or it is older
+// than the forget window. Acking a redo/missing alert only mutes the alert; acking a "check by
+// hand" item drops it (#63).
 
 import { detailsUrl } from "../collector/classroom/todo.ts";
 import { type Db, isUncheckedAlertKey } from "../store/index.ts";
@@ -26,8 +27,13 @@ export interface Debt {
   since: Date;
   /** Assignment details page with `authuser=<email>`. */
   url: string;
-  /** The alert behind the debt: `/ack <id>` mutes it and drops the debt. Null when none yet. */
+  /**
+   * The alert behind the debt. `/ack <id>` mutes it; that drops an `unchecked` debt, while redo and
+   * missing debts stay until the work is turned in. Null when none yet.
+   */
   alertId: number | null;
+  /** The alert is already muted (acked): no `/ack` link is offered again. */
+  muted: boolean;
 }
 
 export interface BacklogOptions {
@@ -52,7 +58,9 @@ const PRIORITY: Record<DebtKind, number> = { redo: 0, missing: 1, unchecked: 2 }
  *   `deadline:<id>:missing`.
  * - `unchecked`: an unmuted `quality:<id>…:unchecked` alert of the latest version of a submission
  *   that is still turned in; since = the alert.
- * A debt whose alert is muted, or older than `forgetDays`, is left out. Oldest first.
+ * Redo and missing debts stay when their alert is muted (acked): only the state resolves them.
+ * An `unchecked` debt with a muted alert, and any debt older than `forgetDays`, is left out.
+ * Oldest first.
  */
 export async function loadBacklog(db: Db, opts: BacklogOptions): Promise<Debt[]> {
   const now = opts.now ?? new Date();
@@ -79,7 +87,12 @@ export async function loadBacklog(db: Db, opts: BacklogOptions): Promise<Debt[]>
     account: { email: string };
     course: { name: string; classroomId: string };
   };
-  const debt = (kind: DebtKind, a: Row, since: Date, alertId: number | null): Debt => ({
+  const debt = (
+    kind: DebtKind,
+    a: Row,
+    since: Date,
+    alert: { id: number; mutedAt: Date | null } | undefined,
+  ): Debt => ({
     kind,
     accountId: a.accountId,
     assignmentId: a.id,
@@ -92,7 +105,8 @@ export async function loadBacklog(db: Db, opts: BacklogOptions): Promise<Debt[]>
       a.kind === "material" ? "material" : "assignment",
       a.account.email,
     ),
-    alertId,
+    alertId: alert?.id ?? null,
+    muted: !!alert?.mutedAt,
   });
   const out: Debt[] = [];
 
@@ -127,8 +141,8 @@ export async function loadBacklog(db: Db, opts: BacklogOptions): Promise<Debt[]>
     for (const c of redo) {
       const a = byId.get(c.assignmentId);
       const alert = alertOf.get(`comment:${c.id}`);
-      if (!a || alert?.mutedAt || turnedInSince(c.postedAt, a.submission)) continue;
-      out.push(debt("redo", a, c.postedAt, alert?.id ?? null));
+      if (!a || turnedInSince(c.postedAt, a.submission)) continue;
+      out.push(debt("redo", a, c.postedAt, alert));
     }
   }
 
@@ -160,12 +174,11 @@ export async function loadBacklog(db: Db, opts: BacklogOptions): Promise<Debt[]>
     const alertOf = new Map(alerts.map((a) => [a.key, a]));
     for (const a of missing) {
       const alert = alertOf.get(`deadline:${a.id}:missing`);
-      if (alert?.mutedAt) continue;
       const since =
         a.dueAt ??
         (a.baseline ? (a.postedAt ?? a.firstSeenAt) : (alert?.createdAt ?? a.firstSeenAt));
       if (since.getTime() < cutoff) continue;
-      out.push(debt("missing", a, since, alert?.id ?? null));
+      out.push(debt("missing", a, since, alert));
     }
   }
 
@@ -207,7 +220,7 @@ export async function loadBacklog(db: Db, opts: BacklogOptions): Promise<Debt[]>
       if (!s || s.versions[0]?.id !== id || !DONE.has(s.state)) continue;
       const a = s.assignment;
       if (opts.accountIds ? !opts.accountIds.includes(a.accountId) : !a.account.watched) continue;
-      out.push(debt("unchecked", a, alert.createdAt, alert.id));
+      out.push(debt("unchecked", a, alert.createdAt, { id: alert.id, mutedAt: null }));
     }
   }
 
@@ -226,6 +239,14 @@ export async function loadBacklog(db: Db, opts: BacklogOptions): Promise<Debt[]>
   return [...best.values()].sort(
     (a, b) => a.since.getTime() - b.since.getTime() || a.assignmentId - b.assignmentId,
   );
+}
+
+/**
+ * Whether an alert key announces a debt that stays after `/ack` (#63): a redo request
+ * (`comment:<id>`) or missing work (`deadline:<id>:missing`). Only the state resolves those.
+ */
+export function ackKeepsDebt(key: string): boolean {
+  return /^comment:\d+$/.test(key) || /^deadline:\d+:missing$/.test(key);
 }
 
 /** Age of a debt in whole days (0 = less than a day). */

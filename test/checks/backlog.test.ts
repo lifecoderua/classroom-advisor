@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { debtAgeDays, loadBacklog } from "../../src/checks/backlog.ts";
+import { ackKeepsDebt, debtAgeDays, loadBacklog } from "../../src/checks/backlog.ts";
 import {
   type Db,
   muteAlert,
@@ -165,13 +165,40 @@ describe("loadBacklog", () => {
     expect(wide.map((d) => d.title)).toContain("Old");
   });
 
-  it("drops a debt once its alert is acked (muted)", async () => {
+  it("keeps a missing debt after its alert is acked, until the work is turned in", async () => {
     const s = await setup();
     const overdue = await s.assignment("Fractions", { dueAt: daysAgo(3) });
     const alert = await s.missingAlert(overdue.id, daysAgo(3));
-    expect(await loadBacklog(db, { now: NOW, forgetDays: 14 })).toHaveLength(1);
+    expect(await loadBacklog(db, { now: NOW, forgetDays: 14 })).toEqual([
+      expect.objectContaining({ kind: "missing", alertId: alert.id, muted: false }),
+    ]);
     await muteAlert(db, alert.id, NOW);
-    expect(await loadBacklog(db, { now: NOW, forgetDays: 14 })).toHaveLength(0);
+    expect(await loadBacklog(db, { now: NOW, forgetDays: 14 })).toEqual([
+      expect.objectContaining({ kind: "missing", alertId: alert.id, muted: true }),
+    ]);
+    // Turned in: resolved by state.
+    await s.submit(overdue.id, NOW);
+    expect(await loadBacklog(db, { now: NOW, forgetDays: 14 })).toEqual([]);
+  });
+
+  it("keeps a redo debt after its alert is acked", async () => {
+    const s = await setup();
+    const essay = await s.assignment("Essay");
+    await s.submit(essay.id, daysAgo(5));
+    const ask = await s.teacherSays(essay.id, "Переробіть, будь ласка", daysAgo(4));
+    await muteAlert(db, ask.id, NOW);
+    expect(await loadBacklog(db, { now: NOW, forgetDays: 14 })).toEqual([
+      expect.objectContaining({ kind: "redo", alertId: ask.id, muted: true }),
+    ]);
+    await s.submit(essay.id, daysAgo(0.5), "s2");
+    expect(await loadBacklog(db, { now: NOW, forgetDays: 14 })).toEqual([]);
+  });
+
+  it("tells which acked alerts keep their debt", () => {
+    expect(ackKeepsDebt("deadline:12:missing")).toBe(true);
+    expect(ackKeepsDebt("comment:7")).toBe(true);
+    expect(ackKeepsDebt("deadline:12:due_soon")).toBe(false);
+    expect(ackKeepsDebt("quality:3:unchecked")).toBe(false);
   });
 
   it("keeps an open redo request until the work is turned in again", async () => {
@@ -211,7 +238,7 @@ describe("loadBacklog", () => {
     expect(debts.map((x) => [x.kind, x.title])).toEqual([["redo", "D"]]);
   });
 
-  it("lists 'check by hand' items of the latest turned-in version until acked", async () => {
+  it("lists 'check by hand' items of the latest turned-in version until acked (ack drops them)", async () => {
     const s = await setup();
     const poem = await s.assignment("Poem");
     const v1 = await s.submit(poem.id, daysAgo(3));

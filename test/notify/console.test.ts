@@ -226,7 +226,8 @@ describe("report", () => {
       }),
       expect.objectContaining({ title: "Poem", verdict: "pending", basis: "none" }),
     ]);
-    expect(one?.upcoming.map((u) => u.title)).toEqual(["Fractions", "Geometry"]);
+    // Due within a day (Fractions) has its own panic; 3 and 9 days ahead are listed (14-day horizon).
+    expect(one?.upcoming.map((u) => u.title)).toEqual(["Geometry", "Far away"]);
 
     // Old sent alert is out of the window; an unsent one stays until Telegram sends it.
     expect(two?.alerts.map(txt)).toEqual(["Unsent old alert"]);
@@ -248,11 +249,11 @@ describe("report", () => {
         • "Essay" (Math) · Sat 10 Oct, 10:00 · 🟠 warn
             Task 3 is missing.
         • "Poem" (Math) · Sat 10 Oct, 08:00 · ⏳ not reviewed yet
-      📅 Due in the next 7 days
-        • Sat 10 Oct, 17:00 (in 5h)  "Fractions" (Math)
-        • Tue 13 Oct, 12:00 (in 3d)  "Geometry" (Math)
       ℹ️  Info
         • No due date: Fractions  [Sat 10 Oct, 10:00]
+      🟢 Coming up (next 14 days)
+        • Tue 13 Oct, 12:00 (in 3d)  "Geometry" (Math)
+        • Mon 19 Oct, 12:00 (in 9d)  "Far away" (Math)
 
       == student-two ==
       🟠 Alerts

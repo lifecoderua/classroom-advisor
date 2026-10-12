@@ -1,5 +1,6 @@
 import { countAutoClosed } from "../checks/auto-ack.ts";
 import { type Debt, debtAgeDays, loadBacklog } from "../checks/backlog.ts";
+import { detailsUrl } from "../collector/classroom/todo.ts";
 import {
   DEFAULT_LANG,
   formatAge,
@@ -20,6 +21,9 @@ import type { AlertContent, AlertLevel, Verdict } from "../store/types.ts";
 
 const DONE = ["turned_in", "returned"];
 const DAY_MS = 86_400_000;
+/** The `due_soon` window: items due sooner already have their own panic. */
+const DUE_SOON_MS = DAY_MS;
+export const DEFAULT_UPCOMING_DAYS = 14;
 
 export interface ReportAlert {
   id: number;
@@ -50,6 +54,8 @@ export interface UpcomingItem {
   title: string;
   courseName: string;
   dueAt: Date;
+  /** Assignment details page with `authuser=<email>`. */
+  url: string;
 }
 
 export interface AccountReport {
@@ -81,6 +87,8 @@ export interface Report {
   other: ReportAlert[];
   /** Alerts muted automatically since `autoClosedSince` (0 when not asked). */
   autoClosed: number;
+  /** Horizon of the upcoming block, in days (0 when the report has none). */
+  upcomingDays: number;
 }
 
 export interface BuildReportOptions {
@@ -94,7 +102,11 @@ export interface BuildReportOptions {
   watchedEmails?: readonly string[];
   /** Report exactly these alerts and nothing else. */
   alertIds?: readonly number[];
-  upcomingDays?: number;
+  /**
+   * The upcoming block (#53): not turned in, due later than a day from now and within `days`.
+   * Default: 14 days in a full report, none in an alerts-only one.
+   */
+  upcoming?: { days: number };
   /** Adds the open debts block, forgetting debts older than `forgetDays`. */
   backlog?: { forgetDays: number };
   /** Counts the alerts muted automatically since then (`✔️ Closed automatically: N`). */
@@ -292,24 +304,37 @@ export async function buildReport(db: Db, opts: BuildReportOptions = {}): Promis
         ...mergedResult(s.versions[0]?.checkResults ?? []),
       });
     }
+  }
 
-    const until = new Date(now.getTime() + (opts.upcomingDays ?? 7) * DAY_MS);
+  // Upcoming (#53): a live view, baseline items included, no ack. Items due within a day are
+  // left out: they have their own `due_soon` panic.
+  const upcomingDays = opts.upcoming?.days ?? (alertsOnly ? undefined : DEFAULT_UPCOMING_DAYS);
+  if (upcomingDays !== undefined) {
     const upcoming = await db.assignment.findMany({
       where: {
-        accountId: { in: accountIds },
+        accountId: { in: accounts.map((a) => a.id) },
         kind: { not: "material" },
-        status: { notIn: DONE },
-        dueAt: { gte: now, lte: until },
+        status: { notIn: [...DONE, "excused", "missing"] },
+        dueAt: {
+          gte: new Date(now.getTime() + DUE_SOON_MS),
+          lte: new Date(now.getTime() + upcomingDays * DAY_MS),
+        },
         OR: [{ submission: { is: null } }, { submission: { is: { state: { notIn: DONE } } } }],
       },
-      include: { course: { select: { name: true } } },
+      include: {
+        course: { select: { name: true, classroomId: true } },
+        account: { select: { email: true } },
+      },
       orderBy: [{ dueAt: "asc" }, { id: "asc" }],
     });
     for (const a of upcoming) {
       if (!a.dueAt) continue;
-      reports
-        .get(a.accountId)
-        ?.upcoming.push({ title: a.title, courseName: a.course.name, dueAt: a.dueAt });
+      reports.get(a.accountId)?.upcoming.push({
+        title: a.title,
+        courseName: a.course.name,
+        dueAt: a.dueAt,
+        url: detailsUrl(a.course.classroomId, a.classroomId, "assignment", a.account.email),
+      });
     }
   }
 
@@ -334,6 +359,7 @@ export async function buildReport(db: Db, opts: BuildReportOptions = {}): Promis
     accounts: [...reports.values()],
     other,
     autoClosed,
+    upcomingDays: upcomingDays ?? 0,
   };
 }
 
@@ -383,7 +409,7 @@ export function formatReport(report: Report, opts: Partial<FormatOptions> = {}):
   const out: string[] = [`${r.title} · ${formatTime(report.generatedAt, loc)} · ${window}`];
   if (report.accounts.length === 0) out.push("", r.noAccounts);
   for (const a of report.accounts) {
-    if (report.alertsOnly && alertCount(a) + a.backlog.length === 0) continue;
+    if (report.alertsOnly && alertCount(a) + a.backlog.length + a.upcoming.length === 0) continue;
     out.push("", `== ${a.label} ==`);
     const before = out.length;
     if (a.panics.length) out.push(r.panics, ...alertLines(a.panics, loc));
@@ -401,8 +427,11 @@ export function formatReport(report: Report, opts: Partial<FormatOptions> = {}):
         if (t.summary) out.push(`      ${t.summary}`);
       }
     }
+    if (a.checkByHand.length) out.push(r.checkByHand, ...alertLines(a.checkByHand, loc));
+    if (a.backlog.length) out.push(r.debts, ...debtLines(a.backlog, report.generatedAt, lang));
+    if (a.info.length) out.push(r.info, ...alertLines(a.info, loc));
     if (a.upcoming.length) {
-      out.push(r.upcoming);
+      out.push(r.upcoming(report.upcomingDays));
       for (const u of a.upcoming) {
         const ms = u.dueAt.getTime() - report.generatedAt.getTime();
         out.push(
@@ -410,9 +439,6 @@ export function formatReport(report: Report, opts: Partial<FormatOptions> = {}):
         );
       }
     }
-    if (a.checkByHand.length) out.push(r.checkByHand, ...alertLines(a.checkByHand, loc));
-    if (a.backlog.length) out.push(r.debts, ...debtLines(a.backlog, report.generatedAt, lang));
-    if (a.info.length) out.push(r.info, ...alertLines(a.info, loc));
     if (out.length === before) out.push(`  ${r.nothing}`);
   }
   if (report.other.length) {
@@ -424,6 +450,11 @@ export function formatReport(report: Report, opts: Partial<FormatOptions> = {}):
 
 function alertCount(a: AccountReport): number {
   return a.panics.length + a.alerts.length + a.checkByHand.length + a.info.length;
+}
+
+/** Whether the report lists any upcoming work. */
+export function reportHasUpcoming(report: Report): boolean {
+  return report.accounts.some((a) => a.upcoming.length > 0);
 }
 
 /** Whether the report has any open debt. */

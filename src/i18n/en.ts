@@ -101,7 +101,7 @@ export const en: Messages = {
     panics: "🔴 Panics",
     alerts: "🟠 Alerts",
     turnedIn: "📥 Turned in",
-    upcoming: "📅 Due in the next 7 days",
+    upcoming: (days) => `🟢 Coming up (next ${days} days)`,
     checkByHand: "🔍 Check by hand",
     debts: "📌 Open debts",
     info: "ℹ️  Info",
@@ -150,6 +150,8 @@ export const en: Messages = {
     },
     openCounts: (p, a, i, u) => `Open: 🔴 ${p} · 🟠 ${a} · ℹ️ ${i} (unsent ${u})`,
     debtCount: (n) => `📌 Open debts: ${n}`,
+    upcoming: (days) => `🟢 <i>Coming up (next ${days} days)</i>`,
+    upcomingCount: (n) => `🟢 Coming up: ${n}`,
     statusFooter: (time, days) =>
       `Daily digest at ${time}. Open = not acked, 7 days; debts are forgotten after ${days} days.`,
     nothingPending: "Nothing pending.",

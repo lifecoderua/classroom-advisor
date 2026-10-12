@@ -107,10 +107,10 @@ export const uk: Messages = {
     panics: "🔴 Терміново",
     alerts: "🟠 Увага",
     turnedIn: "📥 Здано",
-    upcoming: "📅 Термін здачі в найближчі 7 днів",
+    upcoming: (days) => `🟢 До відома: термін попереду (${days} ${plural(LOCALE, days, DAYS)})`,
     checkByHand: "🔍 Перевірте самостійно",
     debts: "📌 Хвости",
-    info: "ℹ️  До відома",
+    info: "ℹ️  Нагадування",
     other: "Інше",
     nothing: "Нічого нового.",
     heuristicsOnly: "(лише автоматичні ознаки)",
@@ -157,6 +157,9 @@ export const uk: Messages = {
     },
     openCounts: (p, a, i, u) => `Відкриті: 🔴 ${p} · 🟠 ${a} · ℹ️ ${i} (не надіслано: ${u})`,
     debtCount: (n) => `📌 Хвости: ${n}`,
+    upcoming: (days) =>
+      `🟢 <i>До відома: термін попереду (${days} ${plural(LOCALE, days, DAYS)})</i>`,
+    upcomingCount: (n) => `🟢 Термін попереду: ${n}`,
     statusFooter: (time, days) =>
       `Підсумок дня о ${time}. Відкриті — ще не позначені через /ack, за 7 днів; хвости забуваються через ${days} ${plural(LOCALE, days, DAYS)}.`,
     nothingPending: "Нічого нового.",

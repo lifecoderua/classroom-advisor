@@ -53,6 +53,7 @@ const base: Config = {
   digestLang: "en",
   timeZone: "UTC",
   backlogForgetDays: 14,
+  upcomingDays: 14,
   fullRefreshDays: 7,
   syncDelayMs: 0,
   telegramChatIds: [],

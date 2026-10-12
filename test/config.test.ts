@@ -41,6 +41,7 @@ describe("loadConfig", () => {
       runIntervalMin: 60,
       alertLookbackDays: 14,
       backlogForgetDays: 14,
+      upcomingDays: 14,
       digestLang: "uk",
       timeZone: "Europe/Kyiv",
       fullRefreshDays: 7,
@@ -87,6 +88,7 @@ describe("loadConfig", () => {
 
   it("reads CA_BACKLOG_FORGET_DAYS", () => {
     expect(load({ CA_BACKLOG_FORGET_DAYS: "21" }).backlogForgetDays).toBe(21);
+    expect(load({ CA_UPCOMING_DAYS: "7" }).upcomingDays).toBe(7);
     expect(() => load({ CA_BACKLOG_FORGET_DAYS: "0" })).toThrow(/backlogForgetDays/);
   });
 

@@ -3,8 +3,10 @@ import {
   fetchErrorReason,
   isTemporaryUnreadable,
   type ReadabilityInput,
+  unreadableCause,
   unreadableReason,
 } from "../../src/checks/readability.ts";
+import { messages } from "../../src/i18n/index.ts";
 
 const DRIVE = "https://drive.google.com/file/d/1AbCdEfGhIjKlMnOp/view";
 const base = (over: Partial<ReadabilityInput>): ReadabilityInput => ({
@@ -72,6 +74,14 @@ describe("unreadableReason", () => {
     ],
   ])("%s", (_name, over, reason) => {
     expect(unreadableReason(base(over))).toBe(reason);
+  });
+
+  it("keeps the cause structured, so the parent sees it in the digest language", () => {
+    const cause = unreadableCause(base({ title: "project.zip", contentPath: "files/x/a.bin" }));
+    expect(cause).toEqual({ code: "unsupported_format", arg: ".zip" });
+    expect(messages("uk").unreadable(cause as NonNullable<typeof cause>)).toBe(
+      "непідтримуваний формат файлу (.zip)",
+    );
   });
 });
 

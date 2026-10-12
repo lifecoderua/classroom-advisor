@@ -26,6 +26,7 @@ import {
   syncAccount,
   syncWatchList,
 } from "../../src/sync/index.ts";
+import { rowText } from "../alert-text.ts";
 import { migratedTemplate } from "../store/helpers.ts";
 
 const DIR = join(import.meta.dirname, "..", "..", "fixtures", "classroom");
@@ -434,11 +435,11 @@ describe("syncAccount: private comments", () => {
     ]);
     const alerts = await commentAlerts();
     // A request to redo/attach is a panic; other teacher comments stay alerts.
-    expect(alerts.map((a) => [a.level, a.message.includes("redo")]).sort()).toEqual([
+    expect(alerts.map((a) => [a.level, rowText(a).includes("redo")]).sort()).toEqual([
       ["alert", false],
       ["panic", true],
     ]);
-    expect(alerts.map((x) => x.message)).toContainEqual(
+    expect(alerts.map((x) => rowText(x))).toContainEqual(
       expect.stringMatching(/^Teacher comment on ".+" \(.+\): redo exercise 3, attach photo$/),
     );
 

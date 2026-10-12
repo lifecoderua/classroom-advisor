@@ -9,7 +9,6 @@ import {
   applyRedoFloor,
   buildReviewInput,
   DEFAULT_BUDGET,
-  detectLocale,
   heuristicVerdict,
   mergeVerdict,
   openRedoRequest,
@@ -33,6 +32,7 @@ import {
   upsertCourse,
   upsertSubmission,
 } from "../../src/store/index.ts";
+import { contentText, rowText } from "../alert-text.ts";
 import { migratedTemplate } from "../store/helpers.ts";
 
 const T0 = new Date("2026-10-01T08:00:00Z");
@@ -83,10 +83,11 @@ describe("pure helpers", () => {
     expect(allocate([5, 5], 100)).toEqual([5, 5]);
   });
 
-  it("detects the locale", () => {
-    expect(detectLocale("Виконай вправу 5")).toBe("uk");
-    expect(detectLocale("Do exercise 5")).toBe("en");
-    expect(detectLocale("123")).toBeUndefined();
+  it("asks the LLM for the digest language, whatever the assignment's language", () => {
+    const s = snapshot();
+    expect(buildReviewInput(s, { signals: [] }, undefined, "ru").locale).toBe("ru");
+    expect(buildReviewInput(s, { signals: [] }, undefined, "en").locale).toBe("en");
+    expect(reviewPrompt()).toContain("given\nby `locale`");
   });
 
   it("builds the review input within budget, keeping image paths", () => {
@@ -181,7 +182,7 @@ describe("pure helpers", () => {
   });
 
   it("loads the versioned prompt", () => {
-    expect(REVIEW_PROMPT_VERSION).toBe("review.v3");
+    expect(REVIEW_PROMPT_VERSION).toBe("review.v4");
     expect(reviewPrompt()).toContain("hints, not facts");
     expect(reviewPrompt()).toContain("`comments`");
     expect(reviewPrompt()).toContain("`structure`");
@@ -309,7 +310,7 @@ describe("reviewSubmission", () => {
     expect(res).toMatchObject({ status: "reviewed", verdict: "panic", alertCreated: true });
 
     const call = provider.calls[0];
-    expect(call?.opts.instructions).toContain("review.v3");
+    expect(call?.opts.instructions).toContain("review.v4");
     expect(call?.input.locale).toBe("uk");
     expect(call?.input.assignment.courseName).toBe("Математика");
     expect(call?.input.submission.attachments).toEqual([
@@ -323,14 +324,14 @@ describe("reviewSubmission", () => {
       ["llm:fake", "panic"],
     ]);
     expect(JSON.parse(results[1]?.findings ?? "{}")).toMatchObject({
-      promptVersion: "review.v3",
+      promptVersion: "review.v4",
       output: { missingParts: ["Приклад 3"] },
     });
 
     const alert = await db.alert.findUnique({ where: { key: `quality:${id}` } });
     expect(alert?.level).toBe("panic");
-    expect(alert?.message).toContain("Приклад 3 не розв'язано.");
-    expect(alert?.message).toContain('"Приклади" (Математика)');
+    expect(rowText(alert)).toContain("Приклад 3 не розв'язано.");
+    expect(rowText(alert)).toContain('"Приклади" (Математика)');
   });
 
   it("is idempotent per version and provider", async () => {
@@ -374,7 +375,7 @@ describe("reviewSubmission", () => {
     });
     const alert = await db.alert.findUnique({ where: { key: `quality:${id}:llm-failed` } });
     expect(alert?.level).toBe("alert");
-    expect(alert?.message).toContain("couldn't run");
+    expect(rowText(alert)).toContain("couldn't run");
     expect(await db.alert.count()).toBe(1);
     expect(await run(id, failing)).toMatchObject({ llmFailures: 4, failureAlertCreated: false });
 
@@ -414,7 +415,7 @@ describe("reviewSubmission", () => {
       alertCreated: true,
       llmFailures: 1,
     });
-    expect(res.message).toContain("heuristics only");
+    expect(contentText(res.content)).toContain("heuristics only");
     expect((await db.alert.findUnique({ where: { key: `quality:${id}` } }))?.level).toBe("panic");
   });
 
@@ -456,7 +457,7 @@ describe("reviewSubmission", () => {
 
     const alerts = await db.alert.findMany();
     expect(alerts.map((a) => [a.key, a.level])).toEqual([[`quality:${id}:unchecked`, "info"]]);
-    expect(alerts[0]?.message).toBe(
+    expect(rowText(alerts[0])).toBe(
       'Check by hand: "Приклади" (Математика): "Робота": file too large to download (30 MB); "фото": video: needs watching',
     );
     expect(await pendingQualityVersions(db, "llm:fake")).toEqual([]);
@@ -523,9 +524,9 @@ describe("reviewSubmission", () => {
     expect(res).toMatchObject({ status: "reviewed", verdict: "warn", alertCreated: true });
     const alerts = await db.alert.findMany();
     expect(alerts.map((x) => [x.key, x.level])).toEqual([[`quality:${id}`, "alert"]]);
-    expect(alerts[0]?.message).toContain("2 attached, 3 templates provided");
-    expect(alerts[0]?.message).toContain("[heuristics only, nothing readable]");
-    expect(alerts[0]?.message).toContain('Not checked automatically: "Робота": file too large');
+    expect(rowText(alerts[0])).toContain("fewer files than expected");
+    expect(rowText(alerts[0])).toContain("[heuristics only, nothing readable]");
+    expect(rowText(alerts[0])).toContain('Not checked automatically: "Робота": file too large');
   });
 
   it("reviews the readable part and lists the unreadable attachment", async () => {
@@ -549,7 +550,7 @@ describe("reviewSubmission", () => {
     ]);
     const alert = await db.alert.findUnique({ where: { key: `quality:${id}:unchecked` } });
     expect(alert?.level).toBe("info");
-    expect(alert?.message).toContain('"фото": audio recording: needs listening');
+    expect(rowText(alert)).toContain('"фото": audio recording: needs listening');
   });
 
   it("surfaces what the LLM couldn't verify: 'check by hand' on ok, inside the alert on warn", async () => {
@@ -560,7 +561,7 @@ describe("reviewSubmission", () => {
       uncheckedAlertCreated: true,
     });
     const alert = await db.alert.findUnique({ where: { key: `quality:${id}:unchecked` } });
-    expect(alert?.message).toBe(
+    expect(rowText(alert)).toBe(
       'Check by hand: "Приклади" (Математика): Тест на платформі: результат лише на платформі',
     );
 
@@ -576,7 +577,7 @@ describe("reviewSubmission", () => {
     expect(res.uncheckedAlertCreated).toBeUndefined();
     const alerts = await db.alert.findMany();
     expect(alerts.map((x) => x.key)).toEqual([`quality:${id2}`]);
-    expect(alerts[0]?.message).toBe(
+    expect(rowText(alerts[0])).toBe(
       'Take a look: "Приклади" (Математика): Перевір. Not checked automatically: Тест на платформі: результат лише на платформі.',
     );
   });
@@ -734,7 +735,7 @@ describe("re-review on a new teacher comment (#44)", () => {
     });
     expect(await run(id, warn)).toMatchObject({ verdict: "warn", alertCreated: true });
     const alert = await db.alert.findUniqueOrThrow({ where: { key: `quality:${id}:c${c2}` } });
-    expect(alert.message).toContain("Not checked automatically: Тест на платформі");
+    expect(rowText(alert)).toContain("Not checked automatically: Тест на платформі");
   });
 
   it("a comment present at the first review doesn't trigger a re-review", async () => {
@@ -753,7 +754,7 @@ describe("re-review on a new teacher comment (#44)", () => {
     expect(await run(id, warn)).toMatchObject({ verdict: "warn", alertCreated: true });
     const alert = await db.alert.findUniqueOrThrow({ where: { key: `quality:${id}:c${c1}` } });
     expect(alert.level).toBe("alert");
-    expect(alert.message).toContain("Мало.");
+    expect(rowText(alert)).toContain("Мало.");
 
     // Same verdict again: stored, but no new alert.
     await comment(assignmentId, "Чекаю.");
@@ -768,7 +769,7 @@ describe("re-review on a new teacher comment (#44)", () => {
     const cid = await comment(assignmentId, "Переробіть, будь ласка, приклад 2.");
     const res = await run(id, new FakeProvider()); // the LLM says ok
     expect(res).toMatchObject({ verdict: "warn", alertCreated: true, triggerCommentId: cid });
-    expect(res.message).toContain("past due");
+    expect(contentText(res.content)).toContain("past due");
     const llm = (await listCheckResults(db, id)).at(-1);
     expect(JSON.parse(llm?.findings ?? "{}").merge.notes).toEqual([
       expect.stringContaining("Переробіть"),

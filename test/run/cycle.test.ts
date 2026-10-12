@@ -97,6 +97,7 @@ describe("runCycle", () => {
       now: () => NOW,
       log: (l: string) => logs.push(l),
       timeZone: "UTC",
+      lang: "en" as const,
     };
     const first = await runCycle(deps);
     expect(calls).toEqual(["sync"]);

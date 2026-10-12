@@ -196,7 +196,14 @@ describe("deadlineAlerts", () => {
       key: "deadline:7:due_soon",
       level: "panic",
       code: "due_soon",
-      message: 'Due in 5 hours: "Fractions" (Math) is not turned in yet.',
+      content: {
+        code: "deadline.due_soon",
+        params: {
+          title: "Fractions",
+          course: "Math",
+          dueAt: ahead(5 * HOUR_MS).toISOString(),
+        },
+      },
     });
     const drafts = deadlineAlerts(
       input({ assignment: { dueAt: null, postedAt: ago(8 * DAY_MS) } }),

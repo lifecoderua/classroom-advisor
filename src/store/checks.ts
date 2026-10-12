@@ -1,6 +1,6 @@
 import type { Db } from "./db.ts";
 import type { Alert, CheckResult } from "./generated/client.ts";
-import type { AlertLevel, CheckSource, Verdict } from "./types.ts";
+import type { AlertContent, AlertLevel, CheckSource, Verdict } from "./types.ts";
 
 export interface CheckResultInput {
   submissionVersionId: number;
@@ -36,11 +36,26 @@ export function listCheckResults(db: Db, submissionVersionId: number): Promise<C
   });
 }
 
-export interface AlertInput {
+/**
+ * A new alert: dedupe key, level and what it says, as a code + params, or `message` as a
+ * shorthand for untranslated free text (`code: "text"`).
+ */
+export type AlertInput = {
   /** Dedupe key, e.g. `quality:<submissionVersionId>`. */
   key: string;
   level: AlertLevel;
-  message: string;
+} & (AlertContent | { message: string });
+
+/** The stored code + params of an alert row. Unparseable params fall back to empty text. */
+export function alertContent(row: Pick<Alert, "code" | "params">): AlertContent {
+  let params: unknown;
+  try {
+    params = JSON.parse(row.params);
+  } catch {
+    params = undefined;
+  }
+  if (typeof params !== "object" || params === null) return { code: "text", params: { text: "" } };
+  return { code: row.code, params } as AlertContent;
 }
 
 /** Creates the alert unless one with the same key exists; an existing alert is left untouched. */
@@ -49,10 +64,20 @@ export function raiseAlert(
   input: AlertInput,
   now: Date = new Date(),
 ): Promise<{ alert: Alert; created: boolean }> {
+  const content: AlertContent =
+    "message" in input ? { code: "text", params: { text: input.message } } : input;
   return db.$transaction(async (tx) => {
     const existing = await tx.alert.findUnique({ where: { key: input.key } });
     if (existing) return { alert: existing, created: false };
-    const alert = await tx.alert.create({ data: { ...input, createdAt: now } });
+    const alert = await tx.alert.create({
+      data: {
+        key: input.key,
+        level: input.level,
+        code: content.code,
+        params: JSON.stringify(content.params),
+        createdAt: now,
+      },
+    });
     return { alert, created: true };
   });
 }

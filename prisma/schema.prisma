@@ -206,7 +206,11 @@ model Alert {
   key       String    @unique
   /// info | alert | panic
   level     String
-  message   String
+  /// What the alert says: a code (`AlertContent` in src/store/types.ts) rendered in the configured
+  /// language at print/send time. `text` = free text in `params.text` (untranslated).
+  code      String    @default("text")
+  /// Params of `code` as JSON.
+  params    String    @default("{}")
   createdAt DateTime  @default(now())
   /// Delivered to Telegram (the only push channel; the console never sets it). Also set by
   /// `/ack`, so a muted alert never goes out.

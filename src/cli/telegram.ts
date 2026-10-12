@@ -1,7 +1,15 @@
 import type { Command } from "commander";
 import { type Config, loadConfig } from "../config/index.ts";
-import { addTelegramChat } from "../config/local.ts";
-import { chatLabel, chatsOf, HELP_TEXT, TelegramApi, type TgChat } from "../notify/telegram.ts";
+import { addTelegramChat, replaceTelegramChat } from "../config/local.ts";
+import { messages } from "../i18n/index.ts";
+import {
+  chatLabel,
+  chatsOf,
+  helpHtml,
+  TelegramApi,
+  TelegramError,
+  type TgChat,
+} from "../notify/telegram.ts";
 
 function api(config: Config): TelegramApi {
   if (!config.telegramBotToken) {
@@ -71,11 +79,20 @@ export function registerTelegramCommands(program: Command): void {
       if (config.telegramChatIds.length === 0) {
         throw new Error("no chat linked: message the bot, then run `telegram link`");
       }
-      const text = `✅ Test message: Telegram works.\n\n${HELP_TEXT}`;
+      const text = `${messages(config.digestLang).telegram.test}\n\n${helpHtml(config.digestLang)}`;
       for (const chatId of config.telegramChatIds) {
         try {
-          await bot.sendMessage(chatId, text);
-          console.log(`ok    ${chatId}`);
+          try {
+            await bot.sendMessage(chatId, text);
+            console.log(`ok    ${chatId}`);
+          } catch (err) {
+            // The group became a supergroup: Telegram names the new id; switch and resend.
+            const to = err instanceof TelegramError ? err.migrateToChatId : undefined;
+            if (!to) throw err;
+            replaceTelegramChat(process.cwd(), chatId, to);
+            await bot.sendMessage(to, text);
+            console.log(`ok    ${to}  (group upgraded from ${chatId}; config.local.json updated)`);
+          }
         } catch (err) {
           console.log(`FAIL  ${chatId}  ${(err as Error).message}`);
           process.exitCode = 1;

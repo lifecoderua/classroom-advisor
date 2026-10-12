@@ -3,6 +3,7 @@
 
 import { type OfficeStats, type OfficeSummary, officeStats } from "../collector/office.ts";
 import type { ReviewInput } from "../llm/types.ts";
+import type { UnreadableCause } from "../store/types.ts";
 
 /** Same shape as `ReviewInput.signals[number]`. */
 export type Signal = ReviewInput["signals"][number];
@@ -53,6 +54,8 @@ export interface HeuristicAttachment {
    * checked automatically.
    */
   unreadable?: string | undefined;
+  /** `unreadable` as a structured cause, rendered for the parent in the digest language. */
+  unreadableCause?: UnreadableCause | undefined;
   /** The `unreadable` cause may go away on a later sync (see `isTemporaryUnreadable`). */
   unreadableTemporary?: boolean | undefined;
 }

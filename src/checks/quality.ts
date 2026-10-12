@@ -2,11 +2,15 @@
 
 import { readFileSync } from "node:fs";
 import { type OfficeSummary, officeLabelledText, officeStructure } from "../collector/office.ts";
+import { DEFAULT_LANG, type Lang } from "../i18n/index.ts";
 import type { LlmProvider, ReviewInput, ReviewOutput } from "../llm/types.ts";
 import {
+  type AlertContent,
+  type AlertItem,
   addCheckResult,
   type CheckSource,
   type Db,
+  type RedoDue,
   raiseAlert,
   type UncheckedItem,
   uncheckedAlertKey,
@@ -19,10 +23,10 @@ import {
   type ReadText,
 } from "./evaluate-heuristics.ts";
 import { type TurnedInInput, type TurnedInResult, turnedInSignals } from "./heuristics.ts";
-import { isRedoRequest, redoDueNote } from "./redo.ts";
+import { isRedoRequest, redoDue } from "./redo.ts";
 
 /** Versioned domain prompt; the id is stored with every LLM CheckResult. */
-export const REVIEW_PROMPT_VERSION = "review.v3";
+export const REVIEW_PROMPT_VERSION = "review.v4";
 
 let promptCache: string | undefined;
 
@@ -77,23 +81,15 @@ export function allocate(lengths: readonly number[], budget: number): number[] {
   return out;
 }
 
-const CYRILLIC = /\p{Script=Cyrillic}/u;
-const LATIN = /\p{Script=Latin}/u;
-
-/** Language hint for the feedback: `uk` for Cyrillic text, `en` for Latin, else none. */
-export function detectLocale(text: string): string | undefined {
-  const letters = text.match(/\p{L}/gu) ?? [];
-  const cyr = letters.filter((c) => CYRILLIC.test(c)).length;
-  const lat = letters.filter((c) => LATIN.test(c)).length;
-  if (cyr === 0 && lat === 0) return undefined;
-  return cyr >= lat ? "uk" : "en";
-}
-
-/** Builds the LLM input from the heuristics snapshot and signals. Pure. */
+/**
+ * Builds the LLM input from the heuristics snapshot and signals. Pure. `lang` is the digest
+ * language: the model writes its parent-facing text in it (`locale`).
+ */
 export function buildReviewInput(
   snapshot: TurnedInInput,
   heuristics: TurnedInResult,
   budget: TextBudget = DEFAULT_BUDGET,
+  lang: Lang = DEFAULT_LANG,
 ): ReviewInput {
   const { assignment: a, submission: s } = snapshot;
   const instructions = truncate(a.instructions, budget.instructions);
@@ -131,7 +127,6 @@ export function buildReviewInput(
     budget.comments,
   );
 
-  const locale = detectLocale(`${a.title}\n${a.instructions}`);
   return {
     assignment: {
       title: a.title,
@@ -174,7 +169,7 @@ export function buildReviewInput(
           })),
         }
       : {}),
-    ...(locale ? { locale } : {}),
+    locale: lang,
   };
 }
 
@@ -284,7 +279,15 @@ export function applyRedoFloor(
 /** Student attachments the review can't read, as "check by hand" items. */
 export function unreadableItems(snapshot: TurnedInInput): UncheckedItem[] {
   return snapshot.submission.attachments.flatMap((x) =>
-    x.unreadable ? [{ what: `"${x.title}"`, why: x.unreadable }] : [],
+    x.unreadable
+      ? [
+          {
+            what: `"${x.title}"`,
+            why: x.unreadable,
+            ...(x.unreadableCause ? { cause: x.unreadableCause } : {}),
+          },
+        ]
+      : [],
   );
 }
 
@@ -308,62 +311,60 @@ export function unreadableVerdict(heuristic: TurnedInResult): MergedVerdict {
   };
 }
 
-const assignmentLabel = (a: TurnedInInput["assignment"]) =>
-  a.courseName ? `"${a.title}" (${a.courseName})` : `"${a.title}"`;
+const itemOf = (a: TurnedInInput["assignment"]): AlertItem => ({
+  title: a.title,
+  course: a.courseName ?? "",
+});
 
-export const uncheckedText = (items: readonly UncheckedItem[]) =>
-  items.map((i) => `${i.what}: ${i.why}`).join("; ");
-
-/** The sentence appended to a warn/panic alert for the parts that weren't checked. */
-export const uncheckedSentence = (items: readonly UncheckedItem[]) =>
-  `Not checked automatically: ${uncheckedText(items)}.`;
-
-/** Text of the low-noise "check by hand" alert. */
-export function uncheckedMessage(snapshot: TurnedInInput, items: readonly UncheckedItem[]): string {
-  return `Check by hand: ${assignmentLabel(snapshot.assignment)}: ${uncheckedText(items)}`;
+/** Content of the low-noise "check by hand" alert. */
+export function uncheckedContent(
+  snapshot: TurnedInInput,
+  items: readonly UncheckedItem[],
+): AlertContent {
+  return {
+    code: "quality.unchecked",
+    params: { ...itemOf(snapshot.assignment), items: [...items] },
+  };
 }
 
-/** Alert text for the parent. `extra` sentences are appended (e.g. an overdue redo request). */
-export function qualityMessage(
+/**
+ * Content of a warn/panic quality alert: the LLM summary and missing parts, or (without an LLM
+ * verdict) the heuristic signals that flagged it; plus the unchecked parts and an open redo
+ * request's due note.
+ */
+export function qualityContent(
   snapshot: TurnedInInput,
   heuristic: TurnedInResult,
   llm: LlmOutcome,
   merged: MergedVerdict,
-  extra: readonly string[] = [],
-): string {
-  const tail = extra.map((e) => ` ${e}`).join("");
-  return `${qualityHeadline(snapshot, heuristic, llm, merged)}${tail}`;
-}
-
-function qualityHeadline(
-  snapshot: TurnedInInput,
-  heuristic: TurnedInResult,
-  llm: LlmOutcome,
-  merged: MergedVerdict,
-): string {
-  const label = assignmentLabel(snapshot.assignment);
-  const head = merged.verdict === "panic" ? "Check now" : "Take a look";
+  extra: { unchecked?: readonly UncheckedItem[]; redoDue?: RedoDue | undefined } = {},
+): AlertContent {
+  const params: Extract<AlertContent, { code: "quality.review" }>["params"] = {
+    ...itemOf(snapshot.assignment),
+    verdict: merged.verdict === "panic" ? "panic" : "warn",
+  };
   if (llm.ok) {
-    const missing = llm.output.missingParts.length
-      ? ` Missing: ${llm.output.missingParts.join("; ")}.`
-      : "";
-    const forced =
-      heuristic.directVerdict && llm.output.verdict !== "panic" && merged.verdict === "panic"
-        ? ` (${heuristic.directVerdict.reason})`
-        : "";
-    return `${head}: ${label}: ${llm.output.summaryForParent.trim()}${missing}${forced}`;
+    params.summary = llm.output.summaryForParent.trim();
+    if (llm.output.missingParts.length) params.missing = [...llm.output.missingParts];
+    if (heuristic.directVerdict && llm.output.verdict !== "panic" && merged.verdict === "panic") {
+      params.template = true;
+    }
+  } else {
+    if (heuristic.directVerdict) params.template = true;
+    params.heuristic = {
+      basis: merged.basis === "unreadable" ? "unreadable" : "fallback",
+      signals: [
+        ...new Set(
+          heuristic.signals
+            .filter((s) => PROBLEM_SIGNALS.has(s.code) && s.confidence >= HEURISTIC_WARN_CONFIDENCE)
+            .map((s) => s.code),
+        ),
+      ],
+    };
   }
-  const why =
-    heuristic.directVerdict?.reason ??
-    heuristic.signals
-      .filter((s) => PROBLEM_SIGNALS.has(s.code) && s.confidence >= HEURISTIC_WARN_CONFIDENCE)
-      .map((s) => s.detail ?? s.code)
-      .join("; ");
-  const basis =
-    merged.basis === "unreadable"
-      ? "heuristics only, nothing readable"
-      : "heuristics only, LLM review unavailable";
-  return `${head}: ${label}: ${why} [${basis}]`;
+  if (extra.unchecked?.length) params.unchecked = [...extra.unchecked];
+  if (extra.redoDue) params.redoDue = extra.redoDue;
+  return { code: "quality.review", params };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -389,7 +390,8 @@ export type ReviewStatus =
 export interface ReviewSubmissionResult {
   status: ReviewStatus;
   verdict?: Verdict;
-  message?: string;
+  /** What the raised alert says (when one was raised). */
+  content?: AlertContent;
   alertCreated?: boolean;
   /** Provider failures so far for this version (on `fallback`). */
   llmFailures?: number;
@@ -439,6 +441,8 @@ export interface ReviewSubmissionOptions {
   /** Reads Office/Slides structure summaries (see `cachedOfficeReader`). */
   readOffice?: ReadOffice;
   budget?: TextBudget;
+  /** Digest language: the LLM writes summary, issues and unverifiable parts in it. */
+  lang?: Lang;
 }
 
 /** Comments of the assignment that `submissionVersionId` belongs to. */
@@ -531,9 +535,9 @@ export async function reviewSubmission(
     const key = trigger
       ? `quality:${submissionVersionId}${suffix}:unchecked`
       : uncheckedAlertKey(submissionVersionId);
-    const message = uncheckedMessage(snapshot, items);
-    const { created } = await raiseAlert(db, { key, level: "info", message }, now);
-    return { message, created };
+    const content = uncheckedContent(snapshot, items);
+    const { created } = await raiseAlert(db, { key, level: "info", ...content }, now);
+    return { content, created };
   };
 
   if (nothingReadable(snapshot)) {
@@ -571,27 +575,27 @@ export async function reviewSubmission(
     const base = { status: "reviewed" as const, verdict: merged.verdict, ...reReview };
     if (retryable) return { ...base, retryPending: true };
     if (merged.verdict === "unchecked") {
-      const { message, created } = await uncheckedAlert(unreadable);
-      return { ...base, ...(message ? { message } : {}), uncheckedAlertCreated: created };
+      const { content, created } = await uncheckedAlert(unreadable);
+      return { ...base, ...(content ? { content } : {}), uncheckedAlertCreated: created };
     }
     if (previous && RANK[merged.verdict] <= RANK[previous]) return { ...base, alertCreated: false };
     const llmSkipped: LlmOutcome = { ok: false, error: "nothing readable" };
-    const message = qualityMessage(snapshot, heuristic, llmSkipped, merged, [
-      uncheckedSentence(unreadable),
-    ]);
+    const content = qualityContent(snapshot, heuristic, llmSkipped, merged, {
+      unchecked: unreadable,
+    });
     const { created } = await raiseAlert(
       db,
       {
         key: `quality:${submissionVersionId}${suffix}`,
         level: merged.verdict === "panic" ? "panic" : "alert",
-        message,
+        ...content,
       },
       now,
     );
-    return { ...base, message, alertCreated: created };
+    return { ...base, content, alertCreated: created };
   }
 
-  const input = buildReviewInput(snapshot, heuristic, opts.budget);
+  const input = buildReviewInput(snapshot, heuristic, opts.budget, opts.lang);
   let llm: LlmOutcome;
   try {
     llm = { ok: true, output: await provider.review(input, { instructions: reviewPrompt() }) };
@@ -600,24 +604,23 @@ export async function reviewSubmission(
   }
   const redo = openRedoRequest(snapshot);
   const merged = applyRedoFloor(mergeVerdict(heuristic, llm), redo);
-  const dueNote = redo ? redoDueNote(snapshot.assignment.dueAt, now) : undefined;
+  const due = redo ? redoDue(snapshot.assignment.dueAt, now) : undefined;
   const unchecked = llm.ok ? [...unreadable, ...llm.output.unverifiable] : unreadable;
   const qualityAlert = async () => {
-    const extra = [
-      ...(unchecked.length ? [uncheckedSentence(unchecked)] : []),
-      ...(dueNote ? [dueNote] : []),
-    ];
-    const message = qualityMessage(snapshot, heuristic, llm, merged, extra);
+    const content = qualityContent(snapshot, heuristic, llm, merged, {
+      unchecked,
+      redoDue: due,
+    });
     const { created } = await raiseAlert(
       db,
       {
         key: `quality:${submissionVersionId}${suffix}`,
         level: merged.verdict === "panic" ? "panic" : "alert",
-        message,
+        ...content,
       },
       now,
     );
-    return { message, created };
+    return { content, created };
   };
 
   if (!llm.ok) {
@@ -638,18 +641,22 @@ export async function reviewSubmission(
       ...reReview,
     };
     if (!trigger && heuristic.directVerdict?.level === "panic") {
-      const { message, created } = await qualityAlert();
-      Object.assign(result, { verdict: "panic", message, alertCreated: created });
+      const { content, created } = await qualityAlert();
+      Object.assign(result, { verdict: "panic", content, alertCreated: created });
     }
     if (failures >= LLM_FAILURE_ALERT_AFTER) {
-      const a = snapshot.assignment;
-      const label = a.courseName ? `"${a.title}" (${a.courseName})` : `"${a.title}"`;
       const { created } = await raiseAlert(
         db,
         {
           key: `quality:${submissionVersionId}${suffix}:llm-failed`,
           level: "alert",
-          message: `Automatic review couldn't run: ${label} failed ${failures} times (${provider.name}: ${llm.error}). Check the work by hand.`,
+          code: "quality.llm_failed",
+          params: {
+            ...itemOf(snapshot.assignment),
+            failures,
+            provider: provider.name,
+            error: llm.error,
+          },
         },
         now,
       );
@@ -687,16 +694,16 @@ export async function reviewSubmission(
     // Unchecked parts of an ok review go to "check by hand"; a warn/panic that isn't worse
     // already had its alert.
     if (merged.verdict === "ok" && unchecked.length) {
-      const { message, created } = await uncheckedAlert(unchecked);
-      Object.assign(result, { ...(message ? { message } : {}), uncheckedAlertCreated: created });
+      const { content, created } = await uncheckedAlert(unchecked);
+      Object.assign(result, { ...(content ? { content } : {}), uncheckedAlertCreated: created });
     }
     return result;
   }
-  const { message, created } = await qualityAlert();
+  const { content, created } = await qualityAlert();
   return {
     status: "reviewed",
     verdict: merged.verdict,
-    message,
+    content,
     alertCreated: created,
     ...reReview,
   };

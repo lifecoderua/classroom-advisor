@@ -2,15 +2,24 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type Debt, debtAgeDays, loadBacklog } from "../checks/backlog.ts";
 import { detailsUrl } from "../collector/classroom/todo.ts";
+import {
+  DEFAULT_LANG,
+  formatAge,
+  formatAgo,
+  formatTime,
+  itemLabel,
+  type Lang,
+  type Locale,
+  messages,
+  zonedClock,
+} from "../i18n/index.ts";
 import { abortableSleep } from "../run/cycle.ts";
 import { inQuietHours, type QuietHours } from "../run/schedule.ts";
 import { type Db, markAlertsSent, muteAlert } from "../store/index.ts";
 import type { AlertLevel } from "../store/types.ts";
 import {
+  alertText,
   buildReport,
-  DEBT_MARK,
-  formatAge,
-  formatTime,
   parseAlertKey,
   type Report,
   type ReportAlert,
@@ -48,6 +57,8 @@ export class TelegramError extends Error {
     message: string,
     readonly code?: number,
     readonly retryAfterSec?: number,
+    /** The group became a supergroup with this id (`parameters.migrate_to_chat_id`). */
+    readonly migrateToChatId?: string,
   ) {
     super(message);
   }
@@ -67,6 +78,8 @@ export interface TgMessage {
   date: number;
   chat: TgChat;
   text?: string;
+  /** Service message: this group was upgraded to a supergroup with that id. */
+  migrate_to_chat_id?: number;
 }
 
 export interface TgUpdate {
@@ -118,7 +131,7 @@ export class TelegramApi {
       result?: T;
       description?: string;
       error_code?: number;
-      parameters?: { retry_after?: number };
+      parameters?: { retry_after?: number; migrate_to_chat_id?: number };
     };
     try {
       body = (await res.json()) as typeof body;
@@ -131,6 +144,9 @@ export class TelegramApi {
         `${method}: ${code} ${this.redact(body.description ?? "error")}`,
         code,
         body.parameters?.retry_after,
+        body.parameters?.migrate_to_chat_id === undefined
+          ? undefined
+          : String(body.parameters.migrate_to_chat_id),
       );
     }
     return body.result as T;
@@ -215,25 +231,30 @@ const LEVEL_ICON: Record<AlertLevel, string> = { panic: "🔴", alert: "🟠", i
 function alertLine(
   a: ReportAlert,
   links: ReadonlyMap<number, string>,
+  loc: Locale,
   icon = LEVEL_ICON[a.level],
 ): string {
   const url = links.get(a.id);
-  const link = url ? ` · <a href="${escapeHtml(url)}">open</a>` : "";
-  return `${icon} ${escapeHtml(truncate(a.message, LINE_CAP))}${link} · /ack_${a.id}`;
+  const open = messages(loc.lang).telegram.open;
+  const link = url ? ` · <a href="${escapeHtml(url)}">${open}</a>` : "";
+  return `${icon} ${escapeHtml(truncate(alertText(a, loc), LINE_CAP))}${link} · /ack_${a.id}`;
 }
 
 export interface TelegramFormatOptions {
   /** Header line, already HTML (e.g. `🚨 <b>Urgent</b>`). */
   title: string;
-  timeZone?: string;
+  lang?: Lang;
+  timeZone?: string | undefined;
 }
 
-function debtLine(d: Debt, now: Date): string {
-  const what = `"${d.title}"${d.courseName ? ` (${d.courseName})` : ""}`;
+function debtLine(d: Debt, now: Date, lang: Lang): string {
+  const m = messages(lang);
   const ack = d.alertId === null ? "" : ` · /ack_${d.alertId}`;
-  return `${DEBT_MARK[d.kind]}: ${escapeHtml(truncate(what, LINE_CAP))} · ${formatAge(
-    debtAgeDays(d, now),
-  )} · <a href="${escapeHtml(d.url)}">open</a>${ack}`;
+  return `${m.report.debt[d.kind]}: ${escapeHtml(
+    truncate(itemLabel(d.title, d.courseName, lang), LINE_CAP),
+  )} · ${formatAge(debtAgeDays(d, now), lang)} · <a href="${escapeHtml(d.url)}">${
+    m.telegram.open
+  }</a>${ack}`;
 }
 
 /**
@@ -246,20 +267,26 @@ export function formatAlertsHtml(
   links: ReadonlyMap<number, string>,
   opts: TelegramFormatOptions,
 ): string {
-  const out = [`${opts.title} · ${escapeHtml(formatTime(report.generatedAt, opts.timeZone))}`];
+  const loc: Locale = { lang: opts.lang ?? DEFAULT_LANG, timeZone: opts.timeZone };
+  const t = messages(loc.lang).telegram;
+  const out = [`${opts.title} · ${escapeHtml(formatTime(report.generatedAt, loc))}`];
   for (const a of report.accounts) {
     const alerts = [...a.panics, ...a.alerts, ...a.info];
     if (alerts.length + a.checkByHand.length + a.backlog.length === 0) continue;
-    out.push("", `👤 <b>${escapeHtml(a.label)}</b>`, ...alerts.map((x) => alertLine(x, links)));
+    out.push(
+      "",
+      `👤 <b>${escapeHtml(a.label)}</b>`,
+      ...alerts.map((x) => alertLine(x, links, loc)),
+    );
     if (a.checkByHand.length) {
-      out.push("🔍 <i>Check by hand</i>", ...a.checkByHand.map((x) => alertLine(x, links, "🔍")));
+      out.push(t.checkByHand, ...a.checkByHand.map((x) => alertLine(x, links, loc, "🔍")));
     }
     if (a.backlog.length) {
-      out.push("📌 <i>Open debts</i>", ...a.backlog.map((d) => debtLine(d, report.generatedAt)));
+      out.push(t.debts, ...a.backlog.map((d) => debtLine(d, report.generatedAt, loc.lang)));
     }
   }
   if (report.other.length) {
-    out.push("", "<b>Other</b>", ...report.other.map((x) => alertLine(x, links)));
+    out.push("", t.other, ...report.other.map((x) => alertLine(x, links, loc)));
   }
   return out.join("\n");
 }
@@ -352,21 +379,10 @@ export function chatLabel(chat: TgChat): string {
   return chat.title || name || (chat.username ? `@${chat.username}` : "");
 }
 
-/** `5m ago`, `3h ago`, `2d ago`. */
-export function formatAgo(ms: number): string {
-  const min = Math.max(0, Math.round(ms / 60_000));
-  if (min < 60) return `${min}m ago`;
-  const h = Math.round(min / 60);
-  if (h < 48) return `${h}h ago`;
-  return `${Math.round(h / 24)}d ago`;
+/** The bot's help text (HTML) in `lang`. */
+export function helpHtml(lang: Lang): string {
+  return messages(lang).telegram.help;
 }
-
-export const HELP_TEXT = [
-  "<b>classroom-advisor</b>",
-  "/status – last sync and open alerts per kid",
-  "/digest – send the pending digest now",
-  "/ack &lt;id&gt; – mute an alert (or tap /ack_&lt;id&gt; under it)",
-].join("\n");
 
 // ---------------------------------------------------------------------------------------------
 // Notifier
@@ -374,8 +390,13 @@ export const HELP_TEXT = [
 export interface TelegramState {
   /** Next `getUpdates` offset (last handled update id + 1). */
   updateOffset?: number;
-  /** Local `YYYY-MM-DD` of the last scheduled digest. */
+  /** `YYYY-MM-DD` (in the configured zone) of the last scheduled digest. */
   lastDigestDay?: string;
+  /**
+   * Groups upgraded to supergroups: old chat id → new one. Applied to the configured chat ids,
+   * so a migration sticks even when `CA_TELEGRAM_CHAT_IDS` overrides `config.local.json`.
+   */
+  chatMigrations?: Record<string, string>;
 }
 
 export function telegramStatePath(dataDir: string): string {
@@ -392,10 +413,9 @@ function readState(path: string): TelegramState {
   }
 }
 
-/** Local calendar day `YYYY-MM-DD` (process time zone, like quiet hours). */
-export function localDay(d: Date): string {
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+/** Calendar day `YYYY-MM-DD` of `d` in `timeZone` (default: the process zone). */
+export function localDay(d: Date, timeZone?: string): string {
+  return zonedClock(d, timeZone).day;
 }
 
 /** `HH:MM` → minutes after midnight. */
@@ -412,8 +432,10 @@ export interface NotifierOptions {
   api: TelegramApi;
   /** Allowed chats: messages go there, commands are taken only from there. */
   chatIds: readonly string[];
-  /** Local `HH:MM` of the daily digest. */
+  /** `HH:MM` (in `timeZone`) of the daily digest. */
   digestTime: string;
+  /** Language of every message and reply (default `uk`). */
+  lang?: Lang;
   /** Open debts older than this are left out of digests and `/status` (default 14). */
   backlogForgetDays?: number;
   quietHours?: QuietHours;
@@ -422,7 +444,13 @@ export interface NotifierOptions {
   watchedEmails?: readonly string[];
   now?: () => Date;
   log?: (line: string) => void;
+  /** IANA zone of the digest time, quiet hours and displayed times (default: process zone). */
   timeZone?: string;
+  /**
+   * A linked group was upgraded to a supergroup (Telegram moved it to `to`). Called after the
+   * notifier switched over; the CLI rewrites `config.local.json` here.
+   */
+  onChatMigrated?: (from: string, to: string) => void;
   /** Resolves after `ms` or as soon as `signal` aborts (used after a polling error). */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   /** Long-poll timeout per `getUpdates`, in seconds. */
@@ -435,6 +463,8 @@ export class TelegramNotifier {
   private readonly digestMin: number;
   private readonly pollTimeoutSec: number;
   private state: TelegramState;
+  /** Allowed chats, with supergroup migrations applied. */
+  private chatIds: string[];
   /** After a failed scheduled digest, don't retry before this time. */
   private digestRetryAt = 0;
 
@@ -444,6 +474,52 @@ export class TelegramNotifier {
     this.digestMin = parseClockTime(opts.digestTime);
     this.pollTimeoutSec = opts.pollTimeoutSec ?? 50;
     this.state = readState(opts.statePath);
+    const moved = this.state.chatMigrations ?? {};
+    this.chatIds = [...new Set(opts.chatIds.map((id) => moved[id] ?? id))];
+  }
+
+  private get lang(): Lang {
+    return this.opts.lang ?? DEFAULT_LANG;
+  }
+
+  private get loc(): Locale {
+    return { lang: this.lang, timeZone: this.opts.timeZone };
+  }
+
+  /** The chats messages go to (configured ids with supergroup migrations applied). */
+  get chats(): readonly string[] {
+    return this.chatIds;
+  }
+
+  /** Switches a linked chat to its new supergroup id and remembers it. */
+  private migrateChat(from: string, to: string): void {
+    if (!this.chatIds.includes(from) || from === to) return;
+    this.chatIds = [...new Set(this.chatIds.map((id) => (id === from ? to : id)))];
+    this.state.chatMigrations = { ...this.state.chatMigrations, [from]: to };
+    this.saveState();
+    this.log(`telegram: a linked group became a supergroup; switched to its new chat id`);
+    try {
+      this.opts.onChatMigrated?.(from, to);
+    } catch (err) {
+      this.log(`telegram: saving the new chat id failed: ${this.describe(err)}`);
+    }
+  }
+
+  /** Sends chunks to one chat; follows a supergroup migration once (and resends there). */
+  private async sendTo(chatId: string, chunks: readonly string[]): Promise<void> {
+    let target = chatId;
+    for (const chunk of chunks) {
+      try {
+        await this.opts.api.sendMessage(target, chunk);
+      } catch (err) {
+        if (!(err instanceof TelegramError) || !err.migrateToChatId || target !== chatId) {
+          throw err;
+        }
+        this.migrateChat(chatId, err.migrateToChatId);
+        target = err.migrateToChatId;
+        await this.opts.api.sendMessage(target, chunk);
+      }
+    }
   }
 
   private saveState(): void {
@@ -460,9 +536,9 @@ export class TelegramNotifier {
     const chunks = splitMessage(html);
     let delivered = 0;
     let lastError: unknown;
-    for (const chatId of this.opts.chatIds) {
+    for (const chatId of [...this.chatIds]) {
       try {
-        for (const chunk of chunks) await this.opts.api.sendMessage(chatId, chunk);
+        await this.sendTo(chatId, chunks);
         delivered++;
       } catch (err) {
         lastError = err;
@@ -514,10 +590,7 @@ export class TelegramNotifier {
       ...a.info,
     ]);
     const links = await alertLinks(this.opts.db, [...all, ...report.other]);
-    const html = formatAlertsHtml(report, links, {
-      title,
-      ...(this.opts.timeZone ? { timeZone: this.opts.timeZone } : {}),
-    });
+    const html = formatAlertsHtml(report, links, { title, ...this.loc });
     await this.broadcast(html);
     await markAlertsSent(this.opts.db, ids, this.now());
     return { alerts: ids.length, debts };
@@ -525,19 +598,21 @@ export class TelegramNotifier {
 
   /** Unsent panics, right away (also during quiet hours). Returns the count. */
   async sendPanics(): Promise<number> {
-    return (await this.sendAlerts(["panic"], "🚨 <b>Urgent</b>")).alerts;
+    return (await this.sendAlerts(["panic"], messages(this.lang).telegram.urgent)).alerts;
   }
 
   /** Every unsent alert (any level) plus the open debts, as one digest. */
-  sendDigest(title = "📋 <b>Digest</b>"): Promise<Sent> {
+  sendDigest(title = messages(this.lang).telegram.digest): Promise<Sent> {
     return this.sendAlerts(null, title, true);
   }
 
-  /** Scheduled digest: once a local day, from `digestTime` on, outside quiet hours. */
+  /** Scheduled digest: once a day (in `timeZone`), from `digestTime` on, outside quiet hours. */
   digestDue(at: Date = this.now()): boolean {
-    if (this.opts.quietHours && inQuietHours(this.opts.quietHours, at)) return false;
-    if (at.getHours() * 60 + at.getMinutes() < this.digestMin) return false;
-    return this.state.lastDigestDay !== localDay(at);
+    const tz = this.opts.timeZone;
+    if (this.opts.quietHours && inQuietHours(this.opts.quietHours, at, tz)) return false;
+    const clock = zonedClock(at, tz);
+    if (clock.minutes < this.digestMin) return false;
+    return this.state.lastDigestDay !== clock.day;
   }
 
   /** Sends the daily digest when due; failures are logged and retried after 5 minutes. */
@@ -546,8 +621,8 @@ export class TelegramNotifier {
     const none = { alerts: 0, debts: 0 };
     if (!this.digestDue(now) || now.getTime() < this.digestRetryAt) return none;
     try {
-      const sent = await this.sendDigest("📋 <b>Daily digest</b>");
-      this.state.lastDigestDay = localDay(now);
+      const sent = await this.sendDigest(messages(this.lang).telegram.dailyDigest);
+      this.state.lastDigestDay = localDay(now, this.opts.timeZone);
       this.saveState();
       return sent;
     } catch (err) {
@@ -605,74 +680,85 @@ export class TelegramNotifier {
       accountIds: report.accounts.map((a) => a.id),
     });
     const debtCount = (accountId: number) => debts.filter((d) => d.accountId === accountId).length;
-    const tz = this.opts.timeZone;
+    const loc = this.loc;
+    const t = messages(loc.lang).telegram;
     const counts = (alerts: readonly ReportAlert[]) => {
       const n = (l: AlertLevel) => alerts.filter((a) => a.level === l).length;
       const pending = alerts.filter((a) => a.sentAt === null).length;
-      return `🔴 ${n("panic")} · 🟠 ${n("alert")} · ℹ️ ${n("info")} (unsent ${pending})`;
+      return t.openCounts(n("panic"), n("alert"), n("info"), pending);
     };
-    const out = [`📊 <b>Status</b> · ${escapeHtml(formatTime(now, tz))}`];
-    if (report.accounts.length === 0) out.push("", "No watched accounts yet.");
+    const out = [`${t.status} · ${escapeHtml(formatTime(now, loc))}`];
+    if (report.accounts.length === 0) out.push("", t.noAccounts);
     for (const a of report.accounts) {
       const run = lastRun.get(a.email);
       const at = run ? (run.finishedAt ?? run.startedAt) : undefined;
       const sync =
         run && at
-          ? `${escapeHtml(run.status)} · ${escapeHtml(formatTime(at, tz))} (${formatAgo(now.getTime() - at.getTime())})`
-          : "never";
+          ? `${escapeHtml(t.syncStatus[run.status] ?? run.status)} · ${escapeHtml(
+              formatTime(at, loc),
+            )} (${formatAgo(now.getTime() - at.getTime(), loc.lang)})`
+          : t.never;
       out.push(
         "",
         `👤 <b>${escapeHtml(a.label)}</b>`,
-        `Last sync: ${sync}`,
-        `Open: ${counts([...a.panics, ...a.alerts, ...a.checkByHand, ...a.info])}`,
-        `📌 Open debts: ${debtCount(a.id)}`,
+        t.lastSync(sync),
+        counts([...a.panics, ...a.alerts, ...a.checkByHand, ...a.info]),
+        t.debtCount(debtCount(a.id)),
       );
     }
-    if (report.other.length) out.push("", `Other: ${counts(report.other)}`);
-    out.push(
-      "",
-      `Daily digest at ${escapeHtml(this.opts.digestTime)}. Open = not acked, 7 days; debts are forgotten after ${this.forgetDays} days.`,
-    );
+    if (report.other.length) out.push("", `${t.other}: ${counts(report.other)}`);
+    out.push("", t.statusFooter(escapeHtml(this.opts.digestTime), this.forgetDays));
     return out.join("\n");
   }
 
+  /** Replies in the chat the command came from (a private chat or a group). */
   private async reply(chatId: string, html: string): Promise<void> {
-    for (const chunk of splitMessage(html)) await this.opts.api.sendMessage(chatId, chunk);
+    await this.sendTo(chatId, splitMessage(html));
   }
 
-  /** Handles one update: commands from allowed chats only; everything else is ignored. */
+  /**
+   * Handles one update: commands from allowed chats only (private chats and groups alike, also
+   * `/cmd@bot`); everything else is ignored. A linked group's "migrated to supergroup" service
+   * message switches the chat id.
+   */
   async handleUpdate(update: TgUpdate): Promise<void> {
     const msg = update.message;
-    if (!msg?.text) return;
+    if (!msg) return;
     const chatId = String(msg.chat.id);
-    if (!this.opts.chatIds.includes(chatId)) return;
+    if (!this.chatIds.includes(chatId)) return;
+    if (msg.migrate_to_chat_id !== undefined) {
+      this.migrateChat(chatId, String(msg.migrate_to_chat_id));
+      return;
+    }
+    if (!msg.text) return;
     const cmd = parseCommand(msg.text);
     if (!cmd) return;
+    const t = messages(this.lang).telegram;
     switch (cmd.name) {
       case "status":
         await this.reply(chatId, await this.statusHtml());
         return;
       case "digest": {
         const sent = await this.sendDigest();
-        if (sent.alerts + sent.debts === 0) await this.reply(chatId, "Nothing pending.");
+        if (sent.alerts + sent.debts === 0) await this.reply(chatId, t.nothingPending);
         return;
       }
       case "ack": {
         const ids = cmd.args.map(Number).filter((n) => Number.isInteger(n) && n > 0);
         if (ids.length === 0) {
-          await this.reply(chatId, "Usage: /ack &lt;id&gt; (the number after /ack_ in a message)");
+          await this.reply(chatId, t.ackUsage);
           return;
         }
         const lines: string[] = [];
         for (const id of ids) {
           const alert = await muteAlert(this.opts.db, id, this.now());
-          lines.push(alert ? `🔕 Muted #${id}` : `No alert #${id}`);
+          lines.push(alert ? t.acked(id) : t.noAlert(id));
         }
         await this.reply(chatId, lines.join("\n"));
         return;
       }
       default:
-        await this.reply(chatId, HELP_TEXT);
+        await this.reply(chatId, t.help);
     }
   }
 

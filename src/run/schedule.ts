@@ -1,4 +1,5 @@
 import { ConfigError } from "../config/index.ts";
+import { zonedClock } from "../i18n/index.ts";
 
 /** A daily local-time window in minutes after midnight; `end < start` crosses midnight. */
 export interface QuietHours {
@@ -24,9 +25,9 @@ export function parseQuietHours(spec: string): QuietHours {
   return { start, end };
 }
 
-/** Whether `at` (in the process's local time zone) falls inside the window; end is exclusive. */
-export function inQuietHours(q: QuietHours, at: Date): boolean {
-  const m = at.getHours() * 60 + at.getMinutes();
+/** Whether `at` (in `timeZone`, default the process zone) is inside the window; end exclusive. */
+export function inQuietHours(q: QuietHours, at: Date, timeZone?: string): boolean {
+  const m = zonedClock(at, timeZone).minutes;
   return q.start < q.end ? m >= q.start && m < q.end : m >= q.start || m < q.end;
 }
 

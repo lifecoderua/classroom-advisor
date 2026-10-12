@@ -31,6 +31,14 @@ describe("quiet hours", () => {
     expect(inQuietHours(q, at(12, 0))).toBe(false);
   });
 
+  it("reads the clock in the given time zone", () => {
+    const q = parseQuietHours("22:00-07:00");
+    // 20:30 UTC = 23:30 in Kyiv (UTC+3 in October).
+    const t = new Date("2026-10-10T20:30:00Z");
+    expect(inQuietHours(q, t, "UTC")).toBe(false);
+    expect(inQuietHours(q, t, "Europe/Kyiv")).toBe(true);
+  });
+
   it("handles a same-day range", () => {
     const q = parseQuietHours("13:00-15:00");
     expect(inQuietHours(q, at(12, 59))).toBe(false);

@@ -2,7 +2,7 @@
 // comment id, `comment.new` events, and an alert for every fresh teacher comment (`panic` when
 // it asks to redo, fix or attach something, #44).
 
-import { isRedoRequest, redoDueNote, turnedInSince } from "../checks/redo.ts";
+import { isRedoRequest, redoDue, turnedInSince } from "../checks/redo.ts";
 import {
   commentsHaveMore,
   type ParsedComment,
@@ -18,7 +18,14 @@ import {
   type Transport,
 } from "../collector/classroom/rpc.ts";
 import { SessionExpiredError } from "../collector/files.ts";
-import { type Account, type Db, raiseAlert, recordEvent, upsertComment } from "../store/index.ts";
+import {
+  type Account,
+  type AlertContent,
+  type Db,
+  raiseAlert,
+  recordEvent,
+  upsertComment,
+} from "../store/index.ts";
 
 export interface FetchCommentsResult {
   comments: ParsedComment[];
@@ -95,19 +102,6 @@ export const emptyCommentStats = (): CommentStats => ({
   errors: 0,
 });
 
-/** Max characters of a comment quoted in an alert. */
-export const COMMENT_ALERT_CHARS = 600;
-
-export function teacherCommentMessage(target: CommentTarget, text: string, note?: string): string {
-  const label = target.courseName
-    ? `"${target.title}" (${target.courseName})`
-    : `"${target.title}"`;
-  const body = text.trim().replace(/\s+/g, " ");
-  const quoted =
-    body.length > COMMENT_ALERT_CHARS ? `${body.slice(0, COMMENT_ALERT_CHARS - 1)}…` : body;
-  return `Teacher comment on ${label}: ${quoted || "(empty)"}${note ? ` ${note}` : ""}`;
-}
-
 /**
  * A comment is fresh (event, and an alert when a teacher wrote it) unless it is stored by the
  * baseline sync, or it sits on a baseline item and was posted before the account's baseline.
@@ -142,14 +136,19 @@ export function teacherCommentAlert(
   target: CommentTarget,
   comment: { text: string; postedAt: Date },
   now: Date,
-): { level: "alert" | "panic"; message: string } {
+): { level: "alert" | "panic" } & Extract<AlertContent, { code: "comment.teacher" }> {
+  const params = { title: target.title, course: target.courseName, text: comment.text };
   if (!isRedoRequest(comment.text)) {
-    return { level: "alert", message: teacherCommentMessage(target, comment.text) };
+    return { level: "alert", code: "comment.teacher", params };
   }
-  const note = turnedInSince(comment.postedAt, target.submission)
+  const due = turnedInSince(comment.postedAt, target.submission)
     ? undefined
-    : redoDueNote(target.dueAt, now);
-  return { level: "panic", message: teacherCommentMessage(target, comment.text, note) };
+    : redoDue(target.dueAt, now);
+  return {
+    level: "panic",
+    code: "comment.teacher",
+    params: { ...params, ...(due ? { redoDue: due } : {}) },
+  };
 }
 
 /**

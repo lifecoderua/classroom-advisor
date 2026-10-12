@@ -47,6 +47,8 @@ export const DEFAULT_BACKLOG_FORGET_DAYS = 14;
 export interface Sent {
   alerts: number;
   debts: number;
+  /** Alerts closed automatically since the previous digest (a count line, #51). */
+  closed: number;
 }
 
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
@@ -288,6 +290,7 @@ export function formatAlertsHtml(
   if (report.other.length) {
     out.push("", t.other, ...report.other.map((x) => alertLine(x, links, loc)));
   }
+  if (report.autoClosed) out.push("", messages(loc.lang).report.autoClosed(report.autoClosed));
   return out.join("\n");
 }
 
@@ -392,6 +395,8 @@ export interface TelegramState {
   updateOffset?: number;
   /** `YYYY-MM-DD` (in the configured zone) of the last scheduled digest. */
   lastDigestDay?: string;
+  /** ISO time of the last digest sent (scheduled or `/digest`): "closed automatically" counts from it. */
+  lastDigestAt?: string;
   /**
    * Groups upgraded to supergroups: old chat id → new one. Applied to the configured chat ids,
    * so a migration sticks even when `CA_TELEGRAM_CHAT_IDS` overrides `config.local.json`.
@@ -572,17 +577,22 @@ export class TelegramNotifier {
       select: { id: true },
       orderBy: { id: "asc" },
     });
-    const none = { alerts: 0, debts: 0 };
+    const none = { alerts: 0, debts: 0, closed: 0 };
     if (rows.length === 0 && !backlog) return none;
+    const closedSince = this.state.lastDigestAt
+      ? new Date(this.state.lastDigestAt)
+      : new Date(now.getTime() - DAY_MS);
     const ids = rows.map((r) => r.id);
     const report = await buildReport(this.opts.db, {
       now,
       alertIds: ids,
       ...(this.opts.watchedEmails ? { watchedEmails: this.opts.watchedEmails } : {}),
-      ...(backlog ? { backlog: { forgetDays: this.forgetDays } } : {}),
+      ...(backlog
+        ? { backlog: { forgetDays: this.forgetDays }, autoClosedSince: closedSince }
+        : {}),
     });
     const debts = report.accounts.reduce((n, a) => n + a.backlog.length, 0);
-    if (!reportHasAlerts(report) && !reportHasBacklog(report)) return none;
+    if (!reportHasAlerts(report) && !reportHasBacklog(report) && !report.autoClosed) return none;
     const all = report.accounts.flatMap((a) => [
       ...a.panics,
       ...a.alerts,
@@ -593,7 +603,11 @@ export class TelegramNotifier {
     const html = formatAlertsHtml(report, links, { title, ...this.loc });
     await this.broadcast(html);
     await markAlertsSent(this.opts.db, ids, this.now());
-    return { alerts: ids.length, debts };
+    if (backlog) {
+      this.state.lastDigestAt = now.toISOString();
+      this.saveState();
+    }
+    return { alerts: ids.length, debts, closed: report.autoClosed };
   }
 
   /** Unsent panics, right away (also during quiet hours). Returns the count. */
@@ -618,7 +632,7 @@ export class TelegramNotifier {
   /** Sends the daily digest when due; failures are logged and retried after 5 minutes. */
   async maybeSendDigest(): Promise<Sent> {
     const now = this.now();
-    const none = { alerts: 0, debts: 0 };
+    const none = { alerts: 0, debts: 0, closed: 0 };
     if (!this.digestDue(now) || now.getTime() < this.digestRetryAt) return none;
     try {
       const sent = await this.sendDigest(messages(this.lang).telegram.dailyDigest);
@@ -633,8 +647,10 @@ export class TelegramNotifier {
   }
 
   private logDigest(sent: Sent): void {
-    if (sent.alerts + sent.debts) {
-      this.log(`telegram: digest with ${sent.alerts} alert(s), ${sent.debts} open debt(s) sent`);
+    if (sent.alerts + sent.debts + sent.closed) {
+      this.log(
+        `telegram: digest with ${sent.alerts} alert(s), ${sent.debts} open debt(s), ${sent.closed} auto-closed sent`,
+      );
     }
   }
 
@@ -740,7 +756,8 @@ export class TelegramNotifier {
         return;
       case "digest": {
         const sent = await this.sendDigest();
-        if (sent.alerts + sent.debts === 0) await this.reply(chatId, t.nothingPending);
+        if (sent.alerts + sent.debts + sent.closed === 0)
+          await this.reply(chatId, t.nothingPending);
         return;
       }
       case "ack": {

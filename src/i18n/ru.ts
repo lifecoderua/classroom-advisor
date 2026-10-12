@@ -114,6 +114,12 @@ export const ru: Messages = {
     other: "Другое",
     nothing: "Ничего нового.",
     heuristicsOnly: "(только автоматические признаки)",
+    autoClosed: (n) => `✔️ Закрыто автоматически: ${n}`,
+    muted: {
+      manual: "(просмотрено)",
+      auto: "(закрыто автоматически)",
+      superseded: "(заменено более новой сдачей)",
+    },
     partsNotChecked: (n) =>
       `🔍 не проверено автоматически: ${n} ${plural(LOCALE, n, { one: "часть", few: "части", many: "частей", other: "части" })}`,
     verdict: {

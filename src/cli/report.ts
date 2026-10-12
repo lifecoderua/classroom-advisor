@@ -60,6 +60,7 @@ export function registerReportCommands(program: Command): void {
           since,
           watchedEmails: config.watchedAccounts,
           backlog: { forgetDays: config.backlogForgetDays },
+          ...(since ? { autoClosedSince: since } : {}),
         });
         console.log(formatReport(report, { lang: config.digestLang, timeZone: config.timeZone }));
       } finally {
@@ -151,7 +152,7 @@ export function registerReportCommands(program: Command): void {
             await notifier?.afterCycle();
             const errs = res.errors.length ? `, ${res.errors.length} error(s)` : "";
             log(
-              `cycle done: ${res.newAlertIds.length} new alert(s), ${res.reviewed} reviewed${errs}`,
+              `cycle done: ${res.newAlertIds.length} new alert(s), ${res.reviewed} reviewed, ${res.autoAcked} auto-closed${errs}`,
             );
           },
         });

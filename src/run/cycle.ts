@@ -1,3 +1,4 @@
+import { autoAck } from "../checks/auto-ack.ts";
 import { type EvaluateDeadlinesOptions, evaluateDeadlines } from "../checks/evaluate-deadlines.ts";
 import type { ReadText } from "../checks/evaluate-heuristics.ts";
 import {
@@ -41,6 +42,8 @@ export interface CycleDeps {
 export interface CycleResult {
   newAlertIds: number[];
   reviewed: number;
+  /** Alerts muted automatically this cycle (resolved work, #51). */
+  autoAcked: number;
   errors: string[];
   /** The digest of new alerts, or undefined when there are none. */
   digest?: string;
@@ -80,14 +83,19 @@ export async function runCycle(deps: CycleDeps): Promise<CycleResult> {
       reviewed++;
     }
   });
+  // Resolved work closes its old alerts (#51) before the digest is built.
+  let autoAcked = 0;
+  await step("auto-ack", async () => {
+    autoAcked = (await autoAck(db, now())).length;
+  });
 
   const fresh = await db.alert.findMany({
-    where: { id: { gt: before } },
+    where: { id: { gt: before }, mutedAt: null },
     select: { id: true },
     orderBy: { id: "asc" },
   });
   const newAlertIds = fresh.map((a) => a.id);
-  const result: CycleResult = { newAlertIds, reviewed, errors };
+  const result: CycleResult = { newAlertIds, reviewed, autoAcked, errors };
   if (newAlertIds.length) {
     const report = await buildReport(db, {
       now: now(),

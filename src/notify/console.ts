@@ -1,3 +1,4 @@
+import { countAutoClosed } from "../checks/auto-ack.ts";
 import { type Debt, debtAgeDays, loadBacklog } from "../checks/backlog.ts";
 import {
   DEFAULT_LANG,
@@ -28,6 +29,9 @@ export interface ReportAlert {
   content: AlertContent;
   createdAt: Date;
   sentAt: Date | null;
+  mutedAt?: Date | null;
+  /** Null = acked by hand; `auto` / `superseded` = muted automatically (#51, #52). */
+  muteReason?: string | null;
 }
 
 export interface TurnedInItem {
@@ -75,6 +79,8 @@ export interface Report {
   accounts: AccountReport[];
   /** Alerts whose key doesn't resolve to a reported account. */
   other: ReportAlert[];
+  /** Alerts muted automatically since `autoClosedSince` (0 when not asked). */
+  autoClosed: number;
 }
 
 export interface BuildReportOptions {
@@ -91,6 +97,8 @@ export interface BuildReportOptions {
   upcomingDays?: number;
   /** Adds the open debts block, forgetting debts older than `forgetDays`. */
   backlog?: { forgetDays: number };
+  /** Counts the alerts muted automatically since then (`✔️ Closed automatically: N`). */
+  autoClosedSince?: Date;
 }
 
 /** Display name, else the email's local part. */
@@ -217,6 +225,8 @@ export async function buildReport(db: Db, opts: BuildReportOptions = {}): Promis
     content: alertContent(a),
     createdAt: a.createdAt,
     sentAt: a.sentAt,
+    mutedAt: a.mutedAt,
+    muteReason: a.muteReason,
   }));
   const owners = await alertAccounts(db, alerts);
 
@@ -316,7 +326,15 @@ export async function buildReport(db: Db, opts: BuildReportOptions = {}): Promis
     }
   }
 
-  return { generatedAt: now, since, alertsOnly, accounts: [...reports.values()], other };
+  const autoClosed = opts.autoClosedSince ? await countAutoClosed(db, opts.autoClosedSince) : 0;
+  return {
+    generatedAt: now,
+    since,
+    alertsOnly,
+    accounts: [...reports.values()],
+    other,
+    autoClosed,
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -342,7 +360,14 @@ function debtLines(debts: readonly Debt[], now: Date, lang: Lang): string[] {
 }
 
 function alertLines(alerts: readonly ReportAlert[], loc: Locale): string[] {
-  return alerts.map((a) => `  • ${alertText(a, loc)}  [${formatTime(a.createdAt, loc)}]`);
+  const muted = messages(loc.lang).report.muted;
+  const mark = (a: ReportAlert) => {
+    if (!a.mutedAt) return "";
+    const reason =
+      a.muteReason === "auto" || a.muteReason === "superseded" ? a.muteReason : "manual";
+    return ` ${muted[reason]}`;
+  };
+  return alerts.map((a) => `  • ${alertText(a, loc)}${mark(a)}  [${formatTime(a.createdAt, loc)}]`);
 }
 
 /** Plain-text report for a terminal, in `opts.lang` (default Ukrainian). */
@@ -393,6 +418,7 @@ export function formatReport(report: Report, opts: Partial<FormatOptions> = {}):
   if (report.other.length) {
     out.push("", `== ${r.other} ==`, ...alertLines(report.other, loc));
   }
+  if (report.autoClosed) out.push("", r.autoClosed(report.autoClosed));
   return out.join("\n");
 }
 

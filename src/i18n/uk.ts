@@ -114,6 +114,12 @@ export const uk: Messages = {
     other: "Інше",
     nothing: "Нічого нового.",
     heuristicsOnly: "(лише автоматичні ознаки)",
+    autoClosed: (n) => `✔️ Закрито автоматично: ${n}`,
+    muted: {
+      manual: "(переглянуто)",
+      auto: "(закрито автоматично)",
+      superseded: "(замінено новішою здачею)",
+    },
     partsNotChecked: (n) =>
       `🔍 не перевірено автоматично: ${n} ${plural(LOCALE, n, { one: "частина", few: "частини", many: "частин", other: "частини" })}`,
     verdict: {

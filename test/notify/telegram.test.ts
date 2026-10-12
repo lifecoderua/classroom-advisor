@@ -439,6 +439,32 @@ describe("TelegramNotifier", () => {
     expect(String(f.sent()[3]?.body.text)).toContain("позначити сповіщення переглянутим");
   });
 
+  it("says how many alerts closed automatically since the last digest", async () => {
+    const { alertId } = await seed();
+    await db.alert.update({
+      where: { id: alertId },
+      data: { mutedAt: clock, muteReason: "auto", sentAt: clock },
+    });
+    const f = fakeFetch();
+    const n = notifier(f);
+    clock = at(19, 5);
+    await n.afterCycle();
+    const digest = String(f.sent().at(-1)?.body.text);
+    expect(digest).toContain("✔️ Closed automatically: 1");
+    // Counted once: the next digest starts from this one.
+    clock = at(19, 5, 11);
+    await n.handleUpdate({
+      update_id: 1,
+      message: {
+        message_id: 1,
+        date: 0,
+        chat: { id: Number(CHAT), type: "private" },
+        text: "/digest",
+      },
+    });
+    expect(String(f.sent().at(-1)?.body.text)).toBe("Nothing pending.");
+  });
+
   it("answers commands in a linked group, also with @bot", async () => {
     await seed();
     const GROUP = "-1001234567890";

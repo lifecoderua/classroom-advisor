@@ -217,7 +217,10 @@ model Alert {
   sentAt    DateTime?
   /// Muted with the Telegram `/ack <id>` command: left out of digests, `/status` and the
   /// default console report.
-  mutedAt   DateTime?
+  mutedAt    DateTime?
+  /// Why it was muted: null = `/ack` by hand; `auto` = resolved (turned in and checked ok, or
+  /// returned/graded, #51); `superseded` = a newer turn-in replaced the version it is about (#52).
+  muteReason String?
 
   @@index([sentAt])
 }

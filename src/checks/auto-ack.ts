@@ -133,6 +133,60 @@ export async function autoAck(db: Db, now: Date = new Date()): Promise<number[]>
   return mute;
 }
 
+export const MUTE_SUPERSEDED = "superseded";
+
+/** What makes a turn-in "new": its turn-in time and its attachments (not a grade or a return). */
+function turnInKey(payload: string): string {
+  try {
+    const p = JSON.parse(payload) as { turnedInAt?: unknown; attachments?: unknown };
+    return JSON.stringify([p.turnedInAt ?? null, p.attachments ?? []]);
+  } catch {
+    return payload;
+  }
+}
+
+/**
+ * Retires the alerts of replaced turn-ins (#52): an open `quality:<versionId>…` alert (warn,
+ * panic, check by hand, failed review) whose version is no longer the latest one of its
+ * submission, and the latest version was turned in again or has different attachments, is muted
+ * with reason `superseded`. Only the latest turn-in's alerts stay. A newer version that only
+ * changed the grade or the state (returned) doesn't supersede anything. Returns the muted ids.
+ */
+export async function supersedeAlerts(db: Db, now: Date = new Date()): Promise<number[]> {
+  const open = await db.alert.findMany({
+    where: { mutedAt: null, key: { startsWith: "quality:" } },
+    select: { id: true, key: true },
+  });
+  if (open.length === 0) return [];
+  const versionId = (key: string) => Number(key.split(":")[1]);
+  const versions = await db.submissionVersion.findMany({
+    where: { id: { in: [...new Set(open.map((a) => versionId(a.key)))] } },
+    select: {
+      id: true,
+      payload: true,
+      submission: {
+        select: {
+          versions: {
+            orderBy: [{ seenAt: "desc" }, { id: "desc" }],
+            take: 1,
+            select: { id: true, payload: true },
+          },
+        },
+      },
+    },
+  });
+  const stale = new Set(
+    versions.flatMap((v) => {
+      const latest = v.submission.versions[0];
+      if (!latest || latest.id === v.id) return [];
+      return turnInKey(latest.payload) === turnInKey(v.payload) ? [] : [v.id];
+    }),
+  );
+  const mute = open.filter((a) => stale.has(versionId(a.key))).map((a) => a.id);
+  if (mute.length) await muteAlerts(db, mute, MUTE_SUPERSEDED, now);
+  return mute;
+}
+
 /** Mutes alerts with a reason (and marks unsent ones sent, so they never go out). */
 export async function muteAlerts(
   db: Db,

@@ -152,7 +152,7 @@ export function registerReportCommands(program: Command): void {
             await notifier?.afterCycle();
             const errs = res.errors.length ? `, ${res.errors.length} error(s)` : "";
             log(
-              `cycle done: ${res.newAlertIds.length} new alert(s), ${res.reviewed} reviewed, ${res.autoAcked} auto-closed${errs}`,
+              `cycle done: ${res.newAlertIds.length} new alert(s), ${res.reviewed} reviewed, ${res.autoAcked} auto-closed, ${res.superseded} superseded${errs}`,
             );
           },
         });

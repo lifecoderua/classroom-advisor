@@ -112,8 +112,85 @@ describe("runCycle", () => {
     // Idempotent: nothing new on the second cycle, so no digest and no second review.
     const second = await runCycle(deps);
     expect(calls).toEqual(["sync", "sync"]);
-    expect(second).toEqual({ newAlertIds: [], reviewed: 0, autoAcked: 0, errors: [] });
+    expect(second).toEqual({
+      newAlertIds: [],
+      reviewed: 0,
+      autoAcked: 0,
+      superseded: 0,
+      errors: [],
+    });
     expect(provider.calls).toHaveLength(1);
+  });
+
+  it("retires the alert of a replaced turn-in: one alert for the latest attachment (#52)", async () => {
+    // Turned in with an issue, then the attachment is replaced by one that still has issues.
+    const turnIn =
+      (file: string, at: Date): SyncFn =>
+      async ({ db }) => {
+        const account = await upsertAccount(db, { email: "student-one@school.example" });
+        await db.account.update({ where: { id: account.id }, data: { watched: true } });
+        const course = await upsertCourse(db, {
+          accountId: account.id,
+          classroomId: "c",
+          name: "Math",
+        });
+        const { assignment } = await upsertAssignment(
+          db,
+          {
+            accountId: account.id,
+            courseId: course.id,
+            classroomId: "hw",
+            kind: "assignment",
+            title: "Essay",
+            status: "turned_in",
+            hash: "hw",
+            payload: { instructions: "Write an essay." },
+          },
+          at,
+        );
+        await upsertSubmission(
+          db,
+          {
+            assignmentId: assignment.id,
+            state: "turned_in",
+            turnedInAt: at,
+            hash: file,
+            payload: { turnedInAt: at.toISOString(), attachments: [{ title: file }] },
+          },
+          at,
+        );
+      };
+    const provider = warnProvider();
+    const deps = (sync: SyncFn, now: Date) => ({
+      db,
+      sync,
+      provider,
+      readText: async () => undefined,
+      now: () => now,
+      log: () => undefined,
+      timeZone: "UTC",
+      lang: "en" as const,
+    });
+    const first = await runCycle(deps(turnIn("essay-v1.docx", NOW), NOW));
+    expect(first.newAlertIds).toHaveLength(1);
+
+    const later = new Date(NOW.getTime() + 2 * H);
+    const second = await runCycle(deps(turnIn("essay-v2.docx", later), later));
+    expect(provider.calls).toHaveLength(2);
+    expect(second.superseded).toBe(1);
+    expect(second.newAlertIds).toHaveLength(1);
+
+    const open = await db.alert.findMany({
+      where: { mutedAt: null, key: { startsWith: "quality:" } },
+    });
+    expect(open.map((a) => a.id)).toEqual(second.newAlertIds);
+    const old = await db.alert.findUniqueOrThrow({ where: { id: first.newAlertIds[0] ?? 0 } });
+    expect(old.muteReason).toBe("superseded");
+    // The digest (unsent, unmuted) carries exactly one quality alert: the latest attachment's.
+    const pending = await db.alert.findMany({
+      where: { sentAt: null, mutedAt: null, key: { startsWith: "quality:" } },
+    });
+    expect(pending.map((a) => a.id)).toEqual(second.newAlertIds);
   });
 
   it("keeps going when sync fails", async () => {

@@ -3,7 +3,7 @@
 A personal tool for a parent of young kids in remote school on Google Classroom. It watches the kids' accounts and raises an alarm when:
 
 - **turned-in work doesn't match the assignment**: wrong, unfinished, missing or partial attachments, or a template turned in unchanged. The point is to catch this while the material is still fresh, not weeks later when (or if) the teacher checks.
-- **work is left untouched** for more than a day after it was posted.
+- **work is left untouched** for more than a day after it was posted. Lesson-schedule posts that only carry a call invite and no homework are recognized (by the LLM, cached per post shape) and stay silent.
 - **a deadline is close** (under 24h) and the work isn't turned in, or the work is marked missing.
 
 Status: early PoC. See the [issues](https://github.com/lifecoderua/classroom-advisor/issues) and their milestones.

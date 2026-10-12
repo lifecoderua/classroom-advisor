@@ -114,6 +114,7 @@ export const en: Messages = {
       manual: "(acked)",
       auto: "(closed automatically)",
       superseded: "(replaced by a newer turn-in)",
+      no_work_expected: "(no homework in the post)",
     },
     verdict: {
       ok: "✅ ok",

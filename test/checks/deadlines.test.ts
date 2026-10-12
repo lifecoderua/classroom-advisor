@@ -267,6 +267,26 @@ describe("baseline and lookback (alert-flood guard)", () => {
   });
 });
 
+describe("deadlineAlerts with an expects-work verdict (#61)", () => {
+  const noDue = { postedAt: ago(10 * DAY_MS), dueAt: null };
+  const codes = (assignment: Partial<DeadlineInput["assignment"]>) =>
+    deadlineAlerts(input({ assignment }), NOW).map((d) => d.code);
+
+  it("`no` suppresses the reminders", () => {
+    expect(codes({ ...noDue, expectsWork: "no" })).toEqual([]);
+  });
+
+  it.each(["yes", "unclear", null] as const)("%s keeps them", (expectsWork) => {
+    expect(codes({ ...noDue, expectsWork })).toEqual(["untouched_24h", "no_due_date"]);
+  });
+
+  it("never suppresses the panics", () => {
+    expect(codes({ dueAt: ago(HOUR_MS), expectsWork: "no" })).toEqual(["missing"]);
+    expect(codes({ dueAt: ahead(5 * HOUR_MS), expectsWork: "no" })).toEqual(["due_soon"]);
+    expect(codes({ ...noDue, status: "missing", expectsWork: "no" })).toEqual(["missing"]);
+  });
+});
+
 describe("isoWeek", () => {
   it.each([
     ["2026-10-10T12:00:00Z", "2026-W41"],

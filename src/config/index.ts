@@ -45,6 +45,11 @@ export const configSchema = z.strictObject({
    * due later than a day from now and within this many days.
    */
   upcomingDays: z.coerce.number().int().positive().default(14),
+  /**
+   * Expects-work classification (#61): at most this many LLM calls per run (skeleton-cache hits
+   * are free); the rest stays unclassified (reminders as before) until a later run. 0 = no calls.
+   */
+  expectsWorkMaxPerRun: z.coerce.number().int().nonnegative().default(20),
   /** Telegram `/refresh` and `/recheck`: at most one manual cycle per this many minutes. */
   refreshCooldownMin: z.coerce.number().int().nonnegative().default(5),
   /** Sync re-fetches the details of every item at least this often (slow full refresh). */
@@ -101,6 +106,7 @@ const ENV_KEYS = {
   CA_DIGEST_LANG: "digestLang",
   CA_TIMEZONE: "timeZone",
   CA_ALERT_LOOKBACK_DAYS: "alertLookbackDays",
+  CA_EXPECTS_WORK_MAX_PER_RUN: "expectsWorkMaxPerRun",
   CA_BACKLOG_FORGET_DAYS: "backlogForgetDays",
   CA_UPCOMING_DAYS: "upcomingDays",
   CA_REFRESH_COOLDOWN_MIN: "refreshCooldownMin",

@@ -119,6 +119,7 @@ export const ru: Messages = {
       manual: "(просмотрено)",
       auto: "(закрыто автоматически)",
       superseded: "(заменено более новой сдачей)",
+      no_work_expected: "(в посте нет домашнего задания)",
     },
     partsNotChecked: (n) =>
       `🔍 не проверено автоматически: ${n} ${plural(LOCALE, n, { one: "часть", few: "части", many: "частей", other: "части" })}`,

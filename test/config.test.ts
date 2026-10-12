@@ -40,6 +40,7 @@ describe("loadConfig", () => {
       llmTimeoutMs: 180_000,
       runIntervalMin: 60,
       alertLookbackDays: 14,
+      expectsWorkMaxPerRun: 20,
       backlogForgetDays: 14,
       upcomingDays: 14,
       refreshCooldownMin: 5,

@@ -11,6 +11,7 @@
   "timeZone": "Europe/Kyiv",
   "quietHours": "22:00-07:00",
   "alertLookbackDays": 14,
+  "expectsWorkMaxPerRun": 20,
   "backlogForgetDays": 14,
   "upcomingDays": 14,
   "fullRefreshDays": 7,

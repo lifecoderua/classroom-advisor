@@ -390,7 +390,11 @@ function alertLines(alerts: readonly ReportAlert[], loc: Locale): string[] {
   const mark = (a: ReportAlert) => {
     if (!a.mutedAt) return "";
     const reason =
-      a.muteReason === "auto" || a.muteReason === "superseded" ? a.muteReason : "manual";
+      a.muteReason === "auto" ||
+      a.muteReason === "superseded" ||
+      a.muteReason === "no_work_expected"
+        ? a.muteReason
+        : "manual";
     return ` ${muted[reason]}`;
   };
   return alerts.map((a) => `  • ${alertText(a, loc)}${mark(a)}  [${formatTime(a.createdAt, loc)}]`);

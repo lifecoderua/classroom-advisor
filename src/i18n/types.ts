@@ -82,7 +82,7 @@ export interface Messages {
     /** `✔️ Closed automatically: N` (#51). */
     autoClosed(n: number): string;
     /** Marker after a muted alert in `report --all`, by mute reason. */
-    muted: Record<"manual" | "auto" | "superseded", string>;
+    muted: Record<"manual" | "auto" | "superseded" | "no_work_expected", string>;
     verdict: Record<VerdictMark, string>;
     debt: Record<Debt, string>;
   };

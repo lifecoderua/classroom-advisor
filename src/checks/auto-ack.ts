@@ -204,9 +204,22 @@ export async function muteAlerts(
   });
 }
 
-/** Alerts muted automatically (any non-manual reason) since `since`. */
+/**
+ * Reminders (`untouched_24h`, `no_due_date`) of a post that asks for no work (#61): muted
+ * silently, so they aren't counted as "closed automatically" either.
+ */
+export const MUTE_NO_WORK = "no_work_expected";
+
+/**
+ * Alerts muted automatically since `since`: any non-manual reason except `no_work_expected`
+ * (lesson posts without homework stay silent, #61).
+ */
 export function countAutoClosed(db: Db, since: Date): Promise<number> {
   return db.alert.count({
-    where: { muteReason: { not: null }, mutedAt: { gte: since } },
+    where: {
+      muteReason: { not: null },
+      NOT: { muteReason: MUTE_NO_WORK },
+      mutedAt: { gte: since },
+    },
   });
 }

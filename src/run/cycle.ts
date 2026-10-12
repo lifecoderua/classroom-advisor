@@ -1,4 +1,4 @@
-import { autoAck } from "../checks/auto-ack.ts";
+import { autoAck, supersedeAlerts } from "../checks/auto-ack.ts";
 import { type EvaluateDeadlinesOptions, evaluateDeadlines } from "../checks/evaluate-deadlines.ts";
 import type { ReadText } from "../checks/evaluate-heuristics.ts";
 import {
@@ -44,6 +44,8 @@ export interface CycleResult {
   reviewed: number;
   /** Alerts muted automatically this cycle (resolved work, #51). */
   autoAcked: number;
+  /** Alerts of replaced turn-ins muted this cycle (#52). */
+  superseded: number;
   errors: string[];
   /** The digest of new alerts, or undefined when there are none. */
   digest?: string;
@@ -83,9 +85,12 @@ export async function runCycle(deps: CycleDeps): Promise<CycleResult> {
       reviewed++;
     }
   });
-  // Resolved work closes its old alerts (#51) before the digest is built.
+  // Replaced turn-ins retire their alerts (#52), resolved work closes its old ones (#51), both
+  // before the digest is built.
   let autoAcked = 0;
+  let superseded = 0;
   await step("auto-ack", async () => {
+    superseded = (await supersedeAlerts(db, now())).length;
     autoAcked = (await autoAck(db, now())).length;
   });
 
@@ -95,7 +100,7 @@ export async function runCycle(deps: CycleDeps): Promise<CycleResult> {
     orderBy: { id: "asc" },
   });
   const newAlertIds = fresh.map((a) => a.id);
-  const result: CycleResult = { newAlertIds, reviewed, autoAcked, errors };
+  const result: CycleResult = { newAlertIds, reviewed, autoAcked, superseded, errors };
   if (newAlertIds.length) {
     const report = await buildReport(db, {
       now: now(),

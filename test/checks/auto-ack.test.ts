@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { autoAck, countAutoClosed } from "../../src/checks/auto-ack.ts";
+import { autoAck, countAutoClosed, supersedeAlerts } from "../../src/checks/auto-ack.ts";
 import { loadBacklog } from "../../src/checks/backlog.ts";
 import { buildReport, formatReport } from "../../src/notify/console.ts";
 import {
@@ -69,6 +69,7 @@ async function setup() {
         grade: opts.grade ?? null,
         hash: opts.hash ?? `s${at.getTime()}`,
         payload: {
+          turnedInAt: at.toISOString(),
           attachments: Array.from({ length: opts.files ?? 1 }, (_, i) => ({ title: `f${i}` })),
         },
       },
@@ -180,6 +181,27 @@ describe("autoAck", () => {
     expect((await autoAck(db, NOW)).sort()).toEqual([warn.id, redo.id].sort());
     expect((await s.state(byHand.id)).mutedAt).toBeNull(); // the latest version's own item
     expect((await s.state(thanks.id)).mutedAt).toBeNull();
+  });
+
+  it("supersedes every alert of a replaced turn-in, but not after a grade-only change", async () => {
+    const s = await setup();
+    const a = await s.assignment("Essay", null);
+    const v1 = await s.turnIn(a.id, ago(50), { hash: "v1" });
+    const warn = await s.alert(`quality:${v1.id}`, "alert", ago(49));
+    const byHand = await s.alert(`quality:${v1.id}:c3:unchecked`, "info", ago(48));
+    const v2 = await s.turnIn(a.id, ago(10), { hash: "v2" });
+    const latest = await s.alert(`quality:${v2.id}`, "alert", ago(9));
+    expect((await supersedeAlerts(db, NOW)).sort()).toEqual([warn.id, byHand.id].sort());
+    expect(await s.state(warn.id)).toMatchObject({ muteReason: "superseded", sentAt: NOW });
+    expect((await s.state(latest.id)).mutedAt).toBeNull();
+
+    // Same turn-in, only graded afterwards: a new version, but nothing to supersede.
+    const b = await s.assignment("Poem", null);
+    const w1 = await s.turnIn(b.id, ago(20), { hash: "p1" });
+    const poemWarn = await s.alert(`quality:${w1.id}`, "alert", ago(19));
+    await s.turnIn(b.id, ago(20), { hash: "p2", grade: "9" });
+    expect(await supersedeAlerts(db, NOW)).toEqual([]);
+    expect((await s.state(poemWarn.id)).mutedAt).toBeNull();
   });
 
   it("counts closed alerts in the report and the digest", async () => {

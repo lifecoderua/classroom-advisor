@@ -343,7 +343,7 @@ describe("TelegramNotifier", () => {
     expect(await sentAt(byHand.alert.id)).not.toBeNull();
   });
 
-  it("repeats open debts in every digest until acked, and counts them in /status", async () => {
+  it("repeats open debts in every digest until turned in, also after ack, and counts them in /status", async () => {
     const { account } = await seed();
     await muteAlert(db, (await db.alert.findFirstOrThrow({ where: { level: "alert" } })).id, clock);
     await db.alert.updateMany({ data: { sentAt: clock } }); // nothing new pending
@@ -390,12 +390,26 @@ describe("TelegramNotifier", () => {
     await n.handleUpdate(msg("/status"));
     expect(String(f.sent()[2]?.body.text)).toContain("📌 Open debts: 1");
 
-    // Acked: gone from the digest and /status.
+    // Acked: the alert is muted, but the debt stays (without an ack link) until turned in.
     await n.handleUpdate(msg(`/ack_${missing.alert.id}`));
+    expect(String(f.sent()[3]?.body.text)).toContain("debt stays");
     await n.handleUpdate(msg("/digest"));
-    expect(String(f.sent()[4]?.body.text)).toBe("Nothing pending.");
+    const after = String(f.sent()[4]?.body.text);
+    expect(after).toContain("⏰ not turned in: &quot;Overdue &lt;map&gt;&quot;");
+    expect(after).not.toContain(`/ack_${missing.alert.id}`);
     await n.handleUpdate(msg("/status"));
-    expect(String(f.sent()[5]?.body.text)).toContain("📌 Open debts: 0");
+    expect(String(f.sent()[5]?.body.text)).toContain("📌 Open debts: 1");
+
+    // Turned in: resolved.
+    await upsertSubmission(db, {
+      assignmentId: assignment.id,
+      state: "turned_in",
+      turnedInAt: clock,
+      hash: "t",
+      payload: {},
+    });
+    await n.handleUpdate(msg("/status"));
+    expect(String(f.sent()[6]?.body.text)).toContain("📌 Open debts: 0");
   });
 
   it("sends in Ukrainian at the digest time of the configured zone", async () => {

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { type Debt, debtAgeDays, loadBacklog } from "../checks/backlog.ts";
+import { ackKeepsDebt, type Debt, debtAgeDays, loadBacklog } from "../checks/backlog.ts";
 import { findRecheckTarget, type RecheckResult } from "../checks/recheck.ts";
 import { detailsUrl } from "../collector/classroom/todo.ts";
 import {
@@ -279,7 +279,7 @@ function debtLine(
 ): string {
   const m = messages(opts.lang);
   const recheck = opts.recheck ? ` · ${commandRef("recheck", d.assignmentId, opts.bot)}` : "";
-  const ack = d.alertId === null ? "" : ` · ${commandRef("ack", d.alertId, opts.bot)}`;
+  const ack = d.alertId === null || d.muted ? "" : ` · ${commandRef("ack", d.alertId, opts.bot)}`;
   return `${m.report.debt[d.kind]}: ${escapeHtml(
     truncate(itemLabel(d.title, d.courseName, opts.lang), LINE_CAP),
   )} · ${formatAge(debtAgeDays(d, now), opts.lang)} · <a href="${escapeHtml(d.url)}">${
@@ -1047,7 +1047,7 @@ export class TelegramNotifier {
         const lines: string[] = [];
         for (const id of ids) {
           const alert = await muteAlert(this.opts.db, id, this.now());
-          lines.push(alert ? t.acked(id) : t.noAlert(id));
+          lines.push(alert ? t.acked(id, ackKeepsDebt(alert.key)) : t.noAlert(id));
         }
         await this.reply(chatId, lines.join("\n"));
         return;

@@ -155,7 +155,10 @@ export const en: Messages = {
     statusFooter: (time, days) =>
       `Daily digest at ${time}. Open = not acked, 7 days; debts are forgotten after ${days} days.`,
     nothingPending: "Nothing pending.",
-    acked: (id) => `🔕 Muted #${id}`,
+    acked: (id, keepsDebt) =>
+      keepsDebt
+        ? `🔕 Muted #${id}. The debt stays in the digest until the work is turned in.`
+        : `🔕 Muted #${id}`,
     noAlert: (id) => `No alert #${id}`,
     ackUsage: "Usage: /ack &lt;id&gt; (the number after /ack_ in a message)",
     help: [
@@ -164,7 +167,7 @@ export const en: Messages = {
       "/digest – send the pending digest now",
       "/refresh – sync and check now, then send a fresh digest here",
       "/recheck &lt;number or Classroom link&gt; – check an assignment again (or tap /recheck_&lt;number&gt;)",
-      "/ack &lt;id&gt; – mute an alert (or tap /ack_&lt;id&gt; under it)",
+      "/ack &lt;id&gt; – mute an alert (or tap /ack_&lt;id&gt; under it); a missing or redo debt stays until the work is turned in",
     ].join("\n"),
     test: "✅ Test message: Telegram works.",
     commands: {
@@ -172,7 +175,7 @@ export const en: Messages = {
       digest: "Send the pending digest now",
       refresh: "Sync, check and send a fresh digest now",
       recheck: "Check an assignment again (number or Classroom link)",
-      ack: "Mute an alert",
+      ack: "Mute an alert (debts stay until turned in)",
       help: "Help",
     },
     refreshing: "🔄 Refreshing: sync and checks. I'll send the digest here.",

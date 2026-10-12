@@ -106,7 +106,8 @@ export interface Messages {
     upcomingCount(n: number): string;
     statusFooter(digestTime: string, forgetDays: number): string;
     nothingPending: string;
-    acked(id: number): string;
+    /** `keepsDebt`: a redo/missing alert whose open debt stays until the work is turned in. */
+    acked(id: number, keepsDebt: boolean): string;
     noAlert(id: number): string;
     ackUsage: string;
     help: string;

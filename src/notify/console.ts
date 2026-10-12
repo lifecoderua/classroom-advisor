@@ -1,8 +1,9 @@
+import { type Debt, debtAgeDays, loadBacklog } from "../checks/backlog.ts";
 import { type Db, isUncheckedAlertKey } from "../store/index.ts";
 import type { AlertLevel, Verdict } from "../store/types.ts";
 
 // Console digest: per watched account, panics, alerts, recently turned-in work with its merged
-// verdict, upcoming deadlines, "check by hand" items and info items. Read-only: `Alert.sentAt` belongs to the Telegram
+// verdict, upcoming deadlines, "check by hand" items, open debts (#48) and info items. Read-only: `Alert.sentAt` belongs to the Telegram
 // notifier, the console only displays.
 
 const DONE = ["turned_in", "returned"];
@@ -36,6 +37,7 @@ export interface UpcomingItem {
 }
 
 export interface AccountReport {
+  id: number;
   email: string;
   label: string;
   panics: ReportAlert[];
@@ -45,6 +47,11 @@ export interface AccountReport {
   info: ReportAlert[];
   turnedIn: TurnedInItem[];
   upcoming: UpcomingItem[];
+  /**
+   * Open debts (#48), oldest first; empty unless `BuildReportOptions.backlog` is set. Debts whose
+   * alert is listed in this report are left out (it's shown above already).
+   */
+  backlog: Debt[];
 }
 
 export interface Report {
@@ -70,6 +77,8 @@ export interface BuildReportOptions {
   /** Report exactly these alerts and nothing else. */
   alertIds?: readonly number[];
   upcomingDays?: number;
+  /** Adds the open debts block, forgetting debts older than `forgetDays`. */
+  backlog?: { forgetDays: number };
 }
 
 /** Display name, else the email's local part. */
@@ -195,6 +204,7 @@ export async function buildReport(db: Db, opts: BuildReportOptions = {}): Promis
   const reports = new Map<number, AccountReport>();
   for (const a of accounts) {
     reports.set(a.id, {
+      id: a.id,
       email: a.email,
       label: accountLabel(a),
       panics: [],
@@ -203,6 +213,7 @@ export async function buildReport(db: Db, opts: BuildReportOptions = {}): Promis
       info: [],
       turnedIn: [],
       upcoming: [],
+      backlog: [],
     });
   }
   // A version with a warn/panic alert already lists its unchecked parts there.
@@ -273,6 +284,19 @@ export async function buildReport(db: Db, opts: BuildReportOptions = {}): Promis
     }
   }
 
+  if (opts.backlog) {
+    const shown = new Set(alerts.map((a) => a.id));
+    const debts = await loadBacklog(db, {
+      now,
+      forgetDays: opts.backlog.forgetDays,
+      accountIds: accounts.map((a) => a.id),
+    });
+    for (const d of debts) {
+      if (d.alertId !== null && shown.has(d.alertId)) continue;
+      reports.get(d.accountId)?.backlog.push(d);
+    }
+  }
+
   return { generatedAt: now, since, alertsOnly, accounts: [...reports.values()], other };
 }
 
@@ -315,6 +339,27 @@ const VERDICT_MARK: Record<TurnedInItem["verdict"], string> = {
 
 const label = (title: string, course: string) => (course ? `"${title}" (${course})` : `"${title}"`);
 
+/** `today`, `1 day`, `5 days`. */
+export function formatAge(days: number): string {
+  if (days <= 0) return "today";
+  return days === 1 ? "1 day" : `${days} days`;
+}
+
+export const DEBT_MARK: Record<Debt["kind"], string> = {
+  redo: "🔁 redo requested",
+  missing: "⏰ not turned in",
+  unchecked: "🔍 check by hand",
+};
+
+function debtLines(debts: readonly Debt[], now: Date): string[] {
+  return debts.flatMap((d) => [
+    `  • ${DEBT_MARK[d.kind]}: ${label(d.title, d.courseName)} · ${formatAge(debtAgeDays(d, now))}${
+      d.alertId === null ? "" : ` · #${d.alertId}`
+    }`,
+    `      ${d.url}`,
+  ]);
+}
+
 function alertLines(alerts: readonly ReportAlert[], tz?: string): string[] {
   return alerts.map((a) => `  • ${a.message}  [${formatTime(a.createdAt, tz)}]`);
 }
@@ -332,7 +377,7 @@ export function formatReport(report: Report, opts: FormatOptions = {}): string {
     out.push("", "No watched accounts in the database yet (run a sync first).");
   }
   for (const a of report.accounts) {
-    if (report.alertsOnly && alertCount(a) === 0) continue;
+    if (report.alertsOnly && alertCount(a) + a.backlog.length === 0) continue;
     out.push("", `== ${a.label} ==`);
     const before = out.length;
     if (a.panics.length) out.push("🔴 Panics", ...alertLines(a.panics, tz));
@@ -362,6 +407,9 @@ export function formatReport(report: Report, opts: FormatOptions = {}): string {
       }
     }
     if (a.checkByHand.length) out.push("🔍 Check by hand", ...alertLines(a.checkByHand, tz));
+    if (a.backlog.length) {
+      out.push("📌 Open debts", ...debtLines(a.backlog, report.generatedAt));
+    }
     if (a.info.length) out.push("ℹ️  Info", ...alertLines(a.info, tz));
     if (out.length === before) out.push("  Nothing to report.");
   }
@@ -373,6 +421,11 @@ export function formatReport(report: Report, opts: FormatOptions = {}): string {
 
 function alertCount(a: AccountReport): number {
   return a.panics.length + a.alerts.length + a.checkByHand.length + a.info.length;
+}
+
+/** Whether the report has any open debt. */
+export function reportHasBacklog(report: Report): boolean {
+  return report.accounts.some((a) => a.backlog.length > 0);
 }
 
 /** Whether the report has any alert at all (for the `run` digest). */

@@ -9,6 +9,7 @@
   "runIntervalMin": 60,
   "quietHours": "22:00-07:00",
   "alertLookbackDays": 14,
+  "backlogForgetDays": 14,
   "fullRefreshDays": 7,
   "syncDelayMs": 300,
   "telegramChatIds": ["123456789"],

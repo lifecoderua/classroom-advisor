@@ -34,6 +34,11 @@ export const configSchema = z.strictObject({
    * old lesson posts don't flood the digest.
    */
   alertLookbackDays: z.coerce.number().int().positive().default(14),
+  /**
+   * Open debts (redo requests, missing work, "check by hand" items) repeat in every digest until
+   * resolved or acked, and are forgotten this many days after they appeared.
+   */
+  backlogForgetDays: z.coerce.number().int().positive().default(14),
   /** Sync re-fetches the details of every item at least this often (slow full refresh). */
   fullRefreshDays: z.coerce.number().int().positive().default(7),
   /** Pause between Classroom RPC calls during sync, to keep the request rate low. */
@@ -79,6 +84,7 @@ const ENV_KEYS = {
   CA_RUN_INTERVAL_MIN: "runIntervalMin",
   CA_QUIET_HOURS: "quietHours",
   CA_ALERT_LOOKBACK_DAYS: "alertLookbackDays",
+  CA_BACKLOG_FORGET_DAYS: "backlogForgetDays",
   CA_FULL_REFRESH_DAYS: "fullRefreshDays",
   CA_SYNC_DELAY_MS: "syncDelayMs",
   CA_TELEGRAM_CHAT_IDS: "telegramChatIds",

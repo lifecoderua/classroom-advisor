@@ -58,6 +58,7 @@ export function registerReportCommands(program: Command): void {
           now,
           since,
           watchedEmails: config.watchedAccounts,
+          backlog: { forgetDays: config.backlogForgetDays },
         });
         console.log(formatReport(report));
       } finally {
@@ -92,6 +93,7 @@ export function registerReportCommands(program: Command): void {
                 api: new TelegramApi(config.telegramBotToken),
                 chatIds: config.telegramChatIds,
                 digestTime: config.telegramDigestTime,
+                backlogForgetDays: config.backlogForgetDays,
                 ...(quietHours ? { quietHours } : {}),
                 statePath: telegramStatePath(config.dataDir),
                 watchedEmails: config.watchedAccounts,

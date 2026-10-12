@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { type Debt, debtAgeDays, loadBacklog } from "../checks/backlog.ts";
 import { detailsUrl } from "../collector/classroom/todo.ts";
 import { abortableSleep } from "../run/cycle.ts";
 import { inQuietHours, type QuietHours } from "../run/schedule.ts";
@@ -7,11 +8,14 @@ import { type Db, markAlertsSent, muteAlert } from "../store/index.ts";
 import type { AlertLevel } from "../store/types.ts";
 import {
   buildReport,
+  DEBT_MARK,
+  formatAge,
   formatTime,
   parseAlertKey,
   type Report,
   type ReportAlert,
   reportHasAlerts,
+  reportHasBacklog,
 } from "./console.ts";
 
 // Telegram notifier over the plain Bot API (fetch, no SDK). Panics go out right after each `run`
@@ -27,6 +31,14 @@ const LINE_CAP = 1500;
 const DAY_MS = 86_400_000;
 /** Unsent alerts older than this are left to the console (e.g. after Telegram was off a while). */
 export const MAX_ALERT_AGE_MS = 7 * DAY_MS;
+/** Default `backlogForgetDays`. */
+export const DEFAULT_BACKLOG_FORGET_DAYS = 14;
+
+/** What a digest carried: alerts (now marked sent) and open debts (repeated every digest). */
+export interface Sent {
+  alerts: number;
+  debts: number;
+}
 
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -216,10 +228,18 @@ export interface TelegramFormatOptions {
   timeZone?: string;
 }
 
+function debtLine(d: Debt, now: Date): string {
+  const what = `"${d.title}"${d.courseName ? ` (${d.courseName})` : ""}`;
+  const ack = d.alertId === null ? "" : ` · /ack_${d.alertId}`;
+  return `${DEBT_MARK[d.kind]}: ${escapeHtml(truncate(what, LINE_CAP))} · ${formatAge(
+    debtAgeDays(d, now),
+  )} · <a href="${escapeHtml(d.url)}">open</a>${ack}`;
+}
+
 /**
  * The alerts of a report, grouped per kid (panics, alerts, info), as Telegram HTML. "Check by
  * hand" items (`quality:<id>:unchecked`, level `info`, so never sent at once) get their own
- * low-noise block after the rest.
+ * low-noise block after the rest, then the kid's open debts (#48) when the report has them.
  */
 export function formatAlertsHtml(
   report: Report,
@@ -229,10 +249,13 @@ export function formatAlertsHtml(
   const out = [`${opts.title} · ${escapeHtml(formatTime(report.generatedAt, opts.timeZone))}`];
   for (const a of report.accounts) {
     const alerts = [...a.panics, ...a.alerts, ...a.info];
-    if (alerts.length + a.checkByHand.length === 0) continue;
+    if (alerts.length + a.checkByHand.length + a.backlog.length === 0) continue;
     out.push("", `👤 <b>${escapeHtml(a.label)}</b>`, ...alerts.map((x) => alertLine(x, links)));
     if (a.checkByHand.length) {
       out.push("🔍 <i>Check by hand</i>", ...a.checkByHand.map((x) => alertLine(x, links, "🔍")));
+    }
+    if (a.backlog.length) {
+      out.push("📌 <i>Open debts</i>", ...a.backlog.map((d) => debtLine(d, report.generatedAt)));
     }
   }
   if (report.other.length) {
@@ -391,6 +414,8 @@ export interface NotifierOptions {
   chatIds: readonly string[];
   /** Local `HH:MM` of the daily digest. */
   digestTime: string;
+  /** Open debts older than this are left out of digests and `/status` (default 14). */
+  backlogForgetDays?: number;
   quietHours?: QuietHours;
   /** JSON file for the update offset and the last digest day (`<dataDir>/telegram.json`). */
   statePath: string;
@@ -447,8 +472,19 @@ export class TelegramNotifier {
     if (delivered === 0) throw lastError ?? new TelegramError("no chat configured");
   }
 
-  /** Sends unsent, unmuted alerts (recent ones only) and marks them sent. Returns the count. */
-  private async sendAlerts(levels: readonly AlertLevel[] | null, title: string): Promise<number> {
+  private get forgetDays(): number {
+    return this.opts.backlogForgetDays ?? DEFAULT_BACKLOG_FORGET_DAYS;
+  }
+
+  /**
+   * Sends unsent, unmuted alerts (recent ones only) and marks them sent; with `backlog`, the
+   * open debts too (sent even when no alert is new). Returns what was sent.
+   */
+  private async sendAlerts(
+    levels: readonly AlertLevel[] | null,
+    title: string,
+    backlog = false,
+  ): Promise<Sent> {
     const now = this.now();
     const rows = await this.opts.db.alert.findMany({
       where: {
@@ -460,14 +496,17 @@ export class TelegramNotifier {
       select: { id: true },
       orderBy: { id: "asc" },
     });
-    if (rows.length === 0) return 0;
+    const none = { alerts: 0, debts: 0 };
+    if (rows.length === 0 && !backlog) return none;
     const ids = rows.map((r) => r.id);
     const report = await buildReport(this.opts.db, {
       now,
       alertIds: ids,
       ...(this.opts.watchedEmails ? { watchedEmails: this.opts.watchedEmails } : {}),
+      ...(backlog ? { backlog: { forgetDays: this.forgetDays } } : {}),
     });
-    if (!reportHasAlerts(report)) return 0;
+    const debts = report.accounts.reduce((n, a) => n + a.backlog.length, 0);
+    if (!reportHasAlerts(report) && !reportHasBacklog(report)) return none;
     const all = report.accounts.flatMap((a) => [
       ...a.panics,
       ...a.alerts,
@@ -481,17 +520,17 @@ export class TelegramNotifier {
     });
     await this.broadcast(html);
     await markAlertsSent(this.opts.db, ids, this.now());
-    return ids.length;
+    return { alerts: ids.length, debts };
   }
 
-  /** Unsent panics, right away (also during quiet hours). */
-  sendPanics(): Promise<number> {
-    return this.sendAlerts(["panic"], "🚨 <b>Urgent</b>");
+  /** Unsent panics, right away (also during quiet hours). Returns the count. */
+  async sendPanics(): Promise<number> {
+    return (await this.sendAlerts(["panic"], "🚨 <b>Urgent</b>")).alerts;
   }
 
-  /** Every unsent alert (any level) as one digest. */
-  sendDigest(title = "📋 <b>Digest</b>"): Promise<number> {
-    return this.sendAlerts(null, title);
+  /** Every unsent alert (any level) plus the open debts, as one digest. */
+  sendDigest(title = "📋 <b>Digest</b>"): Promise<Sent> {
+    return this.sendAlerts(null, title, true);
   }
 
   /** Scheduled digest: once a local day, from `digestTime` on, outside quiet hours. */
@@ -502,9 +541,10 @@ export class TelegramNotifier {
   }
 
   /** Sends the daily digest when due; failures are logged and retried after 5 minutes. */
-  async maybeSendDigest(): Promise<number> {
+  async maybeSendDigest(): Promise<Sent> {
     const now = this.now();
-    if (!this.digestDue(now) || now.getTime() < this.digestRetryAt) return 0;
+    const none = { alerts: 0, debts: 0 };
+    if (!this.digestDue(now) || now.getTime() < this.digestRetryAt) return none;
     try {
       const sent = await this.sendDigest("📋 <b>Daily digest</b>");
       this.state.lastDigestDay = localDay(now);
@@ -513,7 +553,13 @@ export class TelegramNotifier {
     } catch (err) {
       this.digestRetryAt = now.getTime() + 5 * 60_000;
       this.log(`telegram: digest failed: ${this.describe(err)}`);
-      return 0;
+      return none;
+    }
+  }
+
+  private logDigest(sent: Sent): void {
+    if (sent.alerts + sent.debts) {
+      this.log(`telegram: digest with ${sent.alerts} alert(s), ${sent.debts} open debt(s) sent`);
     }
   }
 
@@ -525,8 +571,7 @@ export class TelegramNotifier {
     } catch (err) {
       this.log(`telegram: sending panics failed: ${this.describe(err)}`);
     }
-    const n = await this.maybeSendDigest();
-    if (n) this.log(`telegram: digest with ${n} alert(s) sent`);
+    this.logDigest(await this.maybeSendDigest());
   }
 
   /** `/status`: last sync per watched account, open (unmuted, last 7 days) and pending alerts. */
@@ -553,6 +598,13 @@ export class TelegramNotifier {
       },
     });
     const lastRun = new Map(accounts.map((a) => [a.email, a.syncRuns[0]]));
+    // Every open debt counts here, also those whose alert is listed above.
+    const debts = await loadBacklog(db, {
+      now,
+      forgetDays: this.forgetDays,
+      accountIds: report.accounts.map((a) => a.id),
+    });
+    const debtCount = (accountId: number) => debts.filter((d) => d.accountId === accountId).length;
     const tz = this.opts.timeZone;
     const counts = (alerts: readonly ReportAlert[]) => {
       const n = (l: AlertLevel) => alerts.filter((a) => a.level === l).length;
@@ -573,10 +625,14 @@ export class TelegramNotifier {
         `👤 <b>${escapeHtml(a.label)}</b>`,
         `Last sync: ${sync}`,
         `Open: ${counts([...a.panics, ...a.alerts, ...a.checkByHand, ...a.info])}`,
+        `📌 Open debts: ${debtCount(a.id)}`,
       );
     }
     if (report.other.length) out.push("", `Other: ${counts(report.other)}`);
-    out.push("", `Daily digest at ${escapeHtml(this.opts.digestTime)}. Open = not acked, 7 days.`);
+    out.push(
+      "",
+      `Daily digest at ${escapeHtml(this.opts.digestTime)}. Open = not acked, 7 days; debts are forgotten after ${this.forgetDays} days.`,
+    );
     return out.join("\n");
   }
 
@@ -597,8 +653,8 @@ export class TelegramNotifier {
         await this.reply(chatId, await this.statusHtml());
         return;
       case "digest": {
-        const n = await this.sendDigest();
-        if (n === 0) await this.reply(chatId, "Nothing pending.");
+        const sent = await this.sendDigest();
+        if (sent.alerts + sent.debts === 0) await this.reply(chatId, "Nothing pending.");
         return;
       }
       case "ack": {
@@ -651,8 +707,7 @@ export class TelegramNotifier {
     const sleep = this.opts.sleep ?? abortableSleep;
     const end = this.now().getTime() + ms;
     while (!signal.aborted) {
-      const n = await this.maybeSendDigest();
-      if (n) this.log(`telegram: digest with ${n} alert(s) sent`);
+      this.logDigest(await this.maybeSendDigest());
       const left = end - this.now().getTime();
       if (left < 1000) {
         if (left > 0) await sleep(left, signal);

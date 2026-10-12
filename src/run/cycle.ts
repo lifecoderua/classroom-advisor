@@ -7,6 +7,7 @@ import {
   type ReviewSubmissionOptions,
   reviewSubmission,
 } from "../checks/quality.ts";
+import { type RecheckResult, recheckAssignments } from "../checks/recheck.ts";
 import { DEFAULT_LANG, type Lang } from "../i18n/index.ts";
 import type { LlmProvider } from "../llm/index.ts";
 import { buildReport, formatReport, reportHasAlerts } from "../notify/console.ts";
@@ -17,6 +18,8 @@ export interface SyncContext {
   db: Db;
   now: Date;
   log: (line: string) => void;
+  /** Assignment ids to re-fetch ignoring caches (`/recheck`, #54). */
+  force?: readonly number[];
 }
 
 /** Collects and stores fresh Classroom data (`playwrightSync` in `src/sync/`). */
@@ -37,6 +40,8 @@ export interface CycleDeps {
   timeZone?: string;
   /** Stops reviewing further submissions (SIGINT); the current one finishes. */
   signal?: AbortSignal;
+  /** Assignment ids to re-check (`/recheck`, #54): re-fetched ignoring caches, reviewed again. */
+  recheck?: readonly number[];
 }
 
 export interface CycleResult {
@@ -49,6 +54,8 @@ export interface CycleResult {
   errors: string[];
   /** The digest of new alerts, or undefined when there are none. */
   digest?: string;
+  /** Results of the requested re-checks (empty when none were asked). */
+  rechecked: RecheckResult[];
 }
 
 /**
@@ -71,8 +78,12 @@ export async function runCycle(deps: CycleDeps): Promise<CycleResult> {
   };
 
   const before = (await db.alert.aggregate({ _max: { id: true } }))._max.id ?? 0;
+  const started = now();
+  const recheck = [...new Set(deps.recheck ?? [])];
 
-  await step("sync", () => deps.sync({ db, now: now(), log }));
+  await step("sync", () =>
+    deps.sync({ db, now: now(), log, ...(recheck.length ? { force: recheck } : {}) }),
+  );
   await step("deadlines", async () => {
     await evaluateDeadlines(db, now(), deps.deadlineOptions);
   });
@@ -85,6 +96,20 @@ export async function runCycle(deps: CycleDeps): Promise<CycleResult> {
       reviewed++;
     }
   });
+  let rechecked: RecheckResult[] = [];
+  if (recheck.length) {
+    await step("recheck", async () => {
+      rechecked = await recheckAssignments(
+        db,
+        recheck,
+        deps.provider,
+        deps.readText,
+        now(),
+        started,
+        deps.reviewOptions,
+      );
+    });
+  }
   // Replaced turn-ins retire their alerts (#52), resolved work closes its old ones (#51), both
   // before the digest is built.
   let autoAcked = 0;
@@ -100,7 +125,7 @@ export async function runCycle(deps: CycleDeps): Promise<CycleResult> {
     orderBy: { id: "asc" },
   });
   const newAlertIds = fresh.map((a) => a.id);
-  const result: CycleResult = { newAlertIds, reviewed, autoAcked, superseded, errors };
+  const result: CycleResult = { newAlertIds, reviewed, autoAcked, superseded, errors, rechecked };
   if (newAlertIds.length) {
     const report = await buildReport(db, {
       now: now(),
@@ -120,6 +145,8 @@ export async function runCycle(deps: CycleDeps): Promise<CycleResult> {
 export interface LoopOptions {
   intervalMin: number;
   quietHours?: QuietHours;
+  /** A manual cycle was asked for (`/refresh`, `/recheck`): it runs even in quiet hours. */
+  manualPending?: () => boolean;
   /** IANA zone of `quietHours` (default: the process zone). */
   timeZone?: string;
   /** One cycle, ignoring quiet hours. */
@@ -153,7 +180,13 @@ export async function runLoop(opts: LoopOptions): Promise<{ cycles: number; skip
   let cycles = 0;
   let skipped = 0;
   while (!opts.signal.aborted) {
-    if (!opts.once && opts.quietHours && inQuietHours(opts.quietHours, now(), opts.timeZone)) {
+    const manual = opts.manualPending?.() ?? false;
+    if (
+      !opts.once &&
+      !manual &&
+      opts.quietHours &&
+      inQuietHours(opts.quietHours, now(), opts.timeZone)
+    ) {
       skipped++;
       log("quiet hours: skipping this cycle");
     } else {

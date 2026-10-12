@@ -139,6 +139,11 @@ describe("fetchAttachment", () => {
     );
     expect(s.calls).toHaveLength(2);
     expect(newer.cached).toBe(false);
+
+    // `/recheck`: downloaded again despite the cached copy.
+    const forced = ok(await fetchAttachment(target, { ...opts, force: true }));
+    expect(s.calls).toHaveLength(3);
+    expect(forced.cached).toBe(false);
   });
 
   it("exports Sheets as csv", async () => {

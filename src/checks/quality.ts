@@ -443,6 +443,11 @@ export interface ReviewSubmissionOptions {
   budget?: TextBudget;
   /** Digest language: the LLM writes summary, issues and unverifiable parts in it. */
   lang?: Lang;
+  /**
+   * A manual recheck (`/recheck`, #54): review again even when already reviewed, recompute the
+   * heuristics, and alert under `quality:<id>:r<n>` whenever the verdict is warn/panic.
+   */
+  force?: boolean;
 }
 
 /** Comments of the assignment that `submissionVersionId` belongs to. */
@@ -479,7 +484,7 @@ export async function reviewSubmission(
   // An `unchecked` result with temporary causes is retried as a first review (no trigger).
   const retry = last !== undefined && parseFindings(last.findings).retryable === true;
   let trigger: { id: number } | null = null;
-  if (prior.length > 0 && !retry) {
+  if (prior.length > 0 && !retry && !opts.force) {
     const seen = Math.max(0, ...prior.map((r) => r.throughCommentId ?? 0));
     trigger = await db.comment.findFirst({
       where: {
@@ -493,7 +498,7 @@ export async function reviewSubmission(
     });
     if (!trigger) return { status: "already_reviewed" };
   }
-  const previous = last?.verdict as Verdict | undefined;
+  const previous = opts.force ? undefined : (last?.verdict as Verdict | undefined);
   const previousUnchecked = last ? (parseFindings(last.findings).unchecked ?? []) : [];
   const throughCommentId =
     (
@@ -502,7 +507,11 @@ export async function reviewSubmission(
         _max: { id: true },
       })
     )._max.id ?? null;
-  const suffix = trigger ? `:c${trigger.id}` : "";
+  const suffix = trigger
+    ? `:c${trigger.id}`
+    : opts.force && prior.length > 0
+      ? `:r${prior.length}`
+      : "";
   const reReview = trigger ? { triggerCommentId: trigger.id } : {};
 
   const snapshot = await loadTurnedInInput(db, submissionVersionId, readText, {
@@ -516,7 +525,7 @@ export async function reviewSubmission(
 
   const heuristic = turnedInSignals(snapshot);
   const stored =
-    existing.find((r) => r.source === "heuristic") ??
+    (opts.force ? undefined : existing.find((r) => r.source === "heuristic")) ??
     (await addCheckResult(
       db,
       {
@@ -532,7 +541,7 @@ export async function reviewSubmission(
   // Check-by-hand alert; a re-review raises its own only when the unchecked parts changed.
   const uncheckedAlert = async (items: readonly UncheckedItem[]) => {
     if (trigger && sameItems(items, previousUnchecked)) return { created: false };
-    const key = trigger
+    const key = suffix
       ? `quality:${submissionVersionId}${suffix}:unchecked`
       : uncheckedAlertKey(submissionVersionId);
     const content = uncheckedContent(snapshot, items);

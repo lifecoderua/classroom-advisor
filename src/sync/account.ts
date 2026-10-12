@@ -87,6 +87,11 @@ export interface SyncAccountOptions {
   log?: (line: string) => void;
   /** Label used in log lines and alerts (no titles or ids). */
   label?: string;
+  /**
+   * Assignment ids (DB) to re-check (`/recheck`, #54): their details are re-fetched and their
+   * submission files downloaded again, ignoring the file cache.
+   */
+  force?: readonly number[];
 }
 
 export interface SyncStats {
@@ -381,6 +386,14 @@ export async function syncAccount(
     });
     const known = new Map(knownRows.map((r) => [r.classroomId, r]));
     const picks = pickItems(listing.summaries, known, now, options.fullRefreshDays);
+    // `/recheck`: re-fetch these items' details too.
+    const forced = new Set(options.force ?? []);
+    const listed = new Set(listing.summaries.map((s) => s.id));
+    for (const r of knownRows) {
+      if (forced.has(r.id) && listed.has(r.classroomId) && !picks.has(r.classroomId)) {
+        picks.set(r.classroomId, "refresh");
+      }
+    }
     for (const reason of picks.values()) stats.picked[reason]++;
 
     const untouched = listing.summaries.filter((s) => !picks.has(s.id)).map((s) => s.id);
@@ -472,6 +485,7 @@ export async function syncAccount(
             { contentPath: null },
             { contentPath: { endsWith: ".bin" }, modifiedAt: { not: null } },
             { contentPath: { endsWith: ".txt" } },
+            { assignmentId: { in: [...forced] } },
           ],
         },
         orderBy: { id: "asc" },
@@ -480,16 +494,31 @@ export async function syncAccount(
       for (const row of candidates) {
         const path = row.contentPath;
         const stale =
+          forced.has(row.assignmentId) ||
           !path?.endsWith(".txt") ||
           (attachmentKind(row) === "slides" && (await isStaleSlidesText(options.dataDir, path)));
         if (stale) rows.push(row);
       }
-      const outcomes = await fetchAttachmentContents(
-        db,
-        rows,
-        { get: source.httpGet, dataDir: options.dataDir, authuser: source.session.authuser },
-        now,
-      );
+      const fetchOptions = {
+        get: source.httpGet,
+        dataDir: options.dataDir,
+        authuser: source.session.authuser,
+      };
+      const outcomes = [
+        ...(await fetchAttachmentContents(
+          db,
+          rows.filter((r) => !forced.has(r.assignmentId)),
+          fetchOptions,
+          now,
+        )),
+        // `/recheck`: download again even when a cached copy exists.
+        ...(await fetchAttachmentContents(
+          db,
+          rows.filter((r) => forced.has(r.assignmentId)),
+          { ...fetchOptions, force: true },
+          now,
+        )),
+      ];
       for (const { result } of outcomes) {
         if (!result.ok) stats.files.failed++;
         else if ("metadataOnly" in result) stats.files.metadataOnly++;

@@ -16,5 +16,6 @@
   "fullRefreshDays": 7,
   "syncDelayMs": 300,
   "telegramChatIds": ["123456789"],
-  "telegramDigestTime": "19:00"
+  "telegramDigestTime": "19:00",
+  "refreshCooldownMin": 5
 }

@@ -122,5 +122,5 @@ export function uncheckedAlertKey(submissionVersionId: number): string {
 }
 
 export function isUncheckedAlertKey(key: string): boolean {
-  return /^quality:\d+(?::c\d+)?:unchecked$/.test(key);
+  return /^quality:\d+(?::[cr]\d+)?:unchecked$/.test(key);
 }

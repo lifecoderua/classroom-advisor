@@ -45,6 +45,8 @@ export const configSchema = z.strictObject({
    * due later than a day from now and within this many days.
    */
   upcomingDays: z.coerce.number().int().positive().default(14),
+  /** Telegram `/refresh` and `/recheck`: at most one manual cycle per this many minutes. */
+  refreshCooldownMin: z.coerce.number().int().nonnegative().default(5),
   /** Sync re-fetches the details of every item at least this often (slow full refresh). */
   fullRefreshDays: z.coerce.number().int().positive().default(7),
   /** Pause between Classroom RPC calls during sync, to keep the request rate low. */
@@ -101,6 +103,7 @@ const ENV_KEYS = {
   CA_ALERT_LOOKBACK_DAYS: "alertLookbackDays",
   CA_BACKLOG_FORGET_DAYS: "backlogForgetDays",
   CA_UPCOMING_DAYS: "upcomingDays",
+  CA_REFRESH_COOLDOWN_MIN: "refreshCooldownMin",
   CA_FULL_REFRESH_DAYS: "fullRefreshDays",
   CA_SYNC_DELAY_MS: "syncDelayMs",
   CA_TELEGRAM_CHAT_IDS: "telegramChatIds",

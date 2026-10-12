@@ -509,6 +509,147 @@ describe("TelegramNotifier", () => {
     expect(String(f.sent()[1]?.body.text)).toContain("🟢 Термін попереду: 2");
   });
 
+  describe("manual triggers (#54)", () => {
+    const GROUP = "-1001234567890";
+    const say = (chat: string, text: string, id = 1): TgUpdate => ({
+      update_id: id,
+      message: { message_id: id, date: 0, chat: { id: Number(chat), type: "private" }, text },
+    });
+
+    it("registers the command menu for private chats and groups, and learns the bot name", async () => {
+      const f = fakeFetch((method) =>
+        method === "getMe" ? { id: 1, is_bot: true, first_name: "B", username: "class_bot" } : true,
+      );
+      const n = notifier(f);
+      await n.setup();
+      const set = f.calls.filter((c) => c.method === "setMyCommands");
+      expect(set.map((c) => c.body.scope)).toEqual([
+        { type: "default" },
+        { type: "all_group_chats" },
+      ]);
+      const commands = (set[0]?.body.commands ?? []) as { command: string }[];
+      expect(commands.map((c) => c.command)).toEqual([
+        "status",
+        "digest",
+        "refresh",
+        "recheck",
+        "ack",
+        "help",
+      ]);
+      // Digest lines carry @bot so `/ack_<id>` and `/recheck_<id>` are tappable in groups.
+      const { panicId } = await seed();
+      await n.sendPanics();
+      expect(String(f.sent().at(-1)?.body.text)).toContain(`/ack_${panicId}@class_bot`);
+    });
+
+    it("/refresh queues a cycle and sends a fresh digest to that chat only, even when empty", async () => {
+      await seed();
+      await db.alert.updateMany({ data: { sentAt: clock, mutedAt: clock } });
+      const f = fakeFetch();
+      const n = notifier(f, { chatIds: [CHAT, GROUP], botUsername: "class_bot" });
+      expect(n.manualPending()).toBe(false);
+      await n.handleUpdate(say(GROUP, "/refresh@class_bot"));
+      expect(f.sent()[0]?.body).toMatchObject({
+        chat_id: GROUP,
+        text: expect.stringContaining("Refreshing"),
+      });
+      expect(n.manualPending()).toBe(true);
+      // The loop's wait returns at once so the cycle runs now.
+      await n.idle(600_000, new AbortController().signal);
+      expect(f.calls.filter((c) => c.method === "getUpdates")).toHaveLength(0);
+
+      expect(n.startCycle()).toEqual([]);
+      expect(n.manualPending()).toBe(false);
+      await n.afterCycle({ rechecked: [] });
+      const fresh = f.sent().at(-1)?.body;
+      expect(fresh?.chat_id).toBe(GROUP);
+      expect(String(fresh?.text)).toContain("Fresh digest");
+      expect(String(fresh?.text)).toContain("Nothing pending.");
+      expect(f.sent().filter((c) => c.body.chat_id === CHAT)).toHaveLength(0);
+
+      // Rate limit: one manual cycle per 5 minutes.
+      clock = new Date(clock.getTime() + 60_000);
+      await n.handleUpdate(say(CHAT, "/refresh"));
+      expect(String(f.sent().at(-1)?.body.text)).toContain("wait 4 more min");
+      clock = new Date(clock.getTime() + 5 * 60_000);
+      await n.handleUpdate(say(CHAT, "/refresh"));
+      expect(String(f.sent().at(-1)?.body.text)).toContain("Refreshing");
+    });
+
+    it("says 'already running' during a cycle and sends its digest when it ends", async () => {
+      await seed();
+      let release: () => void = () => undefined;
+      let polls = 0;
+      const f = fakeFetch((method) => {
+        if (method !== "getUpdates") return true;
+        // The first poll brings a /refresh while the cycle runs; the second ends the cycle.
+        if (++polls === 1) return [say(CHAT, "/refresh", 5)];
+        release();
+        return [];
+      });
+      const n = notifier(f);
+      const work = new Promise<string>((resolve) => {
+        release = () => resolve("done");
+      });
+      expect(await n.during(work)).toBe("done");
+      expect(String(f.sent()[0]?.body.text)).toContain("already running");
+      await n.afterCycle();
+      expect(String(f.sent().at(-1)?.body.text)).toContain("Fresh digest");
+    });
+
+    it("/recheck_<id>@bot or a link queues a recheck and answers with the new verdict", async () => {
+      const { account } = await seed();
+      const assignment = await db.assignment.findFirstOrThrow();
+      await upsertSubmission(
+        db,
+        {
+          assignmentId: assignment.id,
+          state: "turned_in",
+          turnedInAt: clock,
+          hash: "s",
+          payload: {},
+        },
+        clock,
+      );
+      const f = fakeFetch();
+      const n = notifier(f, { chatIds: [CHAT, GROUP] });
+      await n.handleUpdate(say(GROUP, `/recheck_${assignment.id}@class_bot`));
+      expect(String(f.sent()[0]?.body.text)).toContain(
+        "&quot;Fractions&quot; (Math): checking again",
+      );
+      const link = `https://classroom.google.com/c/MTEx/a/MjIy/details?authuser=${account.email}`;
+      await n.handleUpdate(say(CHAT, `/recheck ${link}`));
+      await n.handleUpdate(say(CHAT, "/recheck nonsense"));
+      expect(String(f.sent()[2]?.body.text)).toContain("Couldn't find that assignment");
+      expect(n.manualPending()).toBe(true);
+      expect(n.startCycle()).toEqual([assignment.id]);
+      await n.afterCycle({
+        rechecked: [
+          {
+            assignmentId: assignment.id,
+            title: "Fractions",
+            course: "Math",
+            status: "reviewed",
+            verdict: "warn",
+            content: {
+              code: "quality.review",
+              params: {
+                title: "Fractions",
+                course: "Math",
+                verdict: "warn",
+                summary: "Task 2 missing.",
+              },
+            },
+          },
+        ],
+      });
+      const answers = f.sent().filter((c) => String(c.body.text).includes("Checked again"));
+      expect(answers.map((c) => c.body.chat_id).sort()).toEqual([CHAT, GROUP].sort());
+      expect(String(answers[0]?.body.text)).toContain("🟠 warn");
+      expect(String(answers[0]?.body.text)).toContain("Task 2 missing.");
+    });
+  });
+
   it("answers commands in a linked group, also with @bot", async () => {
     await seed();
     const GROUP = "-1001234567890";

@@ -68,6 +68,8 @@ export interface FetchOptions {
   authuser?: string;
   maxBytes?: number;
   timeoutMs?: number;
+  /** Download again even when a cached copy for the same `modifiedAt` exists (`/recheck`). */
+  force?: boolean;
 }
 
 export type FetchResult =
@@ -368,7 +370,7 @@ export async function fetchAttachment(
         ? undefined
         : extFor(kind, undefined);
 
-  if (target.modifiedAt) {
+  if (target.modifiedAt && !options.force) {
     let hit = await findCached(dir, stem, contentExt);
     // Slides cached by the old text export have no structure: refetch as pptx.
     if (hit && kind === "slides" && (await isStaleSlidesText(dir, hit.content))) hit = undefined;

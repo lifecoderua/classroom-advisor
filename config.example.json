@@ -7,6 +7,8 @@
   "geminiModel": "gemini-3.8-flash",
   "llmTimeoutMs": 180000,
   "runIntervalMin": 60,
+  "digestLang": "uk",
+  "timeZone": "Europe/Kyiv",
   "quietHours": "22:00-07:00",
   "alertLookbackDays": 14,
   "backlogForgetDays": 14,

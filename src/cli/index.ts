@@ -8,6 +8,7 @@ import {
 import { llmSource, pendingQualityVersions, reviewSubmission } from "../checks/quality.ts";
 import { LLM_PROVIDERS, loadConfig } from "../config/index.ts";
 import { setWatched } from "../config/local.ts";
+import { renderAlert } from "../i18n/index.ts";
 import { createProvider } from "../llm/index.ts";
 import { databasePath, openDb } from "../store/index.ts";
 import { syncWatchList } from "../sync/index.ts";
@@ -145,13 +146,17 @@ check
           {
             imagePathOf: cachedImagePath(config.dataDir),
             readOffice: cachedOfficeReader(config.dataDir),
+            lang: config.digestLang,
           },
         );
         const failures = res.llmFailures ? ` (LLM failed ${res.llmFailures}x)` : "";
         const rereview = res.triggerCommentId
           ? ` (re-review: comment ${res.triggerCommentId})`
           : "";
-        const tail = `${rereview}${failures}${res.message ? `  ${res.message}` : ""}`;
+        const text = res.content
+          ? `  ${renderAlert(res.content, new Date(), { lang: config.digestLang, timeZone: config.timeZone })}`
+          : "";
+        const tail = `${rereview}${failures}${text}`;
         console.log(`#${id}  ${res.status}${res.verdict ? ` ${res.verdict}` : ""}${tail}`);
       }
     } finally {

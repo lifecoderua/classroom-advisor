@@ -1,6 +1,17 @@
 import { type Debt, debtAgeDays, loadBacklog } from "../checks/backlog.ts";
-import { type Db, isUncheckedAlertKey } from "../store/index.ts";
-import type { AlertLevel, Verdict } from "../store/types.ts";
+import {
+  DEFAULT_LANG,
+  formatAge,
+  formatIn,
+  formatTime,
+  itemLabel,
+  type Lang,
+  type Locale,
+  messages,
+  renderAlert,
+} from "../i18n/index.ts";
+import { alertContent, type Db, isUncheckedAlertKey } from "../store/index.ts";
+import type { AlertContent, AlertLevel, Verdict } from "../store/types.ts";
 
 // Console digest: per watched account, panics, alerts, recently turned-in work with its merged
 // verdict, upcoming deadlines, "check by hand" items, open debts (#48) and info items. Read-only: `Alert.sentAt` belongs to the Telegram
@@ -13,7 +24,8 @@ export interface ReportAlert {
   id: number;
   key: string;
   level: AlertLevel;
-  message: string;
+  /** What it says; rendered per language with `alertText`. */
+  content: AlertContent;
   createdAt: Date;
   sentAt: Date | null;
 }
@@ -198,7 +210,14 @@ export async function buildReport(db: Db, opts: BuildReportOptions = {}): Promis
         : {},
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   });
-  const alerts: ReportAlert[] = alertRows.map((a) => ({ ...a, level: a.level as AlertLevel }));
+  const alerts: ReportAlert[] = alertRows.map((a) => ({
+    id: a.id,
+    key: a.key,
+    level: a.level as AlertLevel,
+    content: alertContent(a),
+    createdAt: a.createdAt,
+    sentAt: a.sentAt,
+  }));
   const owners = await alertAccounts(db, alerts);
 
   const reports = new Map<number, AccountReport>();
@@ -303,118 +322,76 @@ export async function buildReport(db: Db, opts: BuildReportOptions = {}): Promis
 // ---------------------------------------------------------------------------------------------
 // Formatting
 
-export interface FormatOptions {
-  /** IANA time zone for timestamps; the process's local zone by default. */
-  timeZone?: string;
+/** Language and time zone of the printed report (`digestLang`, `timeZone`). */
+export type FormatOptions = Locale;
+
+/** An alert's text in the report's language. */
+export function alertText(a: Pick<ReportAlert, "content" | "createdAt">, loc: Locale): string {
+  return renderAlert(a.content, a.createdAt, loc);
 }
 
-export function formatTime(d: Date, timeZone?: string): string {
-  return d.toLocaleString("en-GB", {
-    weekday: "short",
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    ...(timeZone ? { timeZone } : {}),
-  });
-}
-
-/** `in 3h`, `in 2d`, `in 45m`. */
-export function formatIn(ms: number): string {
-  const min = Math.max(0, Math.round(ms / 60_000));
-  if (min < 60) return `in ${min}m`;
-  const h = Math.round(min / 60);
-  if (h < 48) return `in ${h}h`;
-  return `in ${Math.round(h / 24)}d`;
-}
-
-const VERDICT_MARK: Record<TurnedInItem["verdict"], string> = {
-  ok: "✅ ok",
-  warn: "🟠 warn",
-  panic: "🔴 panic",
-  unchecked: "🔍 not checked automatically",
-  pending: "⏳ not reviewed yet",
-};
-
-const label = (title: string, course: string) => (course ? `"${title}" (${course})` : `"${title}"`);
-
-/** `today`, `1 day`, `5 days`. */
-export function formatAge(days: number): string {
-  if (days <= 0) return "today";
-  return days === 1 ? "1 day" : `${days} days`;
-}
-
-export const DEBT_MARK: Record<Debt["kind"], string> = {
-  redo: "🔁 redo requested",
-  missing: "⏰ not turned in",
-  unchecked: "🔍 check by hand",
-};
-
-function debtLines(debts: readonly Debt[], now: Date): string[] {
+function debtLines(debts: readonly Debt[], now: Date, lang: Lang): string[] {
+  const m = messages(lang);
   return debts.flatMap((d) => [
-    `  • ${DEBT_MARK[d.kind]}: ${label(d.title, d.courseName)} · ${formatAge(debtAgeDays(d, now))}${
-      d.alertId === null ? "" : ` · #${d.alertId}`
-    }`,
+    `  • ${m.report.debt[d.kind]}: ${itemLabel(d.title, d.courseName, lang)} · ${formatAge(
+      debtAgeDays(d, now),
+      lang,
+    )}${d.alertId === null ? "" : ` · #${d.alertId}`}`,
     `      ${d.url}`,
   ]);
 }
 
-function alertLines(alerts: readonly ReportAlert[], tz?: string): string[] {
-  return alerts.map((a) => `  • ${a.message}  [${formatTime(a.createdAt, tz)}]`);
+function alertLines(alerts: readonly ReportAlert[], loc: Locale): string[] {
+  return alerts.map((a) => `  • ${alertText(a, loc)}  [${formatTime(a.createdAt, loc)}]`);
 }
 
-/** Plain-text report for a terminal. */
-export function formatReport(report: Report, opts: FormatOptions = {}): string {
-  const tz = opts.timeZone;
+/** Plain-text report for a terminal, in `opts.lang` (default Ukrainian). */
+export function formatReport(report: Report, opts: Partial<FormatOptions> = {}): string {
+  const loc: Locale = { lang: opts.lang ?? DEFAULT_LANG, timeZone: opts.timeZone };
+  const { lang } = loc;
+  const r = messages(lang).report;
   const window = report.alertsOnly
-    ? "new alerts"
+    ? r.newAlerts
     : report.since
-      ? `since ${formatTime(report.since, tz)}`
-      : "everything";
-  const out: string[] = [`Classroom report · ${formatTime(report.generatedAt, tz)} · ${window}`];
-  if (report.accounts.length === 0) {
-    out.push("", "No watched accounts in the database yet (run a sync first).");
-  }
+      ? r.since(formatTime(report.since, loc))
+      : r.everything;
+  const out: string[] = [`${r.title} · ${formatTime(report.generatedAt, loc)} · ${window}`];
+  if (report.accounts.length === 0) out.push("", r.noAccounts);
   for (const a of report.accounts) {
     if (report.alertsOnly && alertCount(a) + a.backlog.length === 0) continue;
     out.push("", `== ${a.label} ==`);
     const before = out.length;
-    if (a.panics.length) out.push("🔴 Panics", ...alertLines(a.panics, tz));
-    if (a.alerts.length) out.push("🟠 Alerts", ...alertLines(a.alerts, tz));
+    if (a.panics.length) out.push(r.panics, ...alertLines(a.panics, loc));
+    if (a.alerts.length) out.push(r.alerts, ...alertLines(a.alerts, loc));
     if (a.turnedIn.length) {
-      out.push("📥 Turned in");
+      out.push(r.turnedIn);
       for (const t of a.turnedIn) {
-        const when = t.turnedInAt ? ` · ${formatTime(t.turnedInAt, tz)}` : "";
-        const basis = t.basis === "heuristic" ? " (heuristics only)" : "";
+        const when = t.turnedInAt ? ` · ${formatTime(t.turnedInAt, loc)}` : "";
+        const basis = t.basis === "heuristic" ? ` ${r.heuristicsOnly}` : "";
         const partly =
-          t.unchecked && t.verdict !== "unchecked"
-            ? ` · 🔍 ${t.unchecked} part${t.unchecked === 1 ? "" : "s"} not checked automatically`
-            : "";
+          t.unchecked && t.verdict !== "unchecked" ? ` · ${r.partsNotChecked(t.unchecked)}` : "";
         out.push(
-          `  • ${label(t.title, t.courseName)}${when} · ${VERDICT_MARK[t.verdict]}${basis}${partly}`,
+          `  • ${itemLabel(t.title, t.courseName, lang)}${when} · ${r.verdict[t.verdict]}${basis}${partly}`,
         );
         if (t.summary) out.push(`      ${t.summary}`);
       }
     }
     if (a.upcoming.length) {
-      out.push("📅 Due in the next 7 days");
+      out.push(r.upcoming);
       for (const u of a.upcoming) {
         const ms = u.dueAt.getTime() - report.generatedAt.getTime();
         out.push(
-          `  • ${formatTime(u.dueAt, tz)} (${formatIn(ms)})  ${label(u.title, u.courseName)}`,
+          `  • ${formatTime(u.dueAt, loc)} (${formatIn(ms, lang)})  ${itemLabel(u.title, u.courseName, lang)}`,
         );
       }
     }
-    if (a.checkByHand.length) out.push("🔍 Check by hand", ...alertLines(a.checkByHand, tz));
-    if (a.backlog.length) {
-      out.push("📌 Open debts", ...debtLines(a.backlog, report.generatedAt));
-    }
-    if (a.info.length) out.push("ℹ️  Info", ...alertLines(a.info, tz));
-    if (out.length === before) out.push("  Nothing to report.");
+    if (a.checkByHand.length) out.push(r.checkByHand, ...alertLines(a.checkByHand, loc));
+    if (a.backlog.length) out.push(r.debts, ...debtLines(a.backlog, report.generatedAt, lang));
+    if (a.info.length) out.push(r.info, ...alertLines(a.info, loc));
+    if (out.length === before) out.push(`  ${r.nothing}`);
   }
   if (report.other.length) {
-    out.push("", "== Other ==", ...alertLines(report.other, tz));
+    out.push("", `== ${r.other} ==`, ...alertLines(report.other, loc));
   }
   return out.join("\n");
 }

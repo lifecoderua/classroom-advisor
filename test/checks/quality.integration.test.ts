@@ -4,7 +4,7 @@ import { turnedInSignals } from "../../src/checks/heuristics.ts";
 import { buildReviewInput, reviewPrompt } from "../../src/checks/quality.ts";
 import { ClaudeCliProvider } from "../../src/llm/index.ts";
 
-// Opt-in: runs the review.v3 prompt through the real `claude` CLI on synthetic Ukrainian
+// Opt-in: runs the review.v4 prompt through the real `claude` CLI on synthetic Ukrainian
 // homework (costs tokens). `CA_LLM_IT=1 pnpm test quality.integration`.
 const enabled = process.env.CA_LLM_IT === "1";
 const it = enabled ? itBase : itBase.skip;
@@ -40,7 +40,7 @@ const math = (work: string): TurnedInInput => ({
   },
 });
 
-describe("review.v3 live (claude-cli)", () => {
+describe("review.v4 live (claude-cli)", () => {
   it("flags missing and wrong tasks, in Ukrainian", async () => {
     const out = await review(math("1) 7 + 5 = 12\n2) 13 - 6 = 8"));
     expect(out.verdict).not.toBe("ok");

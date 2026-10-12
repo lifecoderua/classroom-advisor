@@ -532,9 +532,8 @@ export async function sessionAlert(
     {
       key: `sync:${account.id}:${status}:${dayOf(now)}`,
       level: "alert",
-      message: `Sync stopped for ${label}: the Google session is ${
-        status === "session_expired" ? "expired" : "missing"
-      }. Log in by hand in the collector profile.`,
+      code: "sync.session",
+      params: { account: label, state: status === "session_expired" ? "expired" : "missing" },
     },
     now,
   );
@@ -553,7 +552,8 @@ async function driftAlert(
     {
       key: `sync:${account.id}:drift:${rpcid}:${dayOf(now)}`,
       level: "alert",
-      message: `Classroom data changed shape (${rpcid}) while syncing ${label}; the parser needs an update (${err.message}).`,
+      code: "sync.drift",
+      params: { account: label, rpcid, error: err.message },
     },
     now,
   );

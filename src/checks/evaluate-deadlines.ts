@@ -64,7 +64,7 @@ export async function evaluateDeadlines(
   const drafts = evaluateDeadlineRules(await loadDeadlineInputs(db), now, rules);
   const created: AlertDraft[] = [];
   for (const d of drafts) {
-    const res = await raiseAlert(db, { key: d.key, level: d.level, message: d.message }, now);
+    const res = await raiseAlert(db, { key: d.key, level: d.level, ...d.content }, now);
     if (res.created) created.push(d);
   }
   return created;

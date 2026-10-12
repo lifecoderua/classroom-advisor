@@ -1,7 +1,7 @@
 // Deadline rules: pure functions over a plain snapshot and `now`. All math is on epoch
 // milliseconds (UTC), so local timezones and DST never matter.
 
-import type { AlertLevel } from "../store/types.ts";
+import type { AlertContent, AlertLevel } from "../store/types.ts";
 
 export const HOUR_MS = 60 * 60 * 1000;
 export const DAY_MS = 24 * HOUR_MS;
@@ -43,7 +43,8 @@ export interface AlertDraft {
   key: string;
   level: AlertLevel;
   code: DeadlineCode;
-  message: string;
+  /** What the alert says (rendered per language at send/print time). */
+  content: AlertContent;
 }
 
 /**
@@ -65,11 +66,6 @@ export function isoWeek(date: Date): string {
   const year = d.getUTCFullYear();
   const week = Math.ceil(((d.getTime() - Date.UTC(year, 0, 1)) / DAY_MS + 1) / 7);
   return `${year}-W${String(week).padStart(2, "0")}`;
-}
-
-function hoursLabel(ms: number): string {
-  const h = Math.max(1, Math.round(ms / HOUR_MS));
-  return h === 1 ? "1 hour" : `${h} hours`;
 }
 
 export interface DeadlineOptions {
@@ -94,7 +90,7 @@ export function deadlineAlerts(
   const due = a.dueAt?.getTime();
   // Reminders only for recent, post-baseline items; old lesson posts would flood the digest.
   const remind = !a.baseline && t - posted <= (options.lookbackMs ?? Number.POSITIVE_INFINITY);
-  const label = `"${a.title}" (${a.courseName})`;
+  const item = { title: a.title, course: a.courseName };
   const key = (code: DeadlineCode, suffix?: string) =>
     `deadline:${a.id}:${code}${suffix ? `:${suffix}` : ""}`;
   const out: AlertDraft[] = [];
@@ -104,14 +100,17 @@ export function deadlineAlerts(
       key: key("missing"),
       level: "panic",
       code: "missing",
-      message: `Missing: ${label} is past due and not turned in.`,
+      content: { code: "deadline.missing", params: item },
     });
   } else if (due !== undefined && due - t < DAY_MS) {
     out.push({
       key: key("due_soon"),
       level: "panic",
       code: "due_soon",
-      message: `Due in ${hoursLabel(due - t)}: ${label} is not turned in yet.`,
+      content: {
+        code: "deadline.due_soon",
+        params: { ...item, dueAt: new Date(due).toISOString() },
+      },
     });
   }
 
@@ -125,7 +124,7 @@ export function deadlineAlerts(
       key: key("untouched_24h"),
       level: "alert",
       code: "untouched_24h",
-      message: `Not started: ${label} was posted over a day ago and has no work yet.`,
+      content: { code: "deadline.untouched_24h", params: item },
     });
   }
 
@@ -134,7 +133,7 @@ export function deadlineAlerts(
       key: key("no_due_date", isoWeek(now)),
       level: "info",
       code: "no_due_date",
-      message: `Reminder: ${label} has no due date and is not turned in.`,
+      content: { code: "deadline.no_due_date", params: item },
     });
   }
 

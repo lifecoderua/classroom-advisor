@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ConfigError, DEFAULT_GEMINI_MODEL, expandHome, loadConfig } from "../src/config/index.ts";
+import { replaceTelegramChat } from "../src/config/local.ts";
 
 const HOME = "/home/tester";
 let dir: string;
@@ -40,6 +41,8 @@ describe("loadConfig", () => {
       runIntervalMin: 60,
       alertLookbackDays: 14,
       backlogForgetDays: 14,
+      digestLang: "uk",
+      timeZone: "Europe/Kyiv",
       fullRefreshDays: 7,
       syncDelayMs: 300,
       telegramChatIds: [],
@@ -71,6 +74,15 @@ describe("loadConfig", () => {
     expect(c.llmProvider).toBe("gemini");
     expect(c.claudeBin).toBe("from-env");
     expect(c.watchedAccounts).toEqual(["a@x.example", "b@x.example"]);
+  });
+
+  it("reads CA_DIGEST_LANG and CA_TIMEZONE, rejecting unknown values", () => {
+    expect(load({ CA_DIGEST_LANG: "ru", CA_TIMEZONE: "UTC" })).toMatchObject({
+      digestLang: "ru",
+      timeZone: "UTC",
+    });
+    expect(() => load({ CA_DIGEST_LANG: "de" })).toThrow(/digestLang/);
+    expect(() => load({ CA_TIMEZONE: "Mars/Olympus" })).toThrow(/timeZone/);
   });
 
   it("reads CA_BACKLOG_FORGET_DAYS", () => {
@@ -119,6 +131,13 @@ describe("loadConfig", () => {
     writeFileSync(join(dir, ".env"), "");
     writeJson({ telegramChatIds: ["@channel"] });
     expect(() => load()).toThrow(/telegramChatIds/);
+  });
+
+  it("replaces a migrated Telegram chat id in config.local.json, keeping other keys", () => {
+    writeJson({ llmProvider: "fake", telegramChatIds: ["111", "-4001"] });
+    expect(replaceTelegramChat(dir, "-4001", "-1009999")).toBe(true);
+    expect(load()).toMatchObject({ llmProvider: "fake", telegramChatIds: ["111", "-1009999"] });
+    expect(replaceTelegramChat(dir, "-4001", "-1009999")).toBe(false);
   });
 
   it("rejects malformed JSON", () => {

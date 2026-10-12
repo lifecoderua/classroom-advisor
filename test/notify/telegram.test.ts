@@ -3,12 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { pickChat } from "../../src/cli/telegram.ts";
+import { formatAgo } from "../../src/i18n/index.ts";
 import { buildReport } from "../../src/notify/console.ts";
 import {
   chatsOf,
   escapeHtml,
   type FetchFn,
-  formatAgo,
   parseCommand,
   splitMessage,
   TelegramApi,
@@ -110,9 +110,9 @@ describe("formatting helpers", () => {
   });
 
   it("formats ages", () => {
-    expect(formatAgo(5 * 60_000)).toBe("5m ago");
-    expect(formatAgo(3 * 3_600_000)).toBe("3h ago");
-    expect(formatAgo(72 * 3_600_000)).toBe("3d ago");
+    expect(formatAgo(5 * 60_000, "en")).toBe("5m ago");
+    expect(formatAgo(3 * 3_600_000, "en")).toBe("3h ago");
+    expect(formatAgo(72 * 3_600_000, "en")).toBe("3d ago");
   });
 });
 
@@ -164,9 +164,9 @@ describe("TelegramNotifier", () => {
   let template: ReturnType<typeof migratedTemplate>;
   let db: Db;
   let dir: string;
-  // Local times: the digest schedule and quiet hours use the process time zone.
+  // UTC times: the digest schedule and quiet hours use the notifier's time zone (UTC here).
   let clock: Date;
-  const at = (h: number, m = 0, day = 10) => new Date(2026, 9, day, h, m);
+  const at = (h: number, m = 0, day = 10) => new Date(Date.UTC(2026, 9, day, h, m));
 
   beforeAll(() => {
     template = migratedTemplate();
@@ -240,6 +240,7 @@ describe("TelegramNotifier", () => {
       now: () => clock,
       log: () => undefined,
       timeZone: "UTC",
+      lang: "en",
       ...extra,
     });
   }
@@ -395,6 +396,134 @@ describe("TelegramNotifier", () => {
     expect(String(f.sent()[4]?.body.text)).toBe("Nothing pending.");
     await n.handleUpdate(msg("/status"));
     expect(String(f.sent()[5]?.body.text)).toContain("📌 Open debts: 0");
+  });
+
+  it("sends in Ukrainian at the digest time of the configured zone", async () => {
+    await seed();
+    await raiseAlert(
+      db,
+      {
+        key: "deadline:1:missing",
+        level: "panic",
+        code: "deadline.missing",
+        params: { title: "Дроби", course: "Математика" },
+      },
+      clock,
+    );
+    const f = fakeFetch();
+    const n = notifier(f, { lang: "uk", timeZone: "Europe/Kyiv" });
+    await n.afterCycle();
+    const urgent = String(f.sent()[0]?.body.text);
+    expect(urgent).toContain("🚨 <b>Терміново</b> · сб, 10 жовт., 15:00");
+    expect(urgent).toContain("Прострочено: «Дроби» (Математика)");
+    expect(urgent).toContain(">відкрити</a>");
+
+    // 19:00 in Kyiv is 16:00 UTC.
+    clock = at(15, 55);
+    await n.afterCycle();
+    expect(f.sent()).toHaveLength(1);
+    clock = at(16, 5);
+    await n.afterCycle();
+    expect(f.sent()).toHaveLength(2);
+    expect(String(f.sent()[1]?.body.text)).toContain("📋 <b>Підсумок дня</b>");
+
+    const msg = (text: string): TgUpdate => ({
+      update_id: 1,
+      message: { message_id: 1, date: 0, chat: { id: Number(CHAT), type: "private" }, text },
+    });
+    await n.handleUpdate(msg("/status"));
+    const status = String(f.sent()[2]?.body.text);
+    expect(status).toContain("Остання синхронізація: ще не було");
+    expect(status).toContain("хвости забуваються через 14 днів");
+    await n.handleUpdate(msg("/help"));
+    expect(String(f.sent()[3]?.body.text)).toContain("позначити сповіщення переглянутим");
+  });
+
+  it("answers commands in a linked group, also with @bot", async () => {
+    await seed();
+    const GROUP = "-1001234567890";
+    const f = fakeFetch();
+    const n = notifier(f, { chatIds: [GROUP] });
+    await n.handleUpdate({
+      update_id: 1,
+      message: {
+        message_id: 1,
+        date: 0,
+        chat: { id: Number(GROUP), type: "supergroup", title: "Family" },
+        text: "/status@classroom_bot",
+      },
+    });
+    expect(f.sent()[0]?.body.chat_id).toBe(GROUP);
+    expect(String(f.sent()[0]?.body.text)).toContain("Status");
+  });
+
+  it("follows a group's upgrade to a supergroup and resends there", async () => {
+    await seed();
+    const OLD = "-4001";
+    const NEW = "-1009999";
+    const f = fakeFetch((method, body) => {
+      if (method === "sendMessage" && body.chat_id === OLD) {
+        throw { code: 400, desc: "Bad Request: group chat was upgraded to a supergroup chat" };
+      }
+      return true;
+    });
+    // The fake doesn't add `parameters.migrate_to_chat_id`; wrap it in.
+    const fn: FetchFn = async (url, init) => {
+      const res = await f.fn(url, init);
+      const body = (await res.json()) as Record<string, unknown>;
+      if (!body.ok) body.parameters = { migrate_to_chat_id: Number(NEW) };
+      return new Response(JSON.stringify(body), { status: res.status });
+    };
+    const migrated: [string, string][] = [];
+    const n = new TelegramNotifier({
+      db,
+      api: new TelegramApi(TOKEN, fn),
+      chatIds: [OLD],
+      digestTime: "19:00",
+      statePath: join(dir, "telegram.json"),
+      now: () => clock,
+      log: () => undefined,
+      timeZone: "UTC",
+      lang: "en",
+      onChatMigrated: (from, to) => migrated.push([from, to]),
+    });
+    expect(await n.sendPanics()).toBe(1);
+    expect(f.sent().map((c) => c.body.chat_id)).toEqual([OLD, NEW]);
+    expect(migrated).toEqual([[OLD, NEW]]);
+    expect(n.chats).toEqual([NEW]);
+    expect(JSON.parse(readFileSync(join(dir, "telegram.json"), "utf8"))).toMatchObject({
+      chatMigrations: { [OLD]: NEW },
+    });
+    // A restarted notifier with the old id from config goes straight to the new one, and
+    // takes commands from it.
+    const g = fakeFetch();
+    const again = notifier(g, { chatIds: [OLD] });
+    expect(again.chats).toEqual([NEW]);
+    await again.handleUpdate({
+      update_id: 2,
+      message: {
+        message_id: 2,
+        date: 0,
+        chat: { id: Number(NEW), type: "supergroup" },
+        text: "/status",
+      },
+    });
+    expect(g.sent()[0]?.body.chat_id).toBe(NEW);
+  });
+
+  it("switches on the 'migrated to supergroup' service message", async () => {
+    const f = fakeFetch();
+    const n = notifier(f, { chatIds: ["-4001"] });
+    await n.handleUpdate({
+      update_id: 1,
+      message: {
+        message_id: 1,
+        date: 0,
+        chat: { id: -4001, type: "group" },
+        migrate_to_chat_id: -1005555,
+      },
+    });
+    expect(n.chats).toEqual(["-1005555"]);
   });
 
   it("holds the digest during quiet hours; panics still go out", async () => {

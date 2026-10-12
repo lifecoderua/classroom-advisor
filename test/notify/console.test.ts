@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { formatIn } from "../../src/i18n/index.ts";
 import {
   accountLabel,
+  alertText,
   buildReport,
-  formatIn,
   formatReport,
   parseAlertKey,
   reportHasAlerts,
@@ -16,7 +17,10 @@ import {
   upsertCourse,
   upsertSubmission,
 } from "../../src/store/index.ts";
+import { EN } from "../alert-text.ts";
 import { migratedTemplate } from "../store/helpers.ts";
+
+const txt = (a: Parameters<typeof alertText>[0]) => alertText(a, EN);
 
 const NOW = new Date("2026-10-10T12:00:00Z");
 const H = 3_600_000;
@@ -194,9 +198,9 @@ describe("helpers", () => {
   });
 
   it("formats relative times", () => {
-    expect(formatIn(45 * 60_000)).toBe("in 45m");
-    expect(formatIn(5 * H)).toBe("in 5h");
-    expect(formatIn(72 * H)).toBe("in 3d");
+    expect(formatIn(45 * 60_000, "en")).toBe("in 45m");
+    expect(formatIn(5 * H, "en")).toBe("in 5h");
+    expect(formatIn(72 * H, "en")).toBe("in 3d");
   });
 });
 
@@ -210,9 +214,9 @@ describe("report", () => {
     expect(report.accounts.map((a) => a.label)).toEqual(["Student One", "student-two"]);
     const [one, two] = report.accounts;
 
-    expect(one?.panics.map((a) => a.message)).toEqual(["Due in 5h: Fractions"]);
-    expect(one?.alerts.map((a) => a.message)).toEqual(["Take a look: Essay"]);
-    expect(one?.info.map((a) => a.message)).toEqual(["No due date: Fractions"]);
+    expect(one?.panics.map(txt)).toEqual(["Due in 5h: Fractions"]);
+    expect(one?.alerts.map(txt)).toEqual(["Take a look: Essay"]);
+    expect(one?.info.map(txt)).toEqual(["No due date: Fractions"]);
     expect(one?.turnedIn).toEqual([
       expect.objectContaining({
         title: "Essay",
@@ -225,13 +229,13 @@ describe("report", () => {
     expect(one?.upcoming.map((u) => u.title)).toEqual(["Fractions", "Geometry"]);
 
     // Old sent alert is out of the window; an unsent one stays until Telegram sends it.
-    expect(two?.alerts.map((a) => a.message)).toEqual(["Unsent old alert"]);
+    expect(two?.alerts.map(txt)).toEqual(["Unsent old alert"]);
     expect(two?.turnedIn).toEqual([
       expect.objectContaining({ title: "Drawing", verdict: "warn", basis: "heuristic" }),
     ]);
-    expect(report.other.map((a) => a.message)).toEqual(["Parser drift", "Unwatched alert"]);
+    expect(report.other.map(txt)).toEqual(["Parser drift", "Unwatched alert"]);
 
-    const text = formatReport(report, { timeZone: TZ });
+    const text = formatReport(report, { lang: "en", timeZone: TZ });
     expect(text).toMatchInlineSnapshot(`
       "Classroom report · Sat 10 Oct, 12:00 · since Fri 09 Oct, 12:00
 
@@ -267,8 +271,8 @@ describe("report", () => {
     const all = await buildReport(db, { now: NOW, since: null });
     const one = all.accounts.find((a) => a.label === "Student One");
     expect(one?.turnedIn.map((t) => t.title)).toEqual(["Essay", "Poem", "Lagging", "Old essay"]);
-    expect(all.other.map((a) => a.message)).toContain("Old sent alert");
-    expect(formatReport(all, { timeZone: TZ })).toContain("· everything");
+    expect(all.other.map(txt)).toContain("Old sent alert");
+    expect(formatReport(all, { lang: "en", timeZone: TZ })).toContain("· everything");
 
     const narrow = await buildReport(db, { now: NOW, since: ago(2.5) });
     expect(narrow.accounts[0]?.turnedIn.map((t) => t.title)).toEqual(["Essay"]);
@@ -278,7 +282,7 @@ describe("report", () => {
     await seed();
     const ids = (await db.alert.findMany({ where: { level: "panic" } })).map((a) => a.id);
     const report = await buildReport(db, { now: NOW, alertIds: ids });
-    const text = formatReport(report, { timeZone: TZ });
+    const text = formatReport(report, { lang: "en", timeZone: TZ });
     expect(text).toContain("· new alerts");
     expect(text).toContain("Due in 5h: Fractions");
     expect(text).toContain("Parser drift");
@@ -335,15 +339,15 @@ describe("report", () => {
 
     const report = await buildReport(db, { now: NOW });
     const one = report.accounts[0];
-    expect(one?.checkByHand.map((a) => a.message)).toEqual([
+    expect(one?.checkByHand.map(txt)).toEqual([
       'Check by hand: "Poem" (Math): "reading.mp3": audio recording: needs listening',
     ]);
-    expect(one?.info.map((a) => a.message)).toEqual(["No due date: Fractions"]);
+    expect(one?.info.map(txt)).toEqual(["No due date: Fractions"]);
     expect(one?.turnedIn).toEqual([
       expect.objectContaining({ title: "Essay", verdict: "ok", unchecked: 2 }),
       expect.objectContaining({ title: "Poem", verdict: "unchecked", unchecked: 1 }),
     ]);
-    const text = formatReport(report, { timeZone: TZ });
+    const text = formatReport(report, { lang: "en", timeZone: TZ });
     expect(text).toContain(
       '"Essay" (Math) · Sat 10 Oct, 10:00 · ✅ ok · 🔍 2 parts not checked automatically',
     );
@@ -358,7 +362,7 @@ describe("report", () => {
     );
     const digest = await buildReport(db, { now: NOW, alertIds: ids });
     expect(reportHasAlerts(digest)).toBe(true);
-    expect(formatReport(digest, { timeZone: TZ })).toContain("🔍 Check by hand");
+    expect(formatReport(digest, { lang: "en", timeZone: TZ })).toContain("🔍 Check by hand");
   });
 
   it("adds an open debts block, leaving out debts whose alert is already listed", async () => {
@@ -383,21 +387,21 @@ describe("report", () => {
     expect(one?.backlog.map((d) => [d.kind, d.title, d.alertId])).toEqual([
       ["missing", "Past", missing.alert.id],
     ]);
-    const text = formatReport(report, { timeZone: TZ });
+    const text = formatReport(report, { lang: "en", timeZone: TZ });
     expect(text).toContain(
       `📌 Open debts\n  • ⏰ not turned in: "Past" (Math) · today · #${missing.alert.id}\n      https://classroom.google.com/c/`,
     );
 
     // In a wider window the panic itself is listed, so the debt isn't repeated.
     const wide = await buildReport(db, { now: NOW, since: ago(24), backlog: { forgetDays: 14 } });
-    expect(wide.accounts[0]?.panics.map((a) => a.message)).toContain("Missing: Past");
+    expect(wide.accounts[0]?.panics.map(txt)).toContain("Missing: Past");
     expect(wide.accounts[0]?.backlog).toEqual([]);
     // Without the option there's no backlog at all.
     expect((await buildReport(db, { now: NOW, since: ago(1) })).accounts[0]?.backlog).toEqual([]);
   });
 
   it("says so when nothing is watched", async () => {
-    const text = formatReport(await buildReport(db, { now: NOW }), { timeZone: TZ });
+    const text = formatReport(await buildReport(db, { now: NOW }), { lang: "en", timeZone: TZ });
     expect(text).toContain("No watched accounts");
   });
 });

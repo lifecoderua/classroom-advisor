@@ -229,7 +229,7 @@ describe("check results and alerts", () => {
     const again = await raiseAlert(db, { key: "quality:1", level: "panic", message: "other" });
     expect(again.created).toBe(false);
     expect(again.alert.id).toBe(first.alert.id);
-    expect(again.alert.message).toBe("m");
+    expect(again.alert).toMatchObject({ code: "text", params: JSON.stringify({ text: "m" }) });
 
     await raiseAlert(db, { key: "panic:2", level: "panic", message: "due soon" });
     expect((await listUnsentAlerts(db)).map((a) => a.key)).toEqual(["quality:1", "panic:2"]);

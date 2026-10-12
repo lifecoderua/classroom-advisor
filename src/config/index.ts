@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import dotenv from "dotenv";
 import { z } from "zod";
+import { DEFAULT_LANG, DEFAULT_TIME_ZONE, isTimeZone, LANGS } from "../i18n/index.ts";
 
 export const LLM_PROVIDERS = ["claude-cli", "gemini", "fake"] as const;
 
@@ -43,7 +44,14 @@ export const configSchema = z.strictObject({
   fullRefreshDays: z.coerce.number().int().positive().default(7),
   /** Pause between Classroom RPC calls during sync, to keep the request rate low. */
   syncDelayMs: z.coerce.number().int().nonnegative().default(300),
-  /** Local-time window `HH:MM-HH:MM` in which `run` skips cycles (may cross midnight). */
+  /** Language of every parent-facing text: alerts, digests, report, bot replies, LLM review. */
+  digestLang: z.enum(LANGS).default(DEFAULT_LANG),
+  /** IANA time zone for the digest time, quiet hours and every displayed time. */
+  timeZone: z
+    .string()
+    .refine(isTimeZone, "expected an IANA time zone, e.g. Europe/Kyiv")
+    .default(DEFAULT_TIME_ZONE),
+  /** Window `HH:MM-HH:MM` (in `timeZone`) in which `run` skips cycles (may cross midnight). */
   quietHours: z
     .string()
     .regex(/^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/, "expected HH:MM-HH:MM")
@@ -53,7 +61,7 @@ export const configSchema = z.strictObject({
    * chats are ignored. The bot token is a secret and comes from `TELEGRAM_BOT_TOKEN` only.
    */
   telegramChatIds: z.array(z.string().regex(/^-?\d+$/, "expected a numeric chat id")).default([]),
-  /** Local time `HH:MM` of the daily Telegram digest (alerts and info; panics go out at once). */
+  /** Time `HH:MM` (in `timeZone`) of the daily Telegram digest (alerts and info; panics go out at once). */
   telegramDigestTime: z
     .string()
     .regex(/^\d{1,2}:\d{2}$/, "expected HH:MM")
@@ -83,6 +91,8 @@ const ENV_KEYS = {
   CA_LLM_TIMEOUT_MS: "llmTimeoutMs",
   CA_RUN_INTERVAL_MIN: "runIntervalMin",
   CA_QUIET_HOURS: "quietHours",
+  CA_DIGEST_LANG: "digestLang",
+  CA_TIMEZONE: "timeZone",
   CA_ALERT_LOOKBACK_DAYS: "alertLookbackDays",
   CA_BACKLOG_FORGET_DAYS: "backlogForgetDays",
   CA_FULL_REFRESH_DAYS: "fullRefreshDays",

@@ -1,0 +1,161 @@
+import type { UnreadableCause } from "../store/types.ts";
+import type { Messages } from "./types.ts";
+
+function unreadable({ code, arg }: UnreadableCause): string {
+  switch (code) {
+    case "pdf_no_text":
+      return "PDF without a text layer (scanned pages?)";
+    case "video":
+      return "video: needs watching";
+    case "audio":
+      return "audio recording: needs listening";
+    case "form":
+      return "Google Form: the answers can't be read";
+    case "link":
+      return `external link${arg ? ` (${arg})` : ""}: its content isn't downloaded`;
+    case "legacy_ppt":
+      return "old PowerPoint format (.ppt) isn't supported";
+    case "legacy_doc":
+      return "old Word format (.doc) isn't supported";
+    case "legacy_xls":
+      return "old Excel format (.xls) isn't supported";
+    case "too_large":
+      return `file too large to download (${arg} MB)`;
+    case "no_access":
+      return `no access to the file (HTTP ${arg})`;
+    case "extract_failed":
+      return "the file couldn't be read (damaged or unusual)";
+    case "not_drive":
+      return "not a Drive file";
+    case "download_failed":
+      return `download failed (${arg})`;
+    case "not_downloaded":
+      return "the file hasn't been downloaded";
+    case "copy_unreadable":
+      return "the downloaded copy couldn't be read";
+    case "image_format":
+      return `image format ${arg} isn't supported`;
+    case "unsupported_format":
+      return `unsupported file format${arg ? ` (${arg})` : ""}`;
+  }
+}
+
+export const en: Messages = {
+  locale: "en-GB",
+  quote: (t) => `"${t}"`,
+
+  time: {
+    inMinutes: (n) => `in ${n}m`,
+    inHours: (n) => `in ${n}h`,
+    inDays: (n) => `in ${n}d`,
+    minutesAgo: (n) => `${n}m ago`,
+    hoursAgo: (n) => `${n}h ago`,
+    daysAgo: (n) => `${n}d ago`,
+    today: "today",
+    days: { one: "day", other: "days" },
+  },
+
+  alert: {
+    missing: (item) => `Missing: ${item} is past due and not turned in.`,
+    dueSoon: (item, due, rel) => `Due ${due} (${rel}): ${item} is not turned in yet.`,
+    untouched: (item) => `Not started: ${item} was posted over a day ago and has no work yet.`,
+    noDueDate: (item) => `Reminder: ${item} has no due date and is not turned in.`,
+    teacherComment: (item, text) => `Teacher comment on ${item}: ${text}`,
+    redoDue: {
+      past: "Not turned in again since the teacher's request, and it is past due.",
+      soon: "Not turned in again since the teacher's request, and it is due within a day.",
+    },
+    checkNow: "Check now",
+    takeALook: "Take a look",
+    missingParts: (list) => `Missing: ${list}.`,
+    templateUnchanged: "turned in the template without changes",
+    heuristicBasis: {
+      unreadable: "heuristics only, nothing readable",
+      fallback: "heuristics only, LLM review unavailable",
+    },
+    signal: {
+      no_attachments: "nothing attached",
+      fewer_attachments_than_expected: "fewer files than expected",
+      template_unchanged: "a template turned in unchanged",
+      empty_or_tiny_doc: "an empty or almost empty document",
+    },
+    notChecked: (list) => `Not checked automatically: ${list}.`,
+    checkByHand: (item, list) => `Check by hand: ${item}: ${list}`,
+    llmFailed: (item, n, provider, error) =>
+      `Automatic review couldn't run: ${item} failed ${n} times (${provider}: ${error}). Check the work by hand.`,
+    session: (account, state) =>
+      `Sync stopped for ${account}: the Google session is ${state}. Log in by hand in the collector profile.`,
+    drift: (account, rpcid, error) =>
+      `Classroom data changed shape (${rpcid}) while syncing ${account}; the parser needs an update (${error}).`,
+    empty: "(empty)",
+  },
+
+  unreadable,
+
+  report: {
+    title: "Classroom report",
+    newAlerts: "new alerts",
+    since: (t) => `since ${t}`,
+    everything: "everything",
+    noAccounts: "No watched accounts in the database yet (run a sync first).",
+    panics: "🔴 Panics",
+    alerts: "🟠 Alerts",
+    turnedIn: "📥 Turned in",
+    upcoming: "📅 Due in the next 7 days",
+    checkByHand: "🔍 Check by hand",
+    debts: "📌 Open debts",
+    info: "ℹ️  Info",
+    other: "Other",
+    nothing: "Nothing to report.",
+    heuristicsOnly: "(heuristics only)",
+    partsNotChecked: (n) => `🔍 ${n} part${n === 1 ? "" : "s"} not checked automatically`,
+    verdict: {
+      ok: "✅ ok",
+      warn: "🟠 warn",
+      panic: "🔴 panic",
+      unchecked: "🔍 not checked automatically",
+      pending: "⏳ not reviewed yet",
+    },
+    debt: {
+      redo: "🔁 redo requested",
+      missing: "⏰ not turned in",
+      unchecked: "🔍 check by hand",
+    },
+  },
+
+  telegram: {
+    urgent: "🚨 <b>Urgent</b>",
+    digest: "📋 <b>Digest</b>",
+    dailyDigest: "📋 <b>Daily digest</b>",
+    status: "📊 <b>Status</b>",
+    open: "open",
+    checkByHand: "🔍 <i>Check by hand</i>",
+    debts: "📌 <i>Open debts</i>",
+    other: "<b>Other</b>",
+    noAccounts: "No watched accounts yet.",
+    lastSync: (t) => `Last sync: ${t}`,
+    never: "never",
+    syncStatus: {
+      ok: "ok",
+      running: "running",
+      error: "error",
+      session_expired: "session expired",
+      session_missing: "not logged in",
+    },
+    openCounts: (p, a, i, u) => `Open: 🔴 ${p} · 🟠 ${a} · ℹ️ ${i} (unsent ${u})`,
+    debtCount: (n) => `📌 Open debts: ${n}`,
+    statusFooter: (time, days) =>
+      `Daily digest at ${time}. Open = not acked, 7 days; debts are forgotten after ${days} days.`,
+    nothingPending: "Nothing pending.",
+    acked: (id) => `🔕 Muted #${id}`,
+    noAlert: (id) => `No alert #${id}`,
+    ackUsage: "Usage: /ack &lt;id&gt; (the number after /ack_ in a message)",
+    help: [
+      "<b>classroom-advisor</b>",
+      "/status – last sync and open alerts per kid",
+      "/digest – send the pending digest now",
+      "/ack &lt;id&gt; – mute an alert (or tap /ack_&lt;id&gt; under it)",
+    ].join("\n"),
+    test: "✅ Test message: Telegram works.",
+  },
+};

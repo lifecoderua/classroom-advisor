@@ -6,6 +6,7 @@ import {
   type ReviewSubmissionOptions,
   reviewSubmission,
 } from "../checks/quality.ts";
+import { DEFAULT_LANG, type Lang } from "../i18n/index.ts";
 import type { LlmProvider } from "../llm/index.ts";
 import { buildReport, formatReport, reportHasAlerts } from "../notify/console.ts";
 import type { Db } from "../store/index.ts";
@@ -30,7 +31,8 @@ export interface CycleDeps {
   now?: () => Date;
   log?: (line: string) => void;
   watchedEmails?: readonly string[];
-  /** IANA time zone for the printed digest (tests). */
+  /** Language and IANA time zone of the printed digest. */
+  lang?: Lang;
   timeZone?: string;
   /** Stops reviewing further submissions (SIGINT); the current one finishes. */
   signal?: AbortSignal;
@@ -93,7 +95,10 @@ export async function runCycle(deps: CycleDeps): Promise<CycleResult> {
       ...(deps.watchedEmails ? { watchedEmails: deps.watchedEmails } : {}),
     });
     if (reportHasAlerts(report)) {
-      result.digest = formatReport(report, deps.timeZone ? { timeZone: deps.timeZone } : {});
+      result.digest = formatReport(report, {
+        lang: deps.lang ?? DEFAULT_LANG,
+        timeZone: deps.timeZone,
+      });
     }
   }
   return result;
@@ -102,6 +107,8 @@ export async function runCycle(deps: CycleDeps): Promise<CycleResult> {
 export interface LoopOptions {
   intervalMin: number;
   quietHours?: QuietHours;
+  /** IANA zone of `quietHours` (default: the process zone). */
+  timeZone?: string;
   /** One cycle, ignoring quiet hours. */
   once?: boolean;
   cycle: () => Promise<unknown>;
@@ -133,7 +140,7 @@ export async function runLoop(opts: LoopOptions): Promise<{ cycles: number; skip
   let cycles = 0;
   let skipped = 0;
   while (!opts.signal.aborted) {
-    if (!opts.once && opts.quietHours && inQuietHours(opts.quietHours, now())) {
+    if (!opts.once && opts.quietHours && inQuietHours(opts.quietHours, now(), opts.timeZone)) {
       skipped++;
       log("quiet hours: skipping this cycle");
     } else {

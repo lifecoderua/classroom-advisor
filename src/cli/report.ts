@@ -5,6 +5,7 @@ import {
   cachedTextReader,
 } from "../checks/evaluate-heuristics.ts";
 import { loadConfig } from "../config/index.ts";
+import { replaceTelegramChat } from "../config/local.ts";
 import { createProvider } from "../llm/index.ts";
 import { buildReport, formatReport } from "../notify/console.ts";
 import { TelegramApi, TelegramNotifier, telegramStatePath } from "../notify/telegram.ts";
@@ -60,7 +61,7 @@ export function registerReportCommands(program: Command): void {
           watchedEmails: config.watchedAccounts,
           backlog: { forgetDays: config.backlogForgetDays },
         });
-        console.log(formatReport(report));
+        console.log(formatReport(report, { lang: config.digestLang, timeZone: config.timeZone }));
       } finally {
         await db.$disconnect();
       }
@@ -94,6 +95,13 @@ export function registerReportCommands(program: Command): void {
                 chatIds: config.telegramChatIds,
                 digestTime: config.telegramDigestTime,
                 backlogForgetDays: config.backlogForgetDays,
+                lang: config.digestLang,
+                timeZone: config.timeZone,
+                onChatMigrated: (from, to) => {
+                  if (replaceTelegramChat(process.cwd(), from, to)) {
+                    log("telegram: config.local.json updated with the supergroup's chat id");
+                  }
+                },
                 ...(quietHours ? { quietHours } : {}),
                 statePath: telegramStatePath(config.dataDir),
                 watchedEmails: config.watchedAccounts,
@@ -102,7 +110,7 @@ export function registerReportCommands(program: Command): void {
             : undefined;
         if (notifier) {
           log(
-            `telegram: ${config.telegramChatIds.length} chat(s), digest at ${config.telegramDigestTime}`,
+            `telegram: ${notifier.chats.length} chat(s), digest at ${config.telegramDigestTime} (${config.timeZone}, ${config.digestLang})`,
           );
         } else if (config.telegramBotToken) {
           log("telegram: token set but no chat linked (run telegram link); console only");
@@ -114,6 +122,7 @@ export function registerReportCommands(program: Command): void {
         await runLoop({
           intervalMin: config.runIntervalMin,
           ...(quietHours ? { quietHours } : {}),
+          timeZone: config.timeZone,
           once: Boolean(opts.once),
           signal: controller.signal,
           log,
@@ -130,8 +139,11 @@ export function registerReportCommands(program: Command): void {
               reviewOptions: {
                 imagePathOf: cachedImagePath(config.dataDir),
                 readOffice: cachedOfficeReader(config.dataDir),
+                lang: config.digestLang,
               },
               watchedEmails: config.watchedAccounts,
+              lang: config.digestLang,
+              timeZone: config.timeZone,
               signal: controller.signal,
               log,
             });

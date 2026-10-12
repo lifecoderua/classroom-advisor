@@ -54,7 +54,7 @@ export const reviewInputSchema = z.object({
    * first (text may be truncated).
    */
   comments: z.array(commentSchema).optional(),
-  /** Language hint for the feedback (e.g. `uk`, `en`). Defaults to the assignment's language. */
+  /** Language of the parent-facing text (`uk`, `ru`, `en`): the digest language. */
   locale: z.string().optional(),
 });
 

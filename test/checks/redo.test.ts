@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isRedoRequest, redoDueNote, turnedInSince } from "../../src/checks/redo.ts";
+import { isRedoRequest, redoDue, turnedInSince } from "../../src/checks/redo.ts";
 import { teacherCommentAlert } from "../../src/sync/comments.ts";
 
 const H = 60 * 60 * 1000;
@@ -52,10 +52,10 @@ describe("redo follow-up", () => {
   });
 
   it("notes past-due and due-within-a-day work", () => {
-    expect(redoDueNote(at(-1), T0)).toContain("past due");
-    expect(redoDueNote(at(5), T0)).toContain("due within a day");
-    expect(redoDueNote(at(30), T0)).toBeUndefined();
-    expect(redoDueNote(null, T0)).toBeUndefined();
+    expect(redoDue(at(-1), T0)).toBe("past");
+    expect(redoDue(at(5), T0)).toBe("soon");
+    expect(redoDue(at(30), T0)).toBeUndefined();
+    expect(redoDue(null, T0)).toBeUndefined();
   });
 
   it("teacher comment alerts: panic for a redo request, with the due note", () => {
@@ -68,16 +68,18 @@ describe("redo follow-up", () => {
       submission: { state: "returned", turnedInAt: at(-3) },
     };
     const redo = teacherCommentAlert(target, { text: "Переробити", postedAt: at(-1) }, T0);
-    expect(redo.level).toBe("panic");
-    expect(redo.message).toMatch(
-      /^Teacher comment on "Вправа" \(Мова\): Переробити Not turned in again since .+past due\.$/,
-    );
+    expect(redo).toEqual({
+      level: "panic",
+      code: "comment.teacher",
+      params: { title: "Вправа", course: "Мова", text: "Переробити", redoDue: "past" },
+    });
 
     const turnedIn = { ...target, submission: { state: "turned_in", turnedInAt: at(-0.5) } };
     const done = teacherCommentAlert(turnedIn, { text: "Переробити", postedAt: at(-1) }, T0);
     expect(done).toEqual({
       level: "panic",
-      message: 'Teacher comment on "Вправа" (Мова): Переробити',
+      code: "comment.teacher",
+      params: { title: "Вправа", course: "Мова", text: "Переробити" },
     });
 
     expect(teacherCommentAlert(target, { text: "Молодець", postedAt: at(-1) }, T0).level).toBe(

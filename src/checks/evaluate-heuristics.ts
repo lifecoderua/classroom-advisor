@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { officeSummaryPath } from "../collector/files.ts";
 import { isOfficeSummary, type OfficeSummary } from "../collector/office.ts";
+import { en } from "../i18n/en.ts";
 import {
   type Attachment,
   COMMENT_AUTHOR_ROLES,
@@ -16,7 +17,7 @@ import {
   type TurnedInResult,
   turnedInSignals,
 } from "./heuristics.ts";
-import { isTemporaryUnreadable, type ReadabilityInput, unreadableReason } from "./readability.ts";
+import { isTemporaryUnreadable, type ReadabilityInput, unreadableCause } from "./readability.ts";
 
 export type ReadText = (attachment: Attachment) => Promise<string | undefined>;
 
@@ -134,13 +135,14 @@ export async function loadTurnedInInput(
       imagePath,
       hasStructure: office !== undefined,
     };
-    const unreadable = unreadableReason(readability);
+    const cause = unreadableCause(readability);
+    const unreadable = cause && en.unreadable(cause);
     return {
       kind,
       title,
       driveFileId: a.driveFileId,
       text,
-      ...(unreadable ? { unreadable } : {}),
+      ...(unreadable ? { unreadable, unreadableCause: cause } : {}),
       ...(unreadable && isTemporaryUnreadable(readability) ? { unreadableTemporary: true } : {}),
       ...(a.isTemplate ? { isTemplate: true } : {}),
       ...(a.templateSourceId ? { templateSourceId: a.templateSourceId } : {}),

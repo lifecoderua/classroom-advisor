@@ -50,6 +50,8 @@ const base: Config = {
   llmTimeoutMs: 1000,
   runIntervalMin: 60,
   alertLookbackDays: 14,
+  digestLang: "en",
+  timeZone: "UTC",
   backlogForgetDays: 14,
   fullRefreshDays: 7,
   syncDelayMs: 0,

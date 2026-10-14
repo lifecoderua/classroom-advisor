@@ -16,6 +16,19 @@ export interface PluralForms {
 
 export type Debt = "redo" | "missing" | "unchecked";
 export type VerdictMark = "ok" | "warn" | "panic" | "unchecked" | "pending";
+/** Short problem label in the Telegram list and card (#66). */
+export type ProblemTag =
+  | "dueSoon"
+  | "overdue"
+  | "missing"
+  | "untouched"
+  | "noDueDate"
+  | "comment"
+  | "redo"
+  | "incomplete"
+  | "checkByHand"
+  | "notChecked"
+  | "sync";
 
 export interface Messages {
   /** BCP 47 locale for `Intl` (dates, plural rules). */
@@ -92,9 +105,6 @@ export interface Messages {
     digest: string;
     dailyDigest: string;
     status: string;
-    open: string;
-    checkByHand: string;
-    debts: string;
     other: string;
     noAccounts: string;
     lastSync(text: string): string;
@@ -102,18 +112,13 @@ export interface Messages {
     syncStatus: Record<string, string>;
     openCounts(panic: number, alert: number, info: number, unsent: number): string;
     debtCount(n: number): string;
-    upcoming(days: number): string;
     upcomingCount(n: number): string;
     statusFooter(digestTime: string, forgetDays: number): string;
     nothingPending: string;
-    /** `keepsDebt`: a redo/missing alert whose open debt stays until the work is turned in. */
-    acked(id: number, keepsDebt: boolean): string;
-    noAlert(id: number): string;
-    ackUsage: string;
     help: string;
     test: string;
     /** Bot menu (`setMyCommands`): command → short description. */
-    commands: Record<"status" | "digest" | "refresh" | "recheck" | "ack" | "help", string>;
+    commands: Record<"status" | "digest" | "refresh" | "recheck" | "help", string>;
     refreshing: string;
     alreadyRunning: string;
     cooldown(leftMin: number, everyMin: number): string;
@@ -123,5 +128,45 @@ export interface Messages {
     recheckNotTurnedIn(item: string): string;
     recheckDone(item: string, verdict: string): string;
     recheckFailed(item: string): string;
+    /** The navigable digest and cards (#66). */
+    view: {
+      tag: Record<ProblemTag, string>;
+      /** List line date: `due 13.10` / `from 08.10`. */
+      dueShort(date: string): string;
+      postedShort(date: string): string;
+      /** Card meta: `due Tue 13 Oct, 23:59` / `posted 08.10`. */
+      dueFull(time: string): string;
+      postedFull(date: string): string;
+      /** Summary counts per kid. */
+      open(n: number): string;
+      upcoming(n: number): string;
+      /** Label of the kid-less items ("other"), plain text. */
+      otherKid: string;
+      page(page: number, pages: number): string;
+      /** Footer of a card whose problems are all marked seen. */
+      seen: string;
+      /** Header of a pushed teacher comment card. */
+      newComment: string;
+      upcomingTitle(days: number): string;
+      button: {
+        classroom: string;
+        seen: string;
+        recheck: string;
+        back: string;
+        refresh: string;
+        upcoming(n: number): string;
+      };
+      /** Short popups after a tap (plain text, ≤ 200 chars). */
+      toast: {
+        seen: string;
+        seenKeepsDebt: string;
+        stale: string;
+        refreshing: string;
+        alreadyRunning: string;
+        cooldown(leftMin: number): string;
+        recheckQueued: string;
+        notTurnedIn: string;
+      };
+    };
   };
 }

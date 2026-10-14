@@ -23,6 +23,7 @@ import {
   raiseAlert,
   upsertAccount,
   upsertAssignment,
+  upsertComment,
   upsertCourse,
   upsertSubmission,
 } from "../../src/store/index.ts";
@@ -41,12 +42,17 @@ function fakeFetch(
   respond: (method: string, body: Record<string, unknown>) => unknown = () => true,
 ) {
   const calls: Call[] = [];
+  let messageId = 100;
   const fn: FetchFn = async (url, init) => {
     const method = url.split("/").pop() ?? "";
     const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
     calls.push({ method, body });
     try {
-      const result = respond(method, body);
+      let result = respond(method, body);
+      if (method === "sendMessage" && result === true) {
+        const chat = { id: Number(body.chat_id), type: "private" };
+        result = { message_id: ++messageId, date: 0, chat, text: body.text };
+      }
       return new Response(JSON.stringify({ ok: true, result }), { status: 200 });
     } catch (err) {
       const e = err as { code?: number; desc?: string; retryAfter?: number };
@@ -62,7 +68,31 @@ function fakeFetch(
     }
   };
   const sent = () => calls.filter((c) => c.method === "sendMessage");
-  return { fn, calls, sent };
+  const edits = () => calls.filter((c) => c.method === "editMessageText");
+  const toasts = () =>
+    calls.filter((c) => c.method === "answerCallbackQuery").map((c) => c.body.text);
+  return { fn, calls, sent, edits, toasts };
+}
+
+/** Button texts and callback data / urls of a sent or edited message. */
+function buttons(body: Record<string, unknown> | undefined): string[] {
+  const markup = body?.reply_markup as
+    | { inline_keyboard: { text: string; callback_data?: string; url?: string }[][] }
+    | undefined;
+  return (markup?.inline_keyboard ?? []).flat().map((b) => `${b.text}=${b.callback_data ?? b.url}`);
+}
+
+/** A tap on a button of message `messageId` in `chat`. */
+function tap(chat: string, messageId: number, data: string, id = 1): TgUpdate {
+  return {
+    update_id: id,
+    callback_query: {
+      id: `q${id}`,
+      from: { id: 1, is_bot: false, first_name: "Parent" },
+      message: { message_id: messageId, date: 0, chat: { id: Number(chat), type: "private" } },
+      data,
+    },
+  };
 }
 
 describe("formatting helpers", () => {
@@ -200,18 +230,25 @@ describe("TelegramNotifier", () => {
       hash: "h",
       payload: {},
     });
+    const item = { title: "Fractions", course: "Math" };
     const panic = await raiseAlert(
       db,
       {
         key: `deadline:${assignment.id}:due_soon`,
         level: "panic",
-        message: `"Fractions & <decimals>" is due in 3h`,
+        code: "deadline.due_soon",
+        params: { ...item, dueAt: at(15).toISOString() },
       },
       clock,
     );
     const alert = await raiseAlert(
       db,
-      { key: `deadline:${assignment.id}:untouched_24h`, level: "alert", message: "untouched" },
+      {
+        key: `deadline:${assignment.id}:untouched_24h`,
+        level: "alert",
+        code: "deadline.untouched_24h",
+        params: item,
+      },
       clock,
     );
     const info = await raiseAlert(
@@ -221,6 +258,7 @@ describe("TelegramNotifier", () => {
     );
     return {
       account,
+      assignmentId: assignment.id,
       panicId: panic.alert.id,
       alertId: alert.alert.id,
       infoId: info.alert.id,
@@ -247,23 +285,32 @@ describe("TelegramNotifier", () => {
 
   const sentAt = async (id: number) => (await db.alert.findUniqueOrThrow({ where: { id } })).sentAt;
 
-  it("sends panics right away with escaped text and an authuser link, the rest in the digest", async () => {
-    const { panicId, alertId, infoId } = await seed();
+  const say = (chat: string, text: string, id = 1): TgUpdate => ({
+    update_id: id,
+    message: { message_id: id, date: 0, chat: { id: Number(chat), type: "private" }, text },
+  });
+  const text = (c: { body: Record<string, unknown> } | undefined) => String(c?.body.text);
+
+  it("sends a panic right away as a card of its assignment, the rest in the daily digest", async () => {
+    const { panicId, alertId, infoId, assignmentId } = await seed();
     const f = fakeFetch();
     const n = notifier(f);
 
     await n.afterCycle();
     expect(f.sent()).toHaveLength(1);
-    const text = String(f.sent()[0]?.body.text);
-    expect(text).toContain("Urgent");
-    expect(text).toContain("<b>Student &lt;One&gt;</b>");
-    expect(text).toContain("&quot;Fractions &amp; &lt;decimals&gt;&quot;");
+    const card = text(f.sent()[0]);
+    expect(card).toContain("🚨 <b>Urgent</b>");
     // base64("111") = MTEx, base64("222") = MjIy
-    expect(text).toContain(
-      '<a href="https://classroom.google.com/c/MTEx/a/MjIy/details?authuser=student-one%40school.example">open</a>',
+    expect(card).toContain(
+      '🔴 <b><a href="https://classroom.google.com/c/MTEx/a/MjIy/details?authuser=student-one%40school.example">Fractions</a></b>',
     );
-    expect(text).toContain(`/ack_${panicId}`);
-    expect(text).not.toContain("untouched");
+    // Every open problem of the assignment, also the not-yet-sent one.
+    expect(card).toContain("🔴 <b>due soon</b> 🆕 — Sat 10 Oct, 15:00 (in 3h)");
+    expect(card).toContain("🟠 <b>not started</b>");
+    expect(buttons(f.sent()[0]?.body)).toEqual([
+      expect.stringMatching(/^🔎 Classroom=https:/),
+      `✅ Seen=S:a${assignmentId}`,
+    ]);
     expect(await sentAt(panicId)).not.toBeNull();
     expect(await sentAt(alertId)).toBeNull();
 
@@ -273,11 +320,16 @@ describe("TelegramNotifier", () => {
     clock = at(19, 5);
     await n.afterCycle();
     expect(f.sent()).toHaveLength(2);
-    const digest = String(f.sent()[1]?.body.text);
-    expect(digest).toContain("Daily digest");
-    expect(digest).toContain("untouched");
-    expect(digest).toContain("<b>Other</b>");
-    expect(digest).toContain("something else");
+    const digest = text(f.sent()[1]);
+    expect(digest).toContain("📋 <b>Daily digest</b> · Sat 10 Oct, 19:05");
+    // The panic went out as a card already: still listed until seen, the rest is new.
+    expect(digest).toContain("👤 <b>Student &lt;One&gt;</b> — 🔴 1 · 🆕 1 · open 1");
+    expect(digest).toContain("👤 <b>Other</b> — 🆕 1 · open 1");
+    expect(buttons(f.sent()[1]?.body)).toEqual([
+      expect.stringMatching(/^👤 Student <One> \(1\)=l:\d+:0$/),
+      "👤 Other (1)=l:0:0",
+      "🔄 Refresh=f",
+    ]);
     expect(await sentAt(alertId)).not.toBeNull();
     expect(await sentAt(infoId)).not.toBeNull();
     expect(JSON.parse(readFileSync(join(dir, "telegram.json"), "utf8"))).toMatchObject({
@@ -294,59 +346,122 @@ describe("TelegramNotifier", () => {
     expect(f.sent()).toHaveLength(3);
   });
 
-  it("puts 'check by hand' items in their own digest block, never right away; muted ones out", async () => {
-    await seed();
-    const assignment = await db.assignment.findFirstOrThrow();
-    const { version } = await upsertSubmission(
+  it("navigates the digest in place: list, card, seen moves it to the end, back", async () => {
+    const { account, assignmentId, panicId, alertId } = await seed();
+    const course = await db.course.findFirstOrThrow();
+    const { assignment: other } = await upsertAssignment(db, {
+      accountId: account.id,
+      courseId: course.id,
+      classroomId: "333",
+      kind: "assignment",
+      title: "12.10 Geometry. Angles 12.10",
+      status: "assigned",
+      dueAt: at(18, 0, 9),
+      hash: "g",
+      payload: {},
+    });
+    await raiseAlert(
       db,
       {
-        assignmentId: assignment.id,
-        state: "turned_in",
-        turnedInAt: clock,
-        hash: "s",
-        payload: {},
+        key: `deadline:${other.id}:missing`,
+        level: "alert",
+        code: "deadline.missing",
+        params: { title: other.title, course: "Math" },
       },
       clock,
     );
-    if (!version) throw new Error("seed failed");
-    const byHand = await raiseAlert(
-      db,
-      {
-        key: `quality:${version.id}:unchecked`,
-        level: "info",
-        message: 'Check by hand: "Fractions" (Math): "song.mp3": audio recording: needs listening',
-      },
-      clock,
-    );
-    const muted = await raiseAlert(
-      db,
-      { key: `quality:${version.id}:c9:unchecked`, level: "info", message: "Check by hand: muted" },
-      clock,
-    );
-    await muteAlert(db, muted.alert.id, clock);
     const f = fakeFetch();
     const n = notifier(f);
-
-    await n.afterCycle();
+    await n.handleUpdate(say(CHAT, "/digest"));
     expect(f.sent()).toHaveLength(1);
-    expect(String(f.sent()[0]?.body.text)).not.toContain("Check by hand");
-    expect(await sentAt(byHand.alert.id)).toBeNull();
+    const digestId = 101;
+    expect(text(f.sent()[0])).toContain("🔴 1 · 🆕 2 · open 2");
 
-    clock = at(19, 5);
-    await n.afterCycle();
-    const digest = String(f.sent()[1]?.body.text);
-    expect(digest).toContain(
-      "🔍 <i>Check by hand</i>\n🔍 Check by hand: &quot;Fractions&quot; (Math): &quot;song.mp3&quot;",
+    await n.handleUpdate(tap(CHAT, digestId, `l:${account.id}:0`));
+    expect(f.toasts()).toEqual([undefined]);
+    expect(f.edits()[0]?.body).toMatchObject({ chat_id: CHAT, message_id: digestId });
+    const list = text(f.edits()[0]);
+    expect(list).toContain("👤 <b>Student &lt;One&gt;</b> · page 1/1");
+    expect(list).toMatch(
+      /1\. 🔴🆕 <a href="[^"]*MjIy[^"]*">Fractions<\/a>\n {6}<i>due soon, not started<\/i>/,
     );
-    expect(digest.indexOf("untouched")).toBeLessThan(digest.indexOf("🔍 <i>Check by hand</i>"));
-    expect(digest).not.toContain("muted");
-    expect(await sentAt(byHand.alert.id)).not.toBeNull();
+    expect(list).toContain(">Geometry. Angles</a>\n      <i>due 09/10 · not turned in</i>");
+    expect(buttons(f.edits()[0]?.body)).toEqual([
+      `1=c:${account.id}:0:a${assignmentId}`,
+      `2=c:${account.id}:0:a${other.id}`,
+      "⬅ Back=h",
+    ]);
+
+    await n.handleUpdate(tap(CHAT, digestId, `c:${account.id}:0:a${assignmentId}`));
+    expect(text(f.edits()[1])).toContain("🔴 <b>due soon</b>");
+    expect(buttons(f.edits()[1]?.body)).toEqual([
+      expect.stringMatching(/^🔎 Classroom=https:/),
+      `✅ Seen=s:${account.id}:0:a${assignmentId}`,
+      `⬅ Back=l:${account.id}:0`,
+    ]);
+
+    // Seen: both alerts muted, a popup, straight back to the list with it last and crossed out.
+    await n.handleUpdate(tap(CHAT, digestId, `s:${account.id}:0:a${assignmentId}`));
+    expect(f.toasts().at(-1)).toBe("Marked as seen");
+    expect((await db.alert.findUniqueOrThrow({ where: { id: panicId } })).mutedAt).not.toBeNull();
+    expect((await db.alert.findUniqueOrThrow({ where: { id: alertId } })).mutedAt).not.toBeNull();
+    const after = text(f.edits()[2]);
+    expect(after).toMatch(/1\. 🟠🆕 <a [^>]*>Geometry\. Angles<\/a>/);
+    expect(after).toContain("2. ✅ <s>Fractions</s>");
+    expect(buttons(f.edits()[2]?.body)[1]).toBe(`✅2=c:${account.id}:0:a${assignmentId}`);
+
+    await n.handleUpdate(tap(CHAT, digestId, "h"));
+    expect(text(f.edits()[3])).toContain("👤 <b>Student &lt;One&gt;</b> — 🆕 1 · open 1 · ✅ 1");
+    expect(f.sent()).toHaveLength(1); // nothing was sent: the chat doesn't scroll
+
+    // Unknown messages say they're out of date; other chats are ignored.
+    await n.handleUpdate(tap(CHAT, 999, "h"));
+    expect(f.toasts().at(-1)).toContain("out of date");
+    await n.handleUpdate(tap("777", digestId, "h"));
+    expect(f.edits()).toHaveLength(4);
   });
 
-  it("repeats open debts in every digest until turned in, also after ack, and counts them in /status", async () => {
+  it("pages long lists", async () => {
     const { account } = await seed();
-    await muteAlert(db, (await db.alert.findFirstOrThrow({ where: { level: "alert" } })).id, clock);
-    await db.alert.updateMany({ data: { sentAt: clock } }); // nothing new pending
+    const course = await db.course.findFirstOrThrow();
+    for (let i = 0; i < 6; i++) {
+      const { assignment } = await upsertAssignment(db, {
+        accountId: account.id,
+        courseId: course.id,
+        classroomId: `9${i}`,
+        kind: "assignment",
+        title: `Task ${i}`,
+        status: "assigned",
+        dueAt: at(10, 0, i + 1),
+        hash: `t${i}`,
+        payload: {},
+      });
+      await raiseAlert(
+        db,
+        {
+          key: `deadline:${assignment.id}:missing`,
+          level: "alert",
+          code: "deadline.missing",
+          params: { title: assignment.title, course: "Math" },
+        },
+        clock,
+      );
+    }
+    const f = fakeFetch();
+    const n = notifier(f);
+    await n.handleUpdate(say(CHAT, "/digest"));
+    await n.handleUpdate(tap(CHAT, 101, `l:${account.id}:1`));
+    const page = text(f.edits()[0]);
+    expect(page).toContain("page 2/2");
+    expect(page).toContain("6. ");
+    expect(page).toContain("7. ");
+    expect(buttons(f.edits()[0]?.body)).toContain(`◀=l:${account.id}:0`);
+    expect(buttons(f.edits()[0]?.body)).toContain("2/2=n");
+  });
+
+  it("keeps a missing debt after 'seen' until turned in, and counts it in /status", async () => {
+    const { account } = await seed();
+    await db.alert.updateMany({ data: { sentAt: clock, mutedAt: clock } }); // nothing pending
     const course = await db.course.findFirstOrThrow();
     const { assignment } = await upsertAssignment(db, {
       accountId: account.id,
@@ -361,7 +476,12 @@ describe("TelegramNotifier", () => {
     });
     const missing = await raiseAlert(
       db,
-      { key: `deadline:${assignment.id}:missing`, level: "panic", message: "missing" },
+      {
+        key: `deadline:${assignment.id}:missing`,
+        level: "panic",
+        code: "deadline.missing",
+        params: { title: "Overdue <map>", course: "Math" },
+      },
       at(18, 0, 7),
     );
     await db.alert.update({ where: { id: missing.alert.id }, data: { sentAt: at(18, 0, 7) } });
@@ -371,34 +491,27 @@ describe("TelegramNotifier", () => {
     clock = at(19, 5);
     await n.afterCycle();
     expect(f.sent()).toHaveLength(1);
-    const digest = String(f.sent()[0]?.body.text);
-    expect(digest).toContain("Daily digest");
-    expect(digest).toContain(
-      `📌 <i>Open debts</i>\n⏰ not turned in: &quot;Overdue &lt;map&gt;&quot; (Math) · 3 days · <a href="https://classroom.google.com/c/MTEx/a/MzMz/details?authuser=student-one%40school.example">open</a> · /ack_${missing.alert.id}`,
-    );
+    // Sent before, not seen: still listed, not new.
+    expect(text(f.sent()[0])).toContain("👤 <b>Student &lt;One&gt;</b> — 🔴 1 · open 1");
+    const digestId = 101;
+    await n.handleUpdate(tap(CHAT, digestId, `c:${account.id}:0:a${assignment.id}`));
+    const card = text(f.edits()[0]);
+    expect(card).toContain("Overdue &lt;map&gt;");
+    expect(card).toContain("🔴 <b>not turned in</b> — 3 days");
 
-    // Next day: repeated, a day older.
+    await n.handleUpdate(msg("/status"));
+    expect(text(f.sent()[1])).toContain("📌 Open debts: 1");
+
+    await n.handleUpdate(tap(CHAT, digestId, `s:${account.id}:0:a${assignment.id}`));
+    expect(f.toasts().at(-1)).toContain("debt stays");
+    expect(text(f.edits()[1])).toContain("1. ✅ <s>Overdue &lt;map&gt;</s>");
+    await n.handleUpdate(msg("/status"));
+    expect(text(f.sent()[2])).toContain("📌 Open debts: 1");
+
+    // Next day: still there, marked seen, a day older.
     clock = at(19, 5, 11);
     await n.afterCycle();
-    expect(f.sent()).toHaveLength(2);
-    expect(String(f.sent()[1]?.body.text)).toContain("· 4 days ·");
-
-    const msg = (text: string): TgUpdate => ({
-      update_id: 1,
-      message: { message_id: 1, date: 0, chat: { id: Number(CHAT), type: "private" }, text },
-    });
-    await n.handleUpdate(msg("/status"));
-    expect(String(f.sent()[2]?.body.text)).toContain("📌 Open debts: 1");
-
-    // Acked: the alert is muted, but the debt stays (without an ack link) until turned in.
-    await n.handleUpdate(msg(`/ack_${missing.alert.id}`));
-    expect(String(f.sent()[3]?.body.text)).toContain("debt stays");
-    await n.handleUpdate(msg("/digest"));
-    const after = String(f.sent()[4]?.body.text);
-    expect(after).toContain("⏰ not turned in: &quot;Overdue &lt;map&gt;&quot;");
-    expect(after).not.toContain(`/ack_${missing.alert.id}`);
-    await n.handleUpdate(msg("/status"));
-    expect(String(f.sent()[5]?.body.text)).toContain("📌 Open debts: 1");
+    expect(text(f.sent()[3])).toContain("— open 0 · ✅ 1");
 
     // Turned in: resolved.
     await upsertSubmission(db, {
@@ -409,7 +522,54 @@ describe("TelegramNotifier", () => {
       payload: {},
     });
     await n.handleUpdate(msg("/status"));
-    expect(String(f.sent()[6]?.body.text)).toContain("📌 Open debts: 0");
+    expect(text(f.sent().at(-1))).toContain("📌 Open debts: 0");
+
+    function msg(t: string) {
+      return say(CHAT, t);
+    }
+  });
+
+  it("sends a fresh teacher comment as a card, outside quiet hours only", async () => {
+    const { assignmentId } = await seed();
+    await db.alert.updateMany({ data: { sentAt: clock } });
+    const { comment } = await upsertComment(db, {
+      assignmentId,
+      classroomId: "c1",
+      authorRole: "teacher",
+      text: "Add the <photo> please",
+      postedAt: clock,
+      baseline: false,
+    });
+    await raiseAlert(
+      db,
+      {
+        key: `comment:${comment.id}`,
+        level: "alert",
+        code: "comment.teacher",
+        params: { title: "Fractions", course: "Math", text: "Add the <photo> please" },
+      },
+      clock,
+    );
+    const f = fakeFetch();
+    const n = notifier(f, { quietHours: parseQuietHours("22:00-07:00") });
+    clock = at(23);
+    await n.afterCycle();
+    expect(f.sent()).toHaveLength(0);
+    clock = at(7, 30, 11);
+    await n.afterCycle();
+    expect(f.sent()).toHaveLength(1);
+    const card = text(f.sent()[0]);
+    expect(card).toContain("💬 <b>Teacher comment</b>");
+    expect(card).toContain(
+      "🟠 <b>teacher comment</b> 🆕\n<blockquote expandable>Add the &lt;photo&gt; please</blockquote>",
+    );
+
+    // Seen on the card itself: edited in place, all marked.
+    await n.handleUpdate(tap(CHAT, 101, `S:a${assignmentId}`));
+    const seen = text(f.edits()[0]);
+    expect(seen).toContain("✅ <b>teacher comment</b>");
+    expect(seen).toContain("<i>✅ Seen</i>");
+    expect(buttons(f.edits()[0]?.body)).toEqual([expect.stringMatching(/^🔎 Classroom=/)]);
   });
 
   it("sends in Ukrainian at the digest time of the configured zone", async () => {
@@ -427,10 +587,11 @@ describe("TelegramNotifier", () => {
     const f = fakeFetch();
     const n = notifier(f, { lang: "uk", timeZone: "Europe/Kyiv" });
     await n.afterCycle();
-    const urgent = String(f.sent()[0]?.body.text);
-    expect(urgent).toContain("🚨 <b>Терміново</b> · сб, 10 жовт., 15:00");
-    expect(urgent).toContain("Прострочено: «Дроби» (Математика)");
-    expect(urgent).toContain(">відкрити</a>");
+    const urgent = text(f.sent()[0]);
+    expect(urgent).toContain("🚨 <b>Терміново</b>");
+    expect(urgent).toContain("<b>наближається термін</b> 🆕 — сб, 10 жовт., 18:00 (через 3 год)");
+    expect(urgent).toContain("<b>не розпочато</b>");
+    expect(buttons(f.sent()[0]?.body)).toContain("✅ Переглянуто=S:a1");
 
     // 19:00 in Kyiv is 16:00 UTC.
     clock = at(15, 55);
@@ -439,18 +600,15 @@ describe("TelegramNotifier", () => {
     clock = at(16, 5);
     await n.afterCycle();
     expect(f.sent()).toHaveLength(2);
-    expect(String(f.sent()[1]?.body.text)).toContain("📋 <b>Підсумок дня</b>");
+    expect(text(f.sent()[1])).toContain("📋 <b>Підсумок дня</b>");
+    expect(text(f.sent()[1])).toContain("відкрито 1");
 
-    const msg = (text: string): TgUpdate => ({
-      update_id: 1,
-      message: { message_id: 1, date: 0, chat: { id: Number(CHAT), type: "private" }, text },
-    });
-    await n.handleUpdate(msg("/status"));
-    const status = String(f.sent()[2]?.body.text);
+    await n.handleUpdate(say(CHAT, "/status"));
+    const status = text(f.sent()[2]);
     expect(status).toContain("Остання синхронізація: ще не було");
     expect(status).toContain("хвости забуваються через 14 днів");
-    await n.handleUpdate(msg("/help"));
-    expect(String(f.sent()[3]?.body.text)).toContain("позначити сповіщення переглянутим");
+    await n.handleUpdate(say(CHAT, "/help"));
+    expect(text(f.sent()[3])).toContain("/recheck &lt;посилання на Classroom&gt;");
   });
 
   it("says how many alerts closed automatically since the last digest", async () => {
@@ -463,23 +621,15 @@ describe("TelegramNotifier", () => {
     const n = notifier(f);
     clock = at(19, 5);
     await n.afterCycle();
-    const digest = String(f.sent().at(-1)?.body.text);
+    const digest = text(f.sent().at(-1));
     expect(digest).toContain("✔️ Closed automatically: 1");
     // Counted once: the next digest starts from this one.
     clock = at(19, 5, 11);
-    await n.handleUpdate({
-      update_id: 1,
-      message: {
-        message_id: 1,
-        date: 0,
-        chat: { id: Number(CHAT), type: "private" },
-        text: "/digest",
-      },
-    });
-    expect(String(f.sent().at(-1)?.body.text)).toBe("Nothing pending.");
+    await n.handleUpdate(say(CHAT, "/digest"));
+    expect(text(f.sent().at(-1))).not.toContain("Closed automatically");
   });
 
-  it("lists upcoming work (beyond a day, within the horizon) in the digest and /status", async () => {
+  it("shows upcoming work (beyond a day, within the horizon) behind a button and in /status", async () => {
     const { account } = await seed();
     await db.alert.updateMany({ data: { sentAt: clock, mutedAt: clock } }); // nothing pending
     const course = await db.course.findFirstOrThrow();
@@ -505,30 +655,21 @@ describe("TelegramNotifier", () => {
     const n = notifier(f, { lang: "uk" });
     clock = at(19, 5);
     await n.afterCycle();
-    const digest = String(f.sent()[0]?.body.text);
-    expect(digest).toContain("🟢 <i>До відома: термін попереду (14 днів)</i>");
-    const lines = digest.split("\n").filter((l) => l.startsWith("🟢 ") && !l.includes("<i>"));
-    expect(lines).toHaveLength(2);
-    expect(lines[0]).toContain("пн, 12 жовт., 10:00 (через 39 год) «Old baseline» (Math)");
-    expect(lines[1]).toContain("«Poem» (Math) · <a href=");
-    await n.handleUpdate({
-      update_id: 1,
-      message: {
-        message_id: 1,
-        date: 0,
-        chat: { id: Number(CHAT), type: "private" },
-        text: "/status",
-      },
-    });
-    expect(String(f.sent()[1]?.body.text)).toContain("🟢 Термін попереду: 2");
+    expect(text(f.sent()[0])).toContain("🟢 попереду 2");
+    expect(buttons(f.sent()[0]?.body)).toContain("🟢 Попереду (2)=u");
+    await n.handleUpdate(tap(CHAT, 101, "u"));
+    const upcoming = text(f.edits()[0]);
+    expect(upcoming).toContain("🟢 <b>Попереду</b> (14 днів)");
+    expect(upcoming.indexOf("Old baseline")).toBeLessThan(upcoming.indexOf("Poem"));
+    expect(upcoming).toContain("<i>термін пн, 12 жовт., 10:00 (через 39 год)</i>");
+    expect(upcoming).not.toContain("Far");
+    expect(upcoming).not.toContain("Excused");
+    await n.handleUpdate(say(CHAT, "/status"));
+    expect(text(f.sent()[1])).toContain("🟢 Термін попереду: 2");
   });
 
   describe("manual triggers (#54)", () => {
     const GROUP = "-1001234567890";
-    const say = (chat: string, text: string, id = 1): TgUpdate => ({
-      update_id: id,
-      message: { message_id: id, date: 0, chat: { id: Number(chat), type: "private" }, text },
-    });
 
     it("registers the command menu for private chats and groups, and learns the bot name", async () => {
       const f = fakeFetch((method) =>
@@ -547,13 +688,49 @@ describe("TelegramNotifier", () => {
         "digest",
         "refresh",
         "recheck",
-        "ack",
         "help",
       ]);
-      // Digest lines carry @bot so `/ack_<id>` and `/recheck_<id>` are tappable in groups.
-      const { panicId } = await seed();
-      await n.sendPanics();
-      expect(String(f.sent().at(-1)?.body.text)).toContain(`/ack_${panicId}@class_bot`);
+    });
+
+    it("the 🔄 button queues a cycle and rewrites that digest with fresh data", async () => {
+      await seed();
+      const f = fakeFetch();
+      const n = notifier(f);
+      await n.handleUpdate(say(CHAT, "/digest"));
+      await raiseAlert(db, { key: "misc:new", level: "alert", message: "new one" }, clock);
+      await n.handleUpdate(tap(CHAT, 101, "f"));
+      expect(f.toasts()).toEqual([expect.stringContaining("Refreshing")]);
+      expect(n.manualPending()).toBe(true);
+      n.startCycle();
+      await n.afterCycle({ rechecked: [] });
+      expect(f.sent()).toHaveLength(1);
+      expect(f.edits()[0]?.body).toMatchObject({ chat_id: CHAT, message_id: 101 });
+      expect(text(f.edits()[0])).toContain("🔄 <b>Fresh digest</b>");
+      expect(text(f.edits()[0])).toContain("👤 <b>Other</b> — 🆕 2 · open 2");
+      // Cooldown: a popup, nothing queued.
+      clock = new Date(clock.getTime() + 60_000);
+      await n.handleUpdate(tap(CHAT, 101, "f", 2));
+      expect(f.toasts().at(-1)).toContain("wait 4 more min");
+      expect(n.manualPending()).toBe(false);
+    });
+
+    it("the 🔄 Recheck button queues a recheck of turned-in work", async () => {
+      const { assignmentId } = await seed();
+      const f = fakeFetch();
+      const n = notifier(f);
+      await n.handleUpdate(say(CHAT, "/digest"));
+      await n.handleUpdate(tap(CHAT, 101, `r:${assignmentId}`));
+      expect(f.toasts().at(-1)).toContain("Not turned in yet");
+      await upsertSubmission(db, {
+        assignmentId,
+        state: "turned_in",
+        turnedInAt: clock,
+        hash: "s",
+        payload: {},
+      });
+      await n.handleUpdate(tap(CHAT, 101, `r:${assignmentId}`, 2));
+      expect(f.toasts().at(-1)).toContain("Checking again");
+      expect(n.startCycle()).toEqual([assignmentId]);
     });
 
     it("/refresh queues a cycle and sends a fresh digest to that chat only, even when empty", async () => {
@@ -712,7 +889,7 @@ describe("TelegramNotifier", () => {
       lang: "en",
       onChatMigrated: (from, to) => migrated.push([from, to]),
     });
-    expect(await n.sendPanics()).toBe(1);
+    expect(await n.sendCards()).toBe(1);
     expect(f.sent().map((c) => c.body.chat_id)).toEqual([OLD, NEW]);
     expect(migrated).toEqual([[OLD, NEW]]);
     expect(n.chats).toEqual([NEW]);
@@ -759,6 +936,7 @@ describe("TelegramNotifier", () => {
     await n.afterCycle();
     expect(f.sent()).toHaveLength(1);
     expect(String(f.sent()[0]?.body.text)).toContain("Urgent");
+    expect(String(f.sent()[0]?.body.text)).not.toContain("Daily digest");
     clock = at(23, 10);
     await n.afterCycle();
     expect(f.sent()).toHaveLength(2);
@@ -778,7 +956,7 @@ describe("TelegramNotifier", () => {
     await muteAlert(db, panicId, clock);
     await raiseAlert(db, { key: "misc:old", level: "panic", message: "old" }, at(12, 0, 1));
     const f = fakeFetch();
-    await notifier(f).sendPanics();
+    await notifier(f).sendCards();
     expect(f.sent()).toHaveLength(0);
   });
 
@@ -802,23 +980,17 @@ describe("TelegramNotifier", () => {
     expect(status).toContain("Last sync: never");
     expect(status).toContain("🔴 1 · 🟠 1");
 
-    await n.handleUpdate(msg(Number(CHAT), `/ack_${alertId}`));
-    expect(String(f.sent()[1]?.body.text)).toContain(`Muted #${alertId}`);
-    const muted = await db.alert.findUniqueOrThrow({ where: { id: alertId } });
-    expect(muted.mutedAt).not.toBeNull();
-    expect(muted.sentAt).not.toBeNull();
-    await n.handleUpdate(msg(Number(CHAT), "/ack 99999"));
-    expect(String(f.sent()[2]?.body.text)).toContain("No alert #99999");
-
+    await muteAlert(db, alertId, clock);
     await n.handleUpdate(msg(Number(CHAT), "/digest"));
-    const digest = String(f.sent()[3]?.body.text);
+    const digest = String(f.sent()[1]?.body.text);
     expect(digest).toContain("Digest");
-    expect(digest).not.toContain("untouched"); // muted
+    expect(digest).toContain("— 🔴 1 · 🆕 1 · open 1");
+    // Not seen yet: the next digest lists it again, no longer new.
     await n.handleUpdate(msg(Number(CHAT), "/digest"));
-    expect(String(f.sent()[4]?.body.text)).toBe("Nothing pending.");
+    expect(String(f.sent()[2]?.body.text)).toContain("— 🔴 1 · open 1");
 
     await n.handleUpdate(msg(Number(CHAT), "/start"));
-    expect(String(f.sent()[5]?.body.text)).toContain("/ack");
+    expect(String(f.sent()[3]?.body.text)).toContain("/recheck");
   });
 
   it("long-polls between cycles, stores the offset and stops at the deadline", async () => {
@@ -847,7 +1019,10 @@ describe("TelegramNotifier", () => {
     await n.idle(120_000, new AbortController().signal);
     const gets = f.calls.filter((c) => c.method === "getUpdates");
     expect(gets.length).toBe(3); // 50s + 50s + 20s
-    expect(gets[0]?.body).toMatchObject({ timeout: 50, allowed_updates: ["message"] });
+    expect(gets[0]?.body).toMatchObject({
+      timeout: 50,
+      allowed_updates: ["message", "callback_query"],
+    });
     expect(gets[0]?.body).not.toHaveProperty("offset");
     expect(gets[1]?.body).toMatchObject({ offset: 8 });
     expect(gets[2]?.body).toMatchObject({ timeout: 20 });

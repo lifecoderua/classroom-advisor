@@ -1,13 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { ackKeepsDebt, type Debt, debtAgeDays, loadBacklog } from "../checks/backlog.ts";
+import { loadBacklog } from "../checks/backlog.ts";
 import { findRecheckTarget, type RecheckResult } from "../checks/recheck.ts";
 import { detailsUrl } from "../collector/classroom/todo.ts";
 import {
   DEFAULT_LANG,
-  formatAge,
   formatAgo,
-  formatIn,
   formatTime,
   itemLabel,
   type Lang,
@@ -21,15 +19,28 @@ import { inQuietHours, type QuietHours } from "../run/schedule.ts";
 import { type Db, markAlertsSent, muteAlert } from "../store/index.ts";
 import type { AlertLevel } from "../store/types.ts";
 import {
-  alertText,
   buildReport,
   DEFAULT_UPCOMING_DAYS,
   parseAlertKey,
   type Report,
   type ReportAlert,
   reportHasAlerts,
-  type UpcomingItem,
 } from "./console.ts";
+import {
+  type Action,
+  type Button,
+  buildModel,
+  cardView,
+  type DigestModel,
+  decodeAction,
+  escapeHtml,
+  findGroup,
+  listView,
+  loadModelInput,
+  summaryView,
+  upcomingView,
+  type View,
+} from "./telegram-views.ts";
 
 // Telegram notifier over the plain Bot API (fetch, no SDK). Panics go out right after each `run`
 // cycle, everything else in a daily digest at `telegramDigestTime`. `Alert.sentAt` means
@@ -47,9 +58,11 @@ export const MAX_ALERT_AGE_MS = 7 * DAY_MS;
 /** Default `backlogForgetDays`. */
 export const DEFAULT_BACKLOG_FORGET_DAYS = 14;
 
-/** What a digest carried: alerts (now marked sent) and open debts (repeated every digest). */
+/** What a digest carried: open alerts (the new ones now marked sent) and open debts. */
 export interface Sent {
   alerts: number;
+  /** Of `alerts`, the ones sent for the first time. */
+  fresh: number;
   debts: number;
   /** Alerts closed automatically since the previous digest (a count line, #51). */
   closed: number;
@@ -90,9 +103,18 @@ export interface TgMessage {
   migrate_to_chat_id?: number;
 }
 
+export interface TgCallbackQuery {
+  id: string;
+  from: TgUser;
+  /** The bot's message the button was on (absent for very old messages). */
+  message?: TgMessage;
+  data?: string;
+}
+
 export interface TgUpdate {
   update_id: number;
   message?: TgMessage;
+  callback_query?: TgCallbackQuery;
   edited_message?: TgMessage;
   channel_post?: TgMessage;
   my_chat_member?: { chat: TgChat };
@@ -171,35 +193,60 @@ export class TelegramApi {
     return this.call<TgUpdate[]>("getUpdates", params, signal);
   }
 
-  /** Sends one HTML message (≤ 4096 chars); waits out one 429 (`retry_after`, ≤ 60s) and retries. */
-  async sendMessage(chatId: string, html: string): Promise<void> {
-    const params = {
+  /** Calls `method`; waits out one 429 (`retry_after`, ≤ 60s) and retries. */
+  private async callRetrying<T>(method: string, params: object): Promise<T> {
+    try {
+      return await this.call<T>(method, params);
+    } catch (err) {
+      if (!(err instanceof TelegramError) || err.code !== 429) throw err;
+      await delay(Math.min(err.retryAfterSec ?? 1, 60) * 1000);
+      return await this.call<T>(method, params);
+    }
+  }
+
+  /** Sends one HTML message (≤ 4096 chars), with inline buttons when given. */
+  sendMessage(chatId: string, html: string, keyboard?: Button[][]): Promise<TgMessage> {
+    return this.callRetrying<TgMessage>("sendMessage", {
       chat_id: chatId,
       text: html,
       parse_mode: "HTML",
       link_preview_options: { is_disabled: true },
-    };
+      ...(keyboard ? { reply_markup: { inline_keyboard: keyboard } } : {}),
+    });
+  }
+
+  /** Rewrites one of the bot's messages in place; "not modified" counts as done. */
+  async editMessage(
+    chatId: string,
+    messageId: number,
+    html: string,
+    keyboard: Button[][],
+  ): Promise<void> {
     try {
-      await this.call("sendMessage", params);
+      await this.callRetrying("editMessageText", {
+        chat_id: chatId,
+        message_id: messageId,
+        text: html,
+        parse_mode: "HTML",
+        link_preview_options: { is_disabled: true },
+        reply_markup: { inline_keyboard: keyboard },
+      });
     } catch (err) {
-      if (!(err instanceof TelegramError) || err.code !== 429) throw err;
-      await delay(Math.min(err.retryAfterSec ?? 1, 60) * 1000);
-      await this.call("sendMessage", params);
+      if (err instanceof TelegramError && /not modified/i.test(err.message)) return;
+      throw err;
     }
+  }
+
+  /** Ends a button's loading state, with a short popup when `text` is given. */
+  async answerCallback(id: string, text?: string): Promise<void> {
+    await this.call("answerCallbackQuery", { callback_query_id: id, ...(text ? { text } : {}) });
   }
 }
 
 // ---------------------------------------------------------------------------------------------
 // Formatting
 
-/** Escapes text for Telegram's HTML parse mode (also safe inside a double-quoted attribute). */
-export function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+export { escapeHtml };
 
 function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
@@ -234,136 +281,12 @@ export function splitMessage(html: string, limit = MESSAGE_LIMIT): string[] {
   return chunks;
 }
 
-const LEVEL_ICON: Record<AlertLevel, string> = { panic: "🔴", alert: "🟠", info: "ℹ️" };
-
-/**
- * A tappable command: `/ack_12@my_bot`. In groups Telegram only links underscore commands that
- * carry the bot's username; in private chats the suffix is harmless.
- */
-export function commandRef(name: string, id: number, bot?: string): string {
-  return `/${name}_${id}${bot ? `@${bot}` : ""}`;
-}
-
-function alertLine(
-  a: ReportAlert,
-  targets: ReadonlyMap<number, AlertTarget>,
-  opts: { loc: Locale; bot?: string | undefined },
-  icon = LEVEL_ICON[a.level],
-): string {
-  const target = targets.get(a.id);
-  const open = messages(opts.loc.lang).telegram.open;
-  const link = target ? ` · <a href="${escapeHtml(target.url)}">${open}</a>` : "";
-  const recheck = target?.recheck
-    ? ` · ${commandRef("recheck", target.assignmentId, opts.bot)}`
-    : "";
-  return `${icon} ${escapeHtml(truncate(alertText(a, opts.loc), LINE_CAP))}${link}${recheck} · ${commandRef("ack", a.id, opts.bot)}`;
-}
-
-export interface TelegramFormatOptions {
-  /** Header line, already HTML (e.g. `🚨 <b>Urgent</b>`). */
-  title: string;
-  lang?: Lang;
-  timeZone?: string | undefined;
-  /** Bot username (without `@`), appended to tappable commands so they link in groups. */
-  bot?: string | undefined;
-  /** Assignments with turned-in work: their debt lines get `/recheck_<id>`. */
-  recheckable?: ReadonlySet<number>;
-  /** Shown when the message has nothing else (a `/refresh` digest is always sent). */
-  emptyText?: string;
-}
-
-function debtLine(
-  d: Debt,
-  now: Date,
-  opts: { lang: Lang; bot?: string | undefined; recheck: boolean },
-): string {
-  const m = messages(opts.lang);
-  const recheck = opts.recheck ? ` · ${commandRef("recheck", d.assignmentId, opts.bot)}` : "";
-  const ack = d.alertId === null || d.muted ? "" : ` · ${commandRef("ack", d.alertId, opts.bot)}`;
-  return `${m.report.debt[d.kind]}: ${escapeHtml(
-    truncate(itemLabel(d.title, d.courseName, opts.lang), LINE_CAP),
-  )} · ${formatAge(debtAgeDays(d, now), opts.lang)} · <a href="${escapeHtml(d.url)}">${
-    m.telegram.open
-  }</a>${recheck}${ack}`;
-}
-
-function upcomingLine(u: UpcomingItem, now: Date, loc: Locale): string {
-  const when = `${formatTime(u.dueAt, loc)} (${formatIn(u.dueAt.getTime() - now.getTime(), loc.lang)})`;
-  return `🟢 ${escapeHtml(when)} ${escapeHtml(
-    truncate(itemLabel(u.title, u.courseName, loc.lang), LINE_CAP),
-  )} · <a href="${escapeHtml(u.url)}">${messages(loc.lang).telegram.open}</a>`;
-}
-
-/**
- * The alerts of a report, grouped per kid (panics, alerts, info), as Telegram HTML. "Check by
- * hand" items (`quality:<id>:unchecked`, level `info`, so never sent at once) get their own
- * low-noise block after the rest, then the kid's open debts (#48) when the report has them.
- */
-export function formatAlertsHtml(
-  report: Report,
-  targets: ReadonlyMap<number, AlertTarget>,
-  opts: TelegramFormatOptions,
-): string {
-  const loc: Locale = { lang: opts.lang ?? DEFAULT_LANG, timeZone: opts.timeZone };
-  const line = { loc, bot: opts.bot };
-  const t = messages(loc.lang).telegram;
-  const out = [`${opts.title} · ${escapeHtml(formatTime(report.generatedAt, loc))}`];
-  const head = out.length;
-  for (const a of report.accounts) {
-    const alerts = [...a.panics, ...a.alerts, ...a.info];
-    if (alerts.length + a.checkByHand.length + a.backlog.length + a.upcoming.length === 0) {
-      continue;
-    }
-    out.push(
-      "",
-      `👤 <b>${escapeHtml(a.label)}</b>`,
-      ...alerts.map((x) => alertLine(x, targets, line)),
-    );
-    if (a.checkByHand.length) {
-      out.push(t.checkByHand, ...a.checkByHand.map((x) => alertLine(x, targets, line, "🔍")));
-    }
-    if (a.backlog.length) {
-      out.push(
-        t.debts,
-        ...a.backlog.map((d) =>
-          debtLine(d, report.generatedAt, {
-            lang: loc.lang,
-            bot: opts.bot,
-            recheck: opts.recheckable?.has(d.assignmentId) ?? false,
-          }),
-        ),
-      );
-    }
-    if (a.upcoming.length) {
-      out.push(
-        t.upcoming(report.upcomingDays),
-        ...a.upcoming.map((u) => upcomingLine(u, report.generatedAt, loc)),
-      );
-    }
-  }
-  if (report.other.length) {
-    out.push("", t.other, ...report.other.map((x) => alertLine(x, targets, line)));
-  }
-  if (report.autoClosed) out.push("", messages(loc.lang).report.autoClosed(report.autoClosed));
-  if (out.length === head && opts.emptyText) out.push("", opts.emptyText);
-  return out.join("\n");
-}
-
 /** What a digest line links to: the assignment details page, and whether it can be re-checked. */
 export interface AlertTarget {
   url: string;
   assignmentId: number;
   /** The assignment has turned-in work (`/recheck_<assignmentId>` makes sense). */
   recheck: boolean;
-}
-
-/** Assignment ids among `ids` with turned-in (or returned) work. */
-export async function recheckableAssignments(db: Db, ids: readonly number[]): Promise<Set<number>> {
-  const rows = await db.submission.findMany({
-    where: { assignmentId: { in: [...new Set(ids)] }, state: { in: ["turned_in", "returned"] } },
-    select: { assignmentId: true },
-  });
-  return new Set(rows.map((r) => r.assignmentId));
 }
 
 /**
@@ -480,7 +403,33 @@ export interface TelegramState {
    * so a migration sticks even when `CA_TELEGRAM_CHAT_IDS` overrides `config.local.json`.
    */
   chatMigrations?: Record<string, string>;
+  /**
+   * What each recent digest or card message shows (`<chatId>:<messageId>` → view), so a button
+   * tap re-renders the same alerts with fresh state (#66). The newest `MAX_VIEWS` are kept.
+   */
+  views?: Record<string, ViewState>;
 }
+
+/** The alerts a sent message was built from; debts and upcoming work are always current. */
+export interface ViewState {
+  alerts: number[];
+  /** Alerts that were new (not sent before) in this message: marked 🆕. */
+  fresh?: number[];
+  /** A digest: its title. */
+  title?: DigestTitle;
+  /** A digest: "closed automatically" count at send time. */
+  closed?: number;
+  /** A standalone card: the group it shows and its header. */
+  card?: string;
+  header?: "urgent" | "comment";
+  /** ISO send time. */
+  at: string;
+}
+
+export type DigestTitle = "digest" | "dailyDigest" | "freshDigest";
+
+/** Messages whose buttons keep working; older taps get "out of date". */
+export const MAX_VIEWS = 200;
 
 export function telegramStatePath(dataDir: string): string {
   return join(dataDir, "telegram.json");
@@ -550,7 +499,7 @@ export interface NotifierOptions {
 export const DEFAULT_REFRESH_COOLDOWN_MIN = 5;
 
 /** The bot's commands, for `setMyCommands`. */
-export const BOT_COMMANDS = ["status", "digest", "refresh", "recheck", "ack", "help"] as const;
+export const BOT_COMMANDS = ["status", "digest", "refresh", "recheck", "help"] as const;
 
 export class TelegramNotifier {
   private readonly now: () => Date;
@@ -564,8 +513,11 @@ export class TelegramNotifier {
   private digestRetryAt = 0;
   /** A `run` cycle is in progress (commands are polled meanwhile, see `during`). */
   private busy = false;
-  /** Chats waiting for a fresh digest after the next/current cycle (`/refresh`). */
-  private refreshWaiters = new Set<string>();
+  /**
+   * Waiting for a fresh digest after the next/current cycle: `/refresh` (a new message in that
+   * chat) or the 🔄 button (that message is rewritten). Keyed by chat or `chat:message`.
+   */
+  private refreshWaiters = new Map<string, { chatId: string; messageId?: number }>();
   /** `/refresh` asked for a cycle that hasn't started yet. */
   private refreshQueued = false;
   /** `/recheck` requests not handed to a cycle yet: assignment id → chats to answer. */
@@ -690,18 +642,64 @@ export class TelegramNotifier {
   /** Sends chunks to one chat; follows a supergroup migration once (and resends there). */
   private async sendTo(chatId: string, chunks: readonly string[]): Promise<void> {
     let target = chatId;
-    for (const chunk of chunks) {
+    for (const chunk of chunks) target = await this.sendOne(target, chunk);
+  }
+
+  /**
+   * Sends one message to a chat, following a supergroup migration once; returns the chat id it
+   * went to and the message id.
+   */
+  private async sendOne(chatId: string, html: string, keyboard?: Button[][]): Promise<string> {
+    return (await this.sendOneMessage(chatId, html, keyboard)).chatId;
+  }
+
+  private async sendOneMessage(
+    chatId: string,
+    html: string,
+    keyboard?: Button[][],
+  ): Promise<{ chatId: string; messageId: number }> {
+    try {
+      const msg = await this.opts.api.sendMessage(chatId, html, keyboard);
+      return { chatId, messageId: msg.message_id };
+    } catch (err) {
+      if (!(err instanceof TelegramError) || !err.migrateToChatId) throw err;
+      this.migrateChat(chatId, err.migrateToChatId);
+      const to = err.migrateToChatId;
+      const msg = await this.opts.api.sendMessage(to, html, keyboard);
+      return { chatId: to, messageId: msg.message_id };
+    }
+  }
+
+  /** Sends a view with buttons and remembers what it shows. */
+  private async sendView(chatId: string, view: View, state: Omit<ViewState, "at">): Promise<void> {
+    const sent = await this.sendOneMessage(chatId, view.html, view.keyboard);
+    this.rememberView(sent.chatId, sent.messageId, state);
+  }
+
+  private rememberView(chatId: string, messageId: number, state: Omit<ViewState, "at">): void {
+    const views = { ...this.state.views };
+    delete views[`${chatId}:${messageId}`];
+    views[`${chatId}:${messageId}`] = { ...state, at: this.now().toISOString() };
+    const keys = Object.keys(views);
+    for (const k of keys.slice(0, Math.max(0, keys.length - MAX_VIEWS))) delete views[k];
+    this.state.views = views;
+    this.saveState();
+  }
+
+  /** Sends a view to every allowed chat; throws only when no chat got it. */
+  private async broadcastView(view: View, state: Omit<ViewState, "at">): Promise<void> {
+    let delivered = 0;
+    let lastError: unknown;
+    for (const chatId of [...this.chatIds]) {
       try {
-        await this.opts.api.sendMessage(target, chunk);
+        await this.sendView(chatId, view, state);
+        delivered++;
       } catch (err) {
-        if (!(err instanceof TelegramError) || !err.migrateToChatId || target !== chatId) {
-          throw err;
-        }
-        this.migrateChat(chatId, err.migrateToChatId);
-        target = err.migrateToChatId;
-        await this.opts.api.sendMessage(target, chunk);
+        lastError = err;
+        this.log(`telegram: sending to a chat failed: ${this.describe(err)}`);
       }
     }
+    if (delivered === 0) throw lastError ?? new TelegramError("no chat configured");
   }
 
   private saveState(): void {
@@ -713,107 +711,145 @@ export class TelegramNotifier {
     return this.opts.api.redact(`${(err as Error).name}: ${(err as Error).message}`);
   }
 
-  /** Sends `html` to every allowed chat; throws only when no chat got all of it. */
-  private async broadcast(html: string): Promise<void> {
-    const chunks = splitMessage(html);
-    let delivered = 0;
-    let lastError: unknown;
-    for (const chatId of [...this.chatIds]) {
-      try {
-        await this.sendTo(chatId, chunks);
-        delivered++;
-      } catch (err) {
-        lastError = err;
-        this.log(`telegram: sending to a chat failed: ${this.describe(err)}`);
-      }
-    }
-    if (delivered === 0) throw lastError ?? new TelegramError("no chat configured");
-  }
-
   private get forgetDays(): number {
     return this.opts.backlogForgetDays ?? DEFAULT_BACKLOG_FORGET_DAYS;
   }
 
-  /**
-   * Sends unsent, unmuted alerts (recent ones only) and marks them sent; with `backlog`, the
-   * open debts too (sent even when no alert is new). `to` sends to that chat only, and `always`
-   * sends even an empty digest (`/refresh`). Returns what was sent.
-   */
-  private async sendAlerts(
-    levels: readonly AlertLevel[] | null,
-    title: string,
-    backlog = false,
-    target: { to?: string; always?: boolean } = {},
-  ): Promise<Sent> {
+  /** Unmuted alerts created within `MAX_ALERT_AGE_MS`, optionally unsent only / of some levels. */
+  private async recentAlerts() {
     const now = this.now();
-    const rows = await this.opts.db.alert.findMany({
+    return this.opts.db.alert.findMany({
       where: {
-        sentAt: null,
         mutedAt: null,
         createdAt: { gte: new Date(now.getTime() - MAX_ALERT_AGE_MS) },
-        ...(levels ? { level: { in: [...levels] } } : {}),
       },
-      select: { id: true },
+      select: { id: true, key: true, level: true, sentAt: true },
       orderBy: { id: "asc" },
     });
-    const none = { alerts: 0, debts: 0, closed: 0, upcoming: 0 };
-    if (rows.length === 0 && !backlog && !target.always) return none;
+  }
+
+  /** The digest model for `alertIds` plus the current debts and upcoming work. */
+  private async model(
+    alertIds: readonly number[],
+    opts: { autoClosedSince?: Date; fresh?: readonly number[] } = {},
+  ): Promise<{ model: DigestModel; report: Report }> {
+    const { autoClosedSince } = opts;
+    const { db } = this.opts;
+    const report = await buildReport(db, {
+      now: this.now(),
+      alertIds: [...new Set(alertIds)],
+      ...(this.opts.watchedEmails ? { watchedEmails: this.opts.watchedEmails } : {}),
+      backlog: { forgetDays: this.forgetDays },
+      upcoming: { days: this.opts.upcomingDays ?? DEFAULT_UPCOMING_DAYS },
+      ...(autoClosedSince ? { autoClosedSince } : {}),
+    });
+    const alerts = [
+      ...report.accounts.flatMap((a) => [...a.panics, ...a.alerts, ...a.checkByHand, ...a.info]),
+      ...report.other,
+    ];
+    const targets = await alertLinks(db, alerts);
+    const alertAssignments = new Map([...targets].map(([id, t]) => [id, t.assignmentId]));
+    const urls = new Map([...targets.values()].map((t) => [t.assignmentId, t.url]));
+    const input = await loadModelInput(db, report, alertAssignments, urls, this.loc);
+    if (opts.fresh) input.fresh = new Set(opts.fresh);
+    return { model: buildModel(input), report };
+  }
+
+  private titleHtml(title: DigestTitle | undefined): string {
+    return messages(this.lang).telegram[title ?? "digest"];
+  }
+
+  /**
+   * Sends the digest summary and marks its alerts sent. It shows every open alert (unmuted, last
+   * 7 days; the unsent ones as 🆕) plus the open debts and upcoming work, so an item stays until
+   * it's marked seen or resolved. `to` sends to that chat only, `always` sends even an empty digest (`/refresh`),
+   * `edit` rewrites that message instead (🔄), keeping the alerts it showed. Returns what was sent.
+   */
+  private async sendDigestView(
+    title: DigestTitle,
+    target: { to?: string; always?: boolean; edit?: { chatId: string; messageId: number } } = {},
+  ): Promise<Sent> {
+    const now = this.now();
+    const open = await this.recentAlerts();
+    const ids = open.filter((a) => a.sentAt === null).map((a) => a.id);
+    const edited = target.edit
+      ? this.state.views?.[`${target.edit.chatId}:${target.edit.messageId}`]
+      : undefined;
     const closedSince = this.state.lastDigestAt
       ? new Date(this.state.lastDigestAt)
       : new Date(now.getTime() - DAY_MS);
-    const ids = rows.map((r) => r.id);
-    const report = await buildReport(this.opts.db, {
-      now,
-      alertIds: ids,
-      ...(this.opts.watchedEmails ? { watchedEmails: this.opts.watchedEmails } : {}),
-      ...(backlog
-        ? {
-            backlog: { forgetDays: this.forgetDays },
-            autoClosedSince: closedSince,
-            upcoming: { days: this.opts.upcomingDays ?? DEFAULT_UPCOMING_DAYS },
-          }
-        : {}),
-    });
+    const alerts = [...new Set([...(edited?.alerts ?? []), ...open.map((a) => a.id)])];
+    const fresh = [...new Set([...(edited?.fresh ?? []), ...ids])];
+    const { model, report } = await this.model(alerts, { autoClosedSince: closedSince, fresh });
     const debts = report.accounts.reduce((n, a) => n + a.backlog.length, 0);
     const upcoming = report.accounts.reduce((n, a) => n + a.upcoming.length, 0);
+    const none = { alerts: 0, fresh: 0, debts: 0, closed: 0, upcoming: 0 };
     const empty = !reportHasAlerts(report) && !debts && !upcoming && !report.autoClosed;
-    if (empty && !target.always) return none;
-    const all = report.accounts.flatMap((a) => [
-      ...a.panics,
-      ...a.alerts,
-      ...a.checkByHand,
-      ...a.info,
-    ]);
-    const targets = await alertLinks(this.opts.db, [...all, ...report.other]);
-    const recheckable = await recheckableAssignments(
-      this.opts.db,
-      report.accounts.flatMap((a) => a.backlog.map((d) => d.assignmentId)),
-    );
-    const html = formatAlertsHtml(report, targets, {
+    if (empty && !target.always && !target.edit) return none;
+    const view = summaryView(model, this.titleHtml(title), this.loc);
+    const state = {
+      alerts,
+      fresh,
       title,
-      ...this.loc,
-      bot: this.bot,
-      recheckable,
-      emptyText: messages(this.lang).telegram.nothingPending,
-    });
-    if (target.to) await this.sendTo(target.to, splitMessage(html));
-    else await this.broadcast(html);
+      closed: report.autoClosed,
+    };
+    if (target.edit) {
+      await this.opts.api.editMessage(
+        target.edit.chatId,
+        target.edit.messageId,
+        view.html,
+        view.keyboard,
+      );
+      this.rememberView(target.edit.chatId, target.edit.messageId, state);
+    } else if (target.to) await this.sendView(target.to, view, state);
+    else await this.broadcastView(view, state);
     await markAlertsSent(this.opts.db, ids, this.now());
-    if (backlog) {
-      this.state.lastDigestAt = now.toISOString();
-      this.saveState();
-    }
-    return { alerts: ids.length, debts, closed: report.autoClosed, upcoming };
+    this.state.lastDigestAt = now.toISOString();
+    this.saveState();
+    return { alerts: alerts.length, fresh: ids.length, debts, closed: report.autoClosed, upcoming };
   }
 
-  /** Unsent panics, right away (also during quiet hours). Returns the count. */
-  async sendPanics(): Promise<number> {
-    return (await this.sendAlerts(["panic"], messages(this.lang).telegram.urgent)).alerts;
+  /**
+   * Unsent panics (also during quiet hours) and fresh teacher comments (outside them), right
+   * away: one standalone card per assignment, showing all its open problems. Returns the count
+   * of alerts sent.
+   */
+  async sendCards(): Promise<number> {
+    const now = this.now();
+    const quiet = this.opts.quietHours
+      ? inQuietHours(this.opts.quietHours, now, this.opts.timeZone)
+      : false;
+    const open = await this.recentAlerts();
+    const fresh = open.filter(
+      (a) => a.sentAt === null && (a.level === "panic" || (!quiet && a.key.startsWith("comment:"))),
+    );
+    if (fresh.length === 0) return 0;
+    const ids = new Set(fresh.map((a) => a.id));
+    const { model } = await this.model(
+      open.map((a) => a.id),
+      { fresh: [...ids] },
+    );
+    const t = messages(this.lang).telegram;
+    for (const g of model.kids.flatMap((k) => k.groups)) {
+      const mine = g.problems.filter((p) => p.alertId !== null && ids.has(p.alertId));
+      if (mine.length === 0) continue;
+      const header = mine.some((p) => p.rank === 0) ? "urgent" : "comment";
+      const view = cardView(
+        g,
+        this.loc,
+        undefined,
+        header === "urgent" ? t.urgent : t.view.newComment,
+      );
+      const alerts = g.problems.flatMap((p) => (p.alertId === null ? [] : [p.alertId]));
+      await this.broadcastView(view, { alerts, fresh: [...ids], card: g.ref, header });
+    }
+    await markAlertsSent(this.opts.db, [...ids], this.now());
+    return ids.size;
   }
 
   /** Every unsent alert (any level) plus the open debts, as one digest. */
-  sendDigest(title = messages(this.lang).telegram.digest): Promise<Sent> {
-    return this.sendAlerts(null, title, true);
+  sendDigest(title: DigestTitle = "digest"): Promise<Sent> {
+    return this.sendDigestView(title);
   }
 
   /** Scheduled digest: once a day (in `timeZone`), from `digestTime` on, outside quiet hours. */
@@ -828,10 +864,10 @@ export class TelegramNotifier {
   /** Sends the daily digest when due; failures are logged and retried after 5 minutes. */
   async maybeSendDigest(): Promise<Sent> {
     const now = this.now();
-    const none = { alerts: 0, debts: 0, closed: 0, upcoming: 0 };
+    const none = { alerts: 0, fresh: 0, debts: 0, closed: 0, upcoming: 0 };
     if (!this.digestDue(now) || now.getTime() < this.digestRetryAt) return none;
     try {
-      const sent = await this.sendDigest(messages(this.lang).telegram.dailyDigest);
+      const sent = await this.sendDigest("dailyDigest");
       this.state.lastDigestDay = localDay(now, this.opts.timeZone);
       this.saveState();
       return sent;
@@ -845,7 +881,7 @@ export class TelegramNotifier {
   private logDigest(sent: Sent): void {
     if (sent.alerts + sent.debts + sent.closed + sent.upcoming) {
       this.log(
-        `telegram: digest with ${sent.alerts} alert(s), ${sent.debts} open debt(s), ${sent.upcoming} upcoming, ${sent.closed} auto-closed sent`,
+        `telegram: digest with ${sent.alerts} open alert(s) (${sent.fresh} new), ${sent.debts} open debt(s), ${sent.upcoming} upcoming, ${sent.closed} auto-closed sent`,
       );
     }
   }
@@ -856,18 +892,24 @@ export class TelegramNotifier {
    */
   async afterCycle(result: { rechecked?: readonly RecheckResult[] } = {}): Promise<void> {
     try {
-      const n = await this.sendPanics();
-      if (n) this.log(`telegram: sent ${n} panic(s)`);
+      const n = await this.sendCards();
+      if (n) this.log(`telegram: sent ${n} urgent alert(s) or comment(s) as cards`);
     } catch (err) {
-      this.log(`telegram: sending panics failed: ${this.describe(err)}`);
+      this.log(`telegram: sending cards failed: ${this.describe(err)}`);
     }
     await this.answerRechecks(result.rechecked ?? []);
-    const waiters = [...this.refreshWaiters];
+    const waiters = [...this.refreshWaiters.values()];
     this.refreshWaiters.clear();
-    for (const chatId of waiters) {
+    for (const w of waiters) {
       try {
-        const title = messages(this.lang).telegram.freshDigest;
-        this.logDigest(await this.sendAlerts(null, title, true, { to: chatId, always: true }));
+        this.logDigest(
+          await this.sendDigestView(
+            "freshDigest",
+            w.messageId === undefined
+              ? { to: w.chatId, always: true }
+              : { edit: { chatId: w.chatId, messageId: w.messageId } },
+          ),
+        );
       } catch (err) {
         this.log(`telegram: fresh digest failed: ${this.describe(err)}`);
       }
@@ -980,6 +1022,10 @@ export class TelegramNotifier {
    * message switches the chat id.
    */
   async handleUpdate(update: TgUpdate): Promise<void> {
+    if (update.callback_query) {
+      await this.handleCallback(update.callback_query);
+      return;
+    }
     const msg = update.message;
     if (!msg) return;
     const chatId = String(msg.chat.id);
@@ -1004,20 +1050,12 @@ export class TelegramNotifier {
         return;
       }
       case "refresh": {
-        if (this.busy) {
-          this.refreshWaiters.add(chatId);
-          await this.reply(chatId, t.alreadyRunning);
-          return;
-        }
-        const left = this.lastManualAt + this.cooldownMs - this.now().getTime();
-        if (left > 0 && !this.refreshQueued) {
+        const left = this.queueRefresh({ chatId });
+        if (left === "busy") await this.reply(chatId, t.alreadyRunning);
+        else if (left > 0) {
           const every = Math.round(this.cooldownMs / 60_000);
           await this.reply(chatId, t.cooldown(Math.ceil(left / 60_000), every));
-          return;
-        }
-        this.refreshWaiters.add(chatId);
-        this.refreshQueued = true;
-        await this.reply(chatId, t.refreshing);
+        } else await this.reply(chatId, t.refreshing);
         return;
       }
       case "recheck": {
@@ -1038,22 +1076,122 @@ export class TelegramNotifier {
         await this.reply(chatId, t.recheckQueued(item));
         return;
       }
-      case "ack": {
-        const ids = cmd.args.map(Number).filter((n) => Number.isInteger(n) && n > 0);
-        if (ids.length === 0) {
-          await this.reply(chatId, t.ackUsage);
-          return;
-        }
-        const lines: string[] = [];
-        for (const id of ids) {
-          const alert = await muteAlert(this.opts.db, id, this.now());
-          lines.push(alert ? t.acked(id, ackKeepsDebt(alert.key)) : t.noAlert(id));
-        }
-        await this.reply(chatId, lines.join("\n"));
-        return;
-      }
       default:
         await this.reply(chatId, t.help);
+    }
+  }
+
+  /**
+   * Asks for a manual cycle whose digest goes to `waiter`. Returns 0 when queued, "busy" when a
+   * cycle is running (the digest follows it), or the minutes of cooldown left (nothing queued).
+   */
+  private queueRefresh(waiter: { chatId: string; messageId?: number }): 0 | "busy" | number {
+    const key =
+      waiter.messageId === undefined ? waiter.chatId : `${waiter.chatId}:${waiter.messageId}`;
+    if (this.busy) {
+      this.refreshWaiters.set(key, waiter);
+      return "busy";
+    }
+    const left = this.lastManualAt + this.cooldownMs - this.now().getTime();
+    if (left > 0 && !this.refreshQueued) return left;
+    this.refreshWaiters.set(key, waiter);
+    this.refreshQueued = true;
+    return 0;
+  }
+
+  /** The model a sent view shows now: its alerts (marked seen or not) plus current debts. */
+  private async viewModel(view: ViewState): Promise<DigestModel> {
+    const { model } = await this.model(view.alerts, { fresh: view.fresh ?? [] });
+    return { ...model, autoClosed: view.closed ?? 0 };
+  }
+
+  /**
+   * A button tap (#66): answered with a short popup at most, and the message is rewritten in
+   * place, so the chat never scrolls. Taps from other chats and on unknown messages are ignored.
+   */
+  private async handleCallback(q: TgCallbackQuery): Promise<void> {
+    const api = this.opts.api;
+    const msg = q.message;
+    const chatId = msg ? String(msg.chat.id) : "";
+    if (!msg || !this.chatIds.includes(chatId)) {
+      await api.answerCallback(q.id);
+      return;
+    }
+    const v = messages(this.lang).telegram.view;
+    const action = decodeAction(q.data ?? "");
+    const view = this.state.views?.[`${chatId}:${msg.message_id}`];
+    if (!action || !view) {
+      await api.answerCallback(q.id, v.toast.stale);
+      return;
+    }
+    switch (action.kind) {
+      case "noop":
+        await api.answerCallback(q.id);
+        return;
+      case "refresh": {
+        const left = this.queueRefresh({ chatId, messageId: msg.message_id });
+        const toast =
+          left === "busy"
+            ? v.toast.alreadyRunning
+            : left > 0
+              ? v.toast.cooldown(Math.ceil(left / 60_000))
+              : v.toast.refreshing;
+        await api.answerCallback(q.id, toast);
+        return;
+      }
+      case "recheck": {
+        const found = await findRecheckTarget(this.opts.db, String(action.assignmentId));
+        if (!found?.turnedIn) {
+          await api.answerCallback(q.id, v.toast.notTurnedIn);
+          return;
+        }
+        const chats = this.rechecks.get(found.assignmentId) ?? new Set<string>();
+        chats.add(chatId);
+        this.rechecks.set(found.assignmentId, chats);
+        await api.answerCallback(q.id, v.toast.recheckQueued);
+        return;
+      }
+    }
+    let model = await this.viewModel(view);
+    let toast: string | undefined;
+    if (action.kind === "seen" || action.kind === "seenCard") {
+      const g = findGroup(model, action.ref);
+      const muting = g?.problems.filter((p) => p.alertId !== null && !p.acked) ?? [];
+      for (const p of muting)
+        if (p.alertId !== null) await muteAlert(this.opts.db, p.alertId, this.now());
+      toast = muting.some((p) => p.keepsDebt) ? v.toast.seenKeepsDebt : v.toast.seen;
+      model = await this.viewModel(view);
+    }
+    const next = this.render(action, view, model);
+    await api.answerCallback(q.id, next ? toast : v.toast.stale);
+    if (next) await api.editMessage(chatId, msg.message_id, next.html, next.keyboard);
+  }
+
+  /** The view an action leads to; null when what it points at is gone. */
+  private render(action: Action, view: ViewState, model: DigestModel): View | null {
+    const loc = this.loc;
+    const t = messages(this.lang).telegram;
+    switch (action.kind) {
+      case "home":
+        return summaryView(model, this.titleHtml(view.title), loc);
+      case "list":
+      case "seen":
+        return listView(model, action.kid, action.page, loc);
+      case "card": {
+        const g = findGroup(model, action.ref);
+        return g
+          ? cardView(g, loc, { kid: action.kid, page: action.page })
+          : listView(model, action.kid, action.page, loc);
+      }
+      case "seenCard": {
+        const g = findGroup(model, action.ref);
+        const header = view.header === "comment" ? t.view.newComment : t.urgent;
+        return g ? cardView(g, loc, undefined, header) : null;
+      }
+      case "upcoming":
+        return upcomingView(model, loc);
+      default:
+        return null;
     }
   }
 
@@ -1064,7 +1202,7 @@ export class TelegramNotifier {
       {
         ...(this.state.updateOffset !== undefined ? { offset: this.state.updateOffset } : {}),
         timeout: timeoutSec,
-        allowed_updates: ["message"],
+        allowed_updates: ["message", "callback_query"],
       },
       guard,
     );

@@ -58,9 +58,11 @@ export const MAX_ALERT_AGE_MS = 7 * DAY_MS;
 /** Default `backlogForgetDays`. */
 export const DEFAULT_BACKLOG_FORGET_DAYS = 14;
 
-/** What a digest carried: alerts (now marked sent) and open debts (repeated every digest). */
+/** What a digest carried: open alerts (the new ones now marked sent) and open debts. */
 export interface Sent {
   alerts: number;
+  /** Of `alerts`, the ones sent for the first time. */
+  fresh: number;
   debts: number;
   /** Alerts closed automatically since the previous digest (a count line, #51). */
   closed: number;
@@ -411,6 +413,8 @@ export interface TelegramState {
 /** The alerts a sent message was built from; debts and upcoming work are always current. */
 export interface ViewState {
   alerts: number[];
+  /** Alerts that were new (not sent before) in this message: marked 🆕. */
+  fresh?: number[];
   /** A digest: its title. */
   title?: DigestTitle;
   /** A digest: "closed automatically" count at send time. */
@@ -712,13 +716,12 @@ export class TelegramNotifier {
   }
 
   /** Unmuted alerts created within `MAX_ALERT_AGE_MS`, optionally unsent only / of some levels. */
-  private async recentAlerts(where: { unsentOnly?: boolean } = {}) {
+  private async recentAlerts() {
     const now = this.now();
     return this.opts.db.alert.findMany({
       where: {
         mutedAt: null,
         createdAt: { gte: new Date(now.getTime() - MAX_ALERT_AGE_MS) },
-        ...(where.unsentOnly ? { sentAt: null } : {}),
       },
       select: { id: true, key: true, level: true, sentAt: true },
       orderBy: { id: "asc" },
@@ -728,8 +731,9 @@ export class TelegramNotifier {
   /** The digest model for `alertIds` plus the current debts and upcoming work. */
   private async model(
     alertIds: readonly number[],
-    autoClosedSince?: Date,
+    opts: { autoClosedSince?: Date; fresh?: readonly number[] } = {},
   ): Promise<{ model: DigestModel; report: Report }> {
+    const { autoClosedSince } = opts;
     const { db } = this.opts;
     const report = await buildReport(db, {
       now: this.now(),
@@ -747,6 +751,7 @@ export class TelegramNotifier {
     const alertAssignments = new Map([...targets].map(([id, t]) => [id, t.assignmentId]));
     const urls = new Map([...targets.values()].map((t) => [t.assignmentId, t.url]));
     const input = await loadModelInput(db, report, alertAssignments, urls, this.loc);
+    if (opts.fresh) input.fresh = new Set(opts.fresh);
     return { model: buildModel(input), report };
   }
 
@@ -755,8 +760,9 @@ export class TelegramNotifier {
   }
 
   /**
-   * Sends the digest summary (unsent alerts plus open debts and upcoming work) and marks the
-   * alerts sent. `to` sends to that chat only, `always` sends even an empty digest (`/refresh`),
+   * Sends the digest summary and marks its alerts sent. It shows every open alert (unmuted, last
+   * 7 days; the unsent ones as 🆕) plus the open debts and upcoming work, so an item stays until
+   * it's marked seen or resolved. `to` sends to that chat only, `always` sends even an empty digest (`/refresh`),
    * `edit` rewrites that message instead (🔄), keeping the alerts it showed. Returns what was sent.
    */
   private async sendDigestView(
@@ -764,23 +770,26 @@ export class TelegramNotifier {
     target: { to?: string; always?: boolean; edit?: { chatId: string; messageId: number } } = {},
   ): Promise<Sent> {
     const now = this.now();
-    const rows = await this.recentAlerts({ unsentOnly: true });
-    const ids = rows.map((r) => r.id);
+    const open = await this.recentAlerts();
+    const ids = open.filter((a) => a.sentAt === null).map((a) => a.id);
     const edited = target.edit
       ? this.state.views?.[`${target.edit.chatId}:${target.edit.messageId}`]
       : undefined;
     const closedSince = this.state.lastDigestAt
       ? new Date(this.state.lastDigestAt)
       : new Date(now.getTime() - DAY_MS);
-    const { model, report } = await this.model([...(edited?.alerts ?? []), ...ids], closedSince);
+    const alerts = [...new Set([...(edited?.alerts ?? []), ...open.map((a) => a.id)])];
+    const fresh = [...new Set([...(edited?.fresh ?? []), ...ids])];
+    const { model, report } = await this.model(alerts, { autoClosedSince: closedSince, fresh });
     const debts = report.accounts.reduce((n, a) => n + a.backlog.length, 0);
     const upcoming = report.accounts.reduce((n, a) => n + a.upcoming.length, 0);
-    const none = { alerts: 0, debts: 0, closed: 0, upcoming: 0 };
+    const none = { alerts: 0, fresh: 0, debts: 0, closed: 0, upcoming: 0 };
     const empty = !reportHasAlerts(report) && !debts && !upcoming && !report.autoClosed;
     if (empty && !target.always && !target.edit) return none;
     const view = summaryView(model, this.titleHtml(title), this.loc);
     const state = {
-      alerts: [...new Set([...(edited?.alerts ?? []), ...ids])],
+      alerts,
+      fresh,
       title,
       closed: report.autoClosed,
     };
@@ -797,7 +806,7 @@ export class TelegramNotifier {
     await markAlertsSent(this.opts.db, ids, this.now());
     this.state.lastDigestAt = now.toISOString();
     this.saveState();
-    return { alerts: ids.length, debts, closed: report.autoClosed, upcoming };
+    return { alerts: alerts.length, fresh: ids.length, debts, closed: report.autoClosed, upcoming };
   }
 
   /**
@@ -816,7 +825,10 @@ export class TelegramNotifier {
     );
     if (fresh.length === 0) return 0;
     const ids = new Set(fresh.map((a) => a.id));
-    const { model } = await this.model(open.map((a) => a.id));
+    const { model } = await this.model(
+      open.map((a) => a.id),
+      { fresh: [...ids] },
+    );
     const t = messages(this.lang).telegram;
     for (const g of model.kids.flatMap((k) => k.groups)) {
       const mine = g.problems.filter((p) => p.alertId !== null && ids.has(p.alertId));
@@ -829,7 +841,7 @@ export class TelegramNotifier {
         header === "urgent" ? t.urgent : t.view.newComment,
       );
       const alerts = g.problems.flatMap((p) => (p.alertId === null ? [] : [p.alertId]));
-      await this.broadcastView(view, { alerts, card: g.ref, header });
+      await this.broadcastView(view, { alerts, fresh: [...ids], card: g.ref, header });
     }
     await markAlertsSent(this.opts.db, [...ids], this.now());
     return ids.size;
@@ -852,7 +864,7 @@ export class TelegramNotifier {
   /** Sends the daily digest when due; failures are logged and retried after 5 minutes. */
   async maybeSendDigest(): Promise<Sent> {
     const now = this.now();
-    const none = { alerts: 0, debts: 0, closed: 0, upcoming: 0 };
+    const none = { alerts: 0, fresh: 0, debts: 0, closed: 0, upcoming: 0 };
     if (!this.digestDue(now) || now.getTime() < this.digestRetryAt) return none;
     try {
       const sent = await this.sendDigest("dailyDigest");
@@ -869,7 +881,7 @@ export class TelegramNotifier {
   private logDigest(sent: Sent): void {
     if (sent.alerts + sent.debts + sent.closed + sent.upcoming) {
       this.log(
-        `telegram: digest with ${sent.alerts} alert(s), ${sent.debts} open debt(s), ${sent.upcoming} upcoming, ${sent.closed} auto-closed sent`,
+        `telegram: digest with ${sent.alerts} open alert(s) (${sent.fresh} new), ${sent.debts} open debt(s), ${sent.upcoming} upcoming, ${sent.closed} auto-closed sent`,
       );
     }
   }
@@ -1089,7 +1101,7 @@ export class TelegramNotifier {
 
   /** The model a sent view shows now: its alerts (marked seen or not) plus current debts. */
   private async viewModel(view: ViewState): Promise<DigestModel> {
-    const { model } = await this.model(view.alerts);
+    const { model } = await this.model(view.alerts, { fresh: view.fresh ?? [] });
     return { ...model, autoClosed: view.closed ?? 0 };
   }
 

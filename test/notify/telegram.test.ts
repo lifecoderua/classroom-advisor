@@ -305,7 +305,7 @@ describe("TelegramNotifier", () => {
       '🔴 <b><a href="https://classroom.google.com/c/MTEx/a/MjIy/details?authuser=student-one%40school.example">Fractions</a></b>',
     );
     // Every open problem of the assignment, also the not-yet-sent one.
-    expect(card).toContain("🔴 <b>due soon</b> — Sat 10 Oct, 15:00 (in 3h)");
+    expect(card).toContain("🔴 <b>due soon</b> 🆕 — Sat 10 Oct, 15:00 (in 3h)");
     expect(card).toContain("🟠 <b>not started</b>");
     expect(buttons(f.sent()[0]?.body)).toEqual([
       expect.stringMatching(/^🔎 Classroom=https:/),
@@ -322,9 +322,9 @@ describe("TelegramNotifier", () => {
     expect(f.sent()).toHaveLength(2);
     const digest = text(f.sent()[1]);
     expect(digest).toContain("📋 <b>Daily digest</b> · Sat 10 Oct, 19:05");
-    // The panic went out as a card already; the digest has what's new since.
-    expect(digest).toContain("👤 <b>Student &lt;One&gt;</b> — open 1");
-    expect(digest).toContain("👤 <b>Other</b> — open 1");
+    // The panic went out as a card already: still listed until seen, the rest is new.
+    expect(digest).toContain("👤 <b>Student &lt;One&gt;</b> — 🔴 1 · 🆕 1 · open 1");
+    expect(digest).toContain("👤 <b>Other</b> — 🆕 1 · open 1");
     expect(buttons(f.sent()[1]?.body)).toEqual([
       expect.stringMatching(/^👤 Student <One> \(1\)=l:\d+:0$/),
       "👤 Other (1)=l:0:0",
@@ -375,7 +375,7 @@ describe("TelegramNotifier", () => {
     await n.handleUpdate(say(CHAT, "/digest"));
     expect(f.sent()).toHaveLength(1);
     const digestId = 101;
-    expect(text(f.sent()[0])).toContain("🔴 1 · open 2");
+    expect(text(f.sent()[0])).toContain("🔴 1 · 🆕 2 · open 2");
 
     await n.handleUpdate(tap(CHAT, digestId, `l:${account.id}:0`));
     expect(f.toasts()).toEqual([undefined]);
@@ -383,7 +383,7 @@ describe("TelegramNotifier", () => {
     const list = text(f.edits()[0]);
     expect(list).toContain("👤 <b>Student &lt;One&gt;</b> · page 1/1");
     expect(list).toMatch(
-      /1\. 🔴 <a href="[^"]*MjIy[^"]*">Fractions<\/a>\n {6}<i>due soon, not started<\/i>/,
+      /1\. 🔴🆕 <a href="[^"]*MjIy[^"]*">Fractions<\/a>\n {6}<i>due soon, not started<\/i>/,
     );
     expect(list).toContain(">Geometry. Angles</a>\n      <i>due 09/10 · not turned in</i>");
     expect(buttons(f.edits()[0]?.body)).toEqual([
@@ -406,12 +406,12 @@ describe("TelegramNotifier", () => {
     expect((await db.alert.findUniqueOrThrow({ where: { id: panicId } })).mutedAt).not.toBeNull();
     expect((await db.alert.findUniqueOrThrow({ where: { id: alertId } })).mutedAt).not.toBeNull();
     const after = text(f.edits()[2]);
-    expect(after).toMatch(/1\. 🟠 <a [^>]*>Geometry\. Angles<\/a>/);
+    expect(after).toMatch(/1\. 🟠🆕 <a [^>]*>Geometry\. Angles<\/a>/);
     expect(after).toContain("2. ✅ <s>Fractions</s>");
     expect(buttons(f.edits()[2]?.body)[1]).toBe(`✅2=c:${account.id}:0:a${assignmentId}`);
 
     await n.handleUpdate(tap(CHAT, digestId, "h"));
-    expect(text(f.edits()[3])).toContain("👤 <b>Student &lt;One&gt;</b> — open 1 · ✅ 1");
+    expect(text(f.edits()[3])).toContain("👤 <b>Student &lt;One&gt;</b> — 🆕 1 · open 1 · ✅ 1");
     expect(f.sent()).toHaveLength(1); // nothing was sent: the chat doesn't scroll
 
     // Unknown messages say they're out of date; other chats are ignored.
@@ -491,12 +491,13 @@ describe("TelegramNotifier", () => {
     clock = at(19, 5);
     await n.afterCycle();
     expect(f.sent()).toHaveLength(1);
-    expect(text(f.sent()[0])).toContain("👤 <b>Student &lt;One&gt;</b> — open 1");
+    // Sent before, not seen: still listed, not new.
+    expect(text(f.sent()[0])).toContain("👤 <b>Student &lt;One&gt;</b> — 🔴 1 · open 1");
     const digestId = 101;
     await n.handleUpdate(tap(CHAT, digestId, `c:${account.id}:0:a${assignment.id}`));
     const card = text(f.edits()[0]);
     expect(card).toContain("Overdue &lt;map&gt;");
-    expect(card).toContain("🟠 <b>not turned in</b> — 3 days");
+    expect(card).toContain("🔴 <b>not turned in</b> — 3 days");
 
     await n.handleUpdate(msg("/status"));
     expect(text(f.sent()[1])).toContain("📌 Open debts: 1");
@@ -560,7 +561,7 @@ describe("TelegramNotifier", () => {
     const card = text(f.sent()[0]);
     expect(card).toContain("💬 <b>Teacher comment</b>");
     expect(card).toContain(
-      "🟠 <b>teacher comment</b>\n<blockquote expandable>Add the &lt;photo&gt; please</blockquote>",
+      "🟠 <b>teacher comment</b> 🆕\n<blockquote expandable>Add the &lt;photo&gt; please</blockquote>",
     );
 
     // Seen on the card itself: edited in place, all marked.
@@ -588,7 +589,7 @@ describe("TelegramNotifier", () => {
     await n.afterCycle();
     const urgent = text(f.sent()[0]);
     expect(urgent).toContain("🚨 <b>Терміново</b>");
-    expect(urgent).toContain("<b>наближається термін</b> — сб, 10 жовт., 18:00 (через 3 год)");
+    expect(urgent).toContain("<b>наближається термін</b> 🆕 — сб, 10 жовт., 18:00 (через 3 год)");
     expect(urgent).toContain("<b>не розпочато</b>");
     expect(buttons(f.sent()[0]?.body)).toContain("✅ Переглянуто=S:a1");
 
@@ -625,7 +626,7 @@ describe("TelegramNotifier", () => {
     // Counted once: the next digest starts from this one.
     clock = at(19, 5, 11);
     await n.handleUpdate(say(CHAT, "/digest"));
-    expect(text(f.sent().at(-1))).toBe("Nothing pending.");
+    expect(text(f.sent().at(-1))).not.toContain("Closed automatically");
   });
 
   it("shows upcoming work (beyond a day, within the horizon) behind a button and in /status", async () => {
@@ -705,7 +706,7 @@ describe("TelegramNotifier", () => {
       expect(f.sent()).toHaveLength(1);
       expect(f.edits()[0]?.body).toMatchObject({ chat_id: CHAT, message_id: 101 });
       expect(text(f.edits()[0])).toContain("🔄 <b>Fresh digest</b>");
-      expect(text(f.edits()[0])).toContain("👤 <b>Other</b> — open 2");
+      expect(text(f.edits()[0])).toContain("👤 <b>Other</b> — 🆕 2 · open 2");
       // Cooldown: a popup, nothing queued.
       clock = new Date(clock.getTime() + 60_000);
       await n.handleUpdate(tap(CHAT, 101, "f", 2));
@@ -983,9 +984,10 @@ describe("TelegramNotifier", () => {
     await n.handleUpdate(msg(Number(CHAT), "/digest"));
     const digest = String(f.sent()[1]?.body.text);
     expect(digest).toContain("Digest");
-    expect(digest).toContain("— 🔴 1 · open 1");
+    expect(digest).toContain("— 🔴 1 · 🆕 1 · open 1");
+    // Not seen yet: the next digest lists it again, no longer new.
     await n.handleUpdate(msg(Number(CHAT), "/digest"));
-    expect(String(f.sent()[2]?.body.text)).toBe("Nothing pending.");
+    expect(String(f.sent()[2]?.body.text)).toContain("— 🔴 1 · open 1");
 
     await n.handleUpdate(msg(Number(CHAT), "/start"));
     expect(String(f.sent()[3]?.body.text)).toContain("/recheck");

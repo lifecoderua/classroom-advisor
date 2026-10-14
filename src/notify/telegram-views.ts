@@ -34,8 +34,8 @@ export interface Problem {
   /** Marking it seen keeps the debt until the work is turned in (#63). */
   keepsDebt: boolean;
   acked: boolean;
-  /** Not marked sent yet: new in this message. */
-  unsent: boolean;
+  /** New in this message: not sent to Telegram before it. */
+  fresh: boolean;
 }
 
 /** One assignment (or one alert that isn't about an assignment) with its problems. */
@@ -84,10 +84,15 @@ export interface ModelInput {
   /** Alert id → its assignment id (alerts about an assignment only). */
   alertAssignments: ReadonlyMap<number, number>;
   assignments: ReadonlyMap<number, AssignmentInfo>;
+  /** Alerts that are new in the message (default: the ones not sent yet). */
+  fresh?: ReadonlySet<number>;
   loc: Locale;
 }
 
 export const isDone = (g: Group): boolean => g.problems.every((p) => p.acked);
+/** Has a problem that is new in this message and not marked seen. */
+export const isNew = (g: Group): boolean => g.problems.some((p) => p.fresh && !p.acked);
+const NEW = "🆕";
 const groupRank = (g: Group): Rank => Math.min(...g.problems.map((p) => p.rank)) as Rank;
 const flat = (s: string) => s.replace(/\s+/g, " ").trim();
 const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
@@ -100,13 +105,13 @@ export function escapeHtml(text: string): string {
     .replace(/"/g, "&quot;");
 }
 
-function problemOf(a: ReportAlert, now: Date, loc: Locale): Problem {
+function problemOf(a: ReportAlert, fresh: boolean, now: Date, loc: Locale): Problem {
   const base = {
     rank: LEVEL_RANK[a.level],
     alertId: a.id,
     keepsDebt: ackKeepsDebt(a.key),
     acked: Boolean(a.mutedAt),
-    unsent: a.sentAt === null,
+    fresh,
   };
   const c: AlertContent = a.content;
   switch (c.code) {
@@ -184,7 +189,10 @@ export function buildModel(input: ModelInput): DigestModel {
     };
     for (const a of alerts) {
       const fallback = () => flat(alertText(a, loc));
-      group(input.alertAssignments.get(a.id), fallback, a.id).problems.push(problemOf(a, now, loc));
+      const fresh = input.fresh ? input.fresh.has(a.id) : a.sentAt === null;
+      group(input.alertAssignments.get(a.id), fallback, a.id).problems.push(
+        problemOf(a, fresh, now, loc),
+      );
     }
     const account = report.accounts.find((x) => x.id === id);
     for (const d of account?.backlog ?? []) {
@@ -195,11 +203,20 @@ export function buildModel(input: ModelInput): DigestModel {
         alertId: d.alertId,
         keepsDebt: d.kind !== "unchecked",
         acked: d.muted,
-        unsent: false,
+        fresh: false,
       });
     }
     const list = [...groups.values()];
-    for (const g of list) g.problems.sort((a, b) => a.rank - b.rank);
+    for (const g of list) {
+      g.problems.sort((a, b) => a.rank - b.rank);
+      // A missing alert stands in for its debt (the report leaves the debt out): show its age too.
+      for (const p of g.problems) {
+        if (p.tag === "missing" && !p.detail && g.dueAt) {
+          const days = Math.floor((now.getTime() - g.dueAt.getTime()) / 86_400_000);
+          p.detail = escapeHtml(formatAge(days, loc.lang));
+        }
+      }
+    }
     const when = (g: Group) => (g.dueAt ?? g.postedAt ?? now).getTime();
     list.sort(
       (a, b) =>
@@ -396,8 +413,10 @@ export function summaryView(model: DigestModel, title: string, loc: Locale): Vie
   for (const k of model.kids) {
     const open = k.groups.filter((g) => !isDone(g));
     const urgent = open.filter((g) => groupRank(g) === 0).length;
+    const fresh = open.filter(isNew).length;
     const parts = [
       ...(urgent ? [`🔴 ${urgent}`] : []),
+      ...(fresh ? [`${NEW} ${fresh}`] : []),
       v.open(open.length),
       ...(k.groups.length > open.length ? [`✅ ${k.groups.length - open.length}`] : []),
       ...(k.upcoming.length ? [v.upcoming(k.upcoming.length)] : []),
@@ -430,7 +449,7 @@ function listLine(g: Group, n: number, loc: Locale): string {
   const meta = `<i>${escapeHtml([when, tags(g, loc)].filter(Boolean).join(" · "))}</i>`;
   if (isDone(g)) return `${n}. ✅ <s>${name}</s>\n      ${meta}`;
   const title = g.url ? `<a href="${escapeHtml(g.url)}">${name}</a>` : name;
-  return `${n}. ${icon(g)} ${title}\n      ${meta}`;
+  return `${n}. ${icon(g)}${isNew(g) ? NEW : ""} ${title}\n      ${meta}`;
 }
 
 /** Level 2: a kid's assignments, one line each; the title links to Classroom, a number opens the card. */
@@ -490,7 +509,11 @@ function cardHtml(g: Group, header: string | undefined, loc: Locale, quoteCap: n
   if (meta) lines.push(`<i>${escapeHtml(meta)}</i>`);
   for (const p of g.problems) {
     const mark = p.acked ? "✅" : RANK_ICON[p.rank];
-    lines.push("", `${mark} <b>${escapeHtml(v.tag[p.tag])}</b>${p.detail ? ` — ${p.detail}` : ""}`);
+    const fresh = p.fresh && !p.acked ? ` ${NEW}` : "";
+    lines.push(
+      "",
+      `${mark} <b>${escapeHtml(v.tag[p.tag])}</b>${fresh}${p.detail ? ` — ${p.detail}` : ""}`,
+    );
     if (p.quote) {
       lines.push(
         `<blockquote expandable>${escapeHtml(cut(p.quote.trim(), quoteCap))}</blockquote>`,

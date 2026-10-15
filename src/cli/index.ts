@@ -15,9 +15,16 @@ import { syncWatchList } from "../sync/index.ts";
 import { accountRows, formatRows, listSessionAccounts } from "./accounts.ts";
 import { registerClassroomCommands } from "./classroom.ts";
 import { checkDatabase, runDoctor } from "./doctor.ts";
+import { nodeVersionProblem } from "./node-version.ts";
 import { readTargetsFile, runRecon, TODO_PATHS } from "./recon.ts";
 import { registerReportCommands } from "./report.ts";
 import { registerTelegramCommands } from "./telegram.ts";
+
+const nodeProblem = nodeVersionProblem();
+if (nodeProblem) {
+  console.error(nodeProblem);
+  process.exit(1);
+}
 
 const program = new Command()
   .name("classroom-advisor")

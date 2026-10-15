@@ -5,8 +5,9 @@ Docker image. The image runs the `run` loop; the Chrome profile and the data liv
 
 ## What's in the image
 
-- `Dockerfile`: multi-stage, both stages on `mcr.microsoft.com/playwright:v<version>-noble` (the
-  tag must match `playwright` in `pnpm-lock.yaml`; `test/docker.test.ts` checks it). The first
+- `Dockerfile`: multi-stage, both stages on a `base` stage: `mcr.microsoft.com/playwright:v<version>-noble` (the
+  tag must match `playwright` in `pnpm-lock.yaml`; `test/docker.test.ts` checks it) with its
+  Node swapped for the project's major (`NODE_MAJOR`, from NodeSource; the image ships Node 24). The first
   stage runs `pnpm install --frozen-lockfile` (better-sqlite3, Prisma engines, generated client);
   the second adds Google Chrome stable (amd64 only), the noVNC login stack (Xvfb, x11vnc,
   websockify, noVNC) and `tini`, and runs as the non-root `pwuser` (uid 1000).

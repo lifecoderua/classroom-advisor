@@ -3,9 +3,20 @@
 # Volumes: /profile (Chrome user-data-dir, logged in by hand via `login`), /data (SQLite, files).
 # The Playwright tag must match the `playwright` version in pnpm-lock.yaml (test/docker.test.ts).
 ARG PLAYWRIGHT_VERSION=1.64.0
+# The Playwright image ships its own Node (24 for 1.64); the project runs on this major (.nvmrc).
+ARG NODE_MAJOR=26
+
+# --- base: the Playwright image with the project's Node major ---
+FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble AS base
+ARG NODE_MAJOR
+RUN sed -i "s/node_[0-9]*\.x/node_${NODE_MAJOR}.x/" /etc/apt/sources.list.d/nodesource.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends nodejs \
+  && rm -rf /var/lib/apt/lists/* \
+  && node -e "process.exit(process.versions.node.split('.')[0] === '${NODE_MAJOR}' ? 0 : 1)"
 
 # --- deps: install node_modules (better-sqlite3 prebuilt, Prisma engines + client) ---
-FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble AS deps
+FROM base AS deps
 ARG PNPM_VERSION=10.30.2
 RUN npm install -g pnpm@${PNPM_VERSION}
 WORKDIR /app
@@ -19,7 +30,7 @@ COPY src/store/path.ts src/store/types.ts ./src/store/
 RUN pnpm install --frozen-lockfile
 
 # --- runtime ---
-FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble
+FROM base
 ARG PLAYWRIGHT_VERSION
 ARG TARGETARCH
 # Set to 1 to bake in the `claude` CLI (llmProvider claude-cli); the default container uses Gemini.

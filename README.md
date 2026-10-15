@@ -16,7 +16,7 @@ Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/DECISIONS.md](doc
 
 ## Setup
 
-0. Node 26 via nvm: `nvm install` in the project folder (reads `.nvmrc`), then `nvm alias default 26` so agent and non-interactive shells get it too. Don't keep a second Node (e.g. Homebrew's) ahead of nvm on `PATH`: better-sqlite3 is built for one Node ABI, and the CLI refuses to start on another major.
+0. Node 26 via nvm: `nvm install` in the project folder (reads `.nvmrc`), then `nvm alias default 26` so agent and non-interactive shells get it too. Don't keep a second Node (e.g. Homebrew's) ahead of nvm on `PATH`: better-sqlite3 is built for one Node ABI, and the CLI refuses to start on another major. After switching Node, run `pnpm rebuild better-sqlite3`: `pnpm install` alone doesn't rebuild it.
 1. Create the collector's Chrome profile and log in to every kid account inside it (use Google's account switcher; the accounts can share one profile):
    ```bash
    open -na "Google Chrome" --args --user-data-dir="$HOME/.classroom-advisor/chrome-profile"

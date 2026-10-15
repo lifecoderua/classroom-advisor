@@ -277,7 +277,9 @@ export function parseItem(item: unknown, rpcid = "tQShAc", path: Path = []): Par
     instructions = rt.optStr([1]) ?? "";
     instructionsHtml = rt.optStr([4, 1]);
   }
-  const materialIds = desc ? (desc.optArr([4]) ?? []).map((_, i) => desc.id([4, i, 1, 1])) : [];
+  const materialIds = desc
+    ? (desc.optArr([4]) ?? []).map((_, i) => desc.signedId([4, i, 1, 1]))
+    : [];
 
   const work = body.optArr([1]) ? body.child([1]) : undefined;
   const due = work?.optNum([0]);
@@ -328,7 +330,7 @@ export function parseMaterials(payload: unknown): ParsedMaterial[] {
     const row = r.child([1, i]);
     return {
       itemId: row.id([2, 0, 0]),
-      materialId: row.id([2, 1]),
+      materialId: row.signedId([2, 1]),
       attachment: parseAttachment(row.child([0])),
     };
   });

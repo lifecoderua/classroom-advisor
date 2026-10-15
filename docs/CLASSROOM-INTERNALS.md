@@ -66,7 +66,7 @@ Each **item** is `[type, assignment?, ?, ?, ?, material?]`. `type` 2 is an assig
 - `[4][0]` creator (teacher) id · `[5]` **title** · `[8]` 2 (published)
 - `[9]` `[2, [creatorId], publishedMs, null, scheduledMs?, 3?]` · `[10]` published ms
 - `[13]` `c:<courseId>:s:<itemId>` · `[14][0]` topic key `[topicId, [courseId]]` · `[21]` short base64 etag
-- `[27][0]` description block: `[1]` UUID, `[4]` material refs `[[null, [itemKey, materialId]]…]`, `[6]` rich text `["edu.rt", plainText, null, null, [null, html]]`. The description can be missing.
+- `[27][0]` description block: `[1]` UUID, `[4]` material refs `[[null, [itemKey, materialId]]…]` (`materialId` is a **signed** 64-bit decimal string: since 2026-10 many are negative, e.g. `"-12345678901"`; `t51ITc` returns the same ids, see #68), `[6]` rich text `["edu.rt", plainText, null, null, [null, html]]`. The description can be missing.
 
 `work` (assignment only): `[0]` **due** ms or `null` · `[1]` ms (≈ published) · `[2]` bool ? · `[3]` **max points** or `null` (ungraded) · `[6]` `[1]` · `[18]` 1 | 2 | 3 (an enum. We saw no link to quiz/question, since all three are ordinary assignments in the UI).
 
@@ -105,7 +105,7 @@ Array of length 21:
 - `[15]` **origin**: 1 teacher material · 2 student's own file · 3 teacher's annotated copy of a student file
 - `[17]` attachment id (material id) · `[20]` 1
 
-Materials (`t51ITc` → `[null, [[attachment, null, [itemKey, materialId]]…]]`): the request is `[[null,null,1,0], [itemKey], <mask>]`. It takes **exactly one** item. Several keys, or an item without materials, return error `[3]`.
+Materials (`t51ITc` → `[null, [[attachment, null, [itemKey, materialId]]…]]`): the request is `[[null,null,1,0], [itemKey], <mask>]`. It takes **exactly one** item. Several keys, or an item without materials, return error `[3]`. `materialId` here is the same signed decimal as in the description refs, negative ones included; the request only carries the item key, so the material id never goes back to Classroom.
 
 **"Make a copy for each student"**: not seen in any capture (no Google Docs/Sheets/Slides student attachments in either account). It is expected as a student attachment (`Zj93ge [4]`, `[15]`=2) with a `vnd.google-apps.*` mime, plus a teacher material of the same title. The share-mode field is unknown. This needs a capture when one shows up.
 
@@ -131,7 +131,7 @@ Materials (`t51ITc` → `[null, [[attachment, null, [itemKey, materialId]]…]]`
 - Gotcha: functions passed to `page.evaluate` must not define named helpers. tsx (esbuild `keepNames`) wraps them in `__name(...)`, which doesn't exist in the page.
 
 ## To-do parser (`src/collector/classroom/todo.ts`)
-`listTodo(transport, session)`: `gXtzob` (all pages) → `pONvgf` per active course with all buckets, following the page token → `Zj93ge` (list mask) in batches of 100 → `AssignmentSummary[]` (zod). Items are parsed with `parseItem` from `detail.ts`. The bucket is `Zj93ge [20]` as-is; an item without a submission gets `unknown`. Drift: no courses at all, a wrong type tag, a page token that doesn't advance, or items with no matching submission at all. Enums shared with the detail parser are in `enums.ts`; positional helpers and the one `ParseDriftError` in `parse-util.ts` (errors carry rpcid, path and value *shape*, never values). `pnpm cli classroom todo [--account n] [--headless]` prints counts per bucket only.
+`listTodo(transport, session)`: `gXtzob` (all pages) → `pONvgf` per active course with all buckets, following the page token → `Zj93ge` (list mask) in batches of 100 → `AssignmentSummary[]` (zod). Items are parsed with `parseItem` from `detail.ts`. The bucket is `Zj93ge [20]` as-is; an item without a submission gets `unknown`. Drift: no courses at all, a wrong type tag, a page token that doesn't advance, or items with no matching submission at all. A single item that fails to parse is **skipped** instead (`TodoPage.skipped`, `TodoListing.skipped`): the rest of the account still syncs (#68). Enums shared with the detail parser are in `enums.ts`; positional helpers and the one `ParseDriftError` in `parse-util.ts` (errors carry rpcid, path and value *shape*, never values). `pnpm cli classroom todo [--account n] [--headless]` prints counts per bucket only.
 
 ## Detail parser (`src/collector/classroom/detail.ts`)
 `parseAssignmentDetail({ item, materials?, submissions?, comments?, studentId? })` combines `tQShAc` (or an item already parsed from a list), `t51ITc`, one or both `Zj93ge` responses (list mask + attachments mask, merged per submission) and `sLc6hf` into a zod-validated `AssignmentDetail`. Mappings:

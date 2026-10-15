@@ -102,6 +102,8 @@ export interface SyncAccountOptions {
 export interface SyncStats {
   baseline: boolean;
   items: number;
+  /** Listed items left out because they failed to parse (drift). */
+  skippedItems: number;
   courses: number;
   picked: Record<PickReason, number>;
   details: number;
@@ -123,6 +125,7 @@ export function emptyStats(baseline: boolean): SyncStats {
   return {
     baseline,
     items: 0,
+    skippedItems: 0,
     courses: 0,
     picked: { new: 0, changed: 0, due_soon: 0, refresh: 0 },
     details: 0,
@@ -432,6 +435,9 @@ export async function syncAccount(
   try {
     const listing = await listTodo(source.transport, source.session, delay);
     stats.items = listing.summaries.length;
+    stats.skippedItems = listing.skipped.length;
+    if (listing.skipped.length > 0)
+      log(`${label}: skipped ${listing.skipped.length} item(s) (drift)`);
     stats.courses = listing.courses.filter((c) => c.active).length;
 
     const courseIds = new Map<string, number>();
@@ -471,7 +477,8 @@ export async function syncAccount(
     const summaries = new Map(listing.summaries.map((s) => [s.id, s]));
     const ctxBase = { db, account, baseline, now, stats };
     const turnedIn: number[] = [];
-    let drift: ParseDriftError | undefined;
+    // One alert for the listing's skipped items and the details that failed.
+    let drift: ParseDriftError | undefined = listing.skipped[0];
     // This run hit parser drift: the account's drift alerts stay open.
     let drifted = false;
     for (const [id, detail] of details) {

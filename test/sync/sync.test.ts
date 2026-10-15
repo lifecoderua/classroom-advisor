@@ -17,6 +17,7 @@ import {
   setWatchedAccounts,
   upsertAccount,
 } from "../../src/store/index.ts";
+import { isFreshComment } from "../../src/sync/comments.ts";
 import {
   diffAssignment,
   MAX_FULL_REFRESH_PER_SYNC,
@@ -638,5 +639,23 @@ describe("helpers", () => {
     const [id] = await pendingQualityVersions(db, "llm:fake");
     const input = await loadTurnedInInput(db, id as number, async () => undefined);
     expect(input?.assignment.instructions.length).toBeGreaterThan(0);
+  });
+});
+
+describe("isFreshComment", () => {
+  it("is not fresh on an item dated before the digest depth (#69)", () => {
+    const now = new Date("2026-10-15T08:00:00Z").getTime();
+    const cutoff = now - 14 * 86_400_000;
+    const c = { at: new Date(now) };
+    const account = { baselineAt: new Date(now - 30 * 86_400_000) };
+    const item = (days: number, due?: number) => ({
+      baseline: false,
+      postedAt: new Date(now - days * 86_400_000),
+      dueAt: due === undefined ? null : new Date(now - due * 86_400_000),
+    });
+    expect(isFreshComment(c, item(200), account, false, cutoff)).toBe(false);
+    expect(isFreshComment(c, item(200, 2), account, false, cutoff)).toBe(true);
+    expect(isFreshComment(c, item(3), account, false, cutoff)).toBe(true);
+    expect(isFreshComment(c, item(200), account, false)).toBe(true);
   });
 });

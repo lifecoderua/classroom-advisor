@@ -572,6 +572,42 @@ describe("TelegramNotifier", () => {
     expect(buttons(f.edits()[0]?.body)).toEqual([expect.stringMatching(/^🔎 Classroom=/)]);
   });
 
+  it("leaves out items older than the digest depth: no card, no digest line (#69)", async () => {
+    const { assignmentId } = await seed();
+    await db.alert.updateMany({ data: { sentAt: clock } });
+    // Last school year's post, seen just now, with a teacher comment.
+    await db.assignment.update({
+      where: { id: assignmentId },
+      data: { postedAt: new Date(clock.getTime() - 200 * 86_400_000), dueAt: null },
+    });
+    const { comment } = await upsertComment(db, {
+      assignmentId,
+      classroomId: "c-old",
+      authorRole: "teacher",
+      text: "Please redo the last task",
+      postedAt: clock,
+      baseline: false,
+    });
+    const { alert } = await raiseAlert(
+      db,
+      {
+        key: `comment:${comment.id}`,
+        level: "panic",
+        code: "comment.teacher",
+        params: { title: "Fractions", course: "Math", text: "Please redo the last task" },
+      },
+      clock,
+    );
+    const f = fakeFetch();
+    const n = notifier(f);
+    expect(await n.sendCards()).toBe(1);
+    expect(f.sent()).toHaveLength(0);
+    expect(await sentAt(alert.id)).not.toBeNull();
+    const digest = await n.sendDigest();
+    expect(digest.debts).toBe(0);
+    expect(f.sent().map(text).join("\n")).not.toContain("Fractions");
+  });
+
   it("sends in Ukrainian at the digest time of the configured zone", async () => {
     await seed();
     await raiseAlert(

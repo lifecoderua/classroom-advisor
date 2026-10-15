@@ -92,6 +92,8 @@ export interface ExpectsWorkOptions {
 export interface EvaluateDeadlinesOptions {
   /** `config.alertLookbackDays`: reminders only for items posted within this many days. */
   lookbackDays?: number;
+  /** `config.backlogForgetDays`: no alerts at all for items dated longer ago (#69). */
+  depthDays?: number;
   /**
    * Classify the current version of assignments whose reminder would fire (#61). Without it,
    * only verdicts already stored are applied.
@@ -195,8 +197,10 @@ export async function evaluateDeadlines(
   now: Date = new Date(),
   options: EvaluateDeadlinesOptions = {},
 ): Promise<AlertDraft[]> {
-  const rules: DeadlineOptions =
-    options.lookbackDays === undefined ? {} : { lookbackMs: options.lookbackDays * DAY_MS };
+  const rules: DeadlineOptions = {
+    ...(options.lookbackDays === undefined ? {} : { lookbackMs: options.lookbackDays * DAY_MS }),
+    ...(options.depthDays === undefined ? {} : { depthMs: options.depthDays * DAY_MS }),
+  };
   const rows = await loadDeadlineRows(db);
   const stats: ExpectsWorkStats = {
     llm: 0,

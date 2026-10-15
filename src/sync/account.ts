@@ -97,6 +97,11 @@ export interface SyncAccountOptions {
   force?: readonly number[];
   /** Download teacher attachments of open recent posts for the expects-work classifier (#61). */
   materials?: MaterialPrefetchOptions;
+  /**
+   * Digest depth (#69, `backlogForgetDays`): comments on items dated (due, else posted) more
+   * than this many days ago are stored as not fresh: no event, no alert.
+   */
+  depthDays?: number;
 }
 
 export interface SyncStats {
@@ -525,6 +530,7 @@ export async function syncAccount(
           baseline: true,
           title: true,
           dueAt: true,
+          postedAt: true,
           course: { select: { name: true } },
           submission: { select: { state: true, turnedInAt: true } },
         },
@@ -538,12 +544,20 @@ export async function syncAccount(
             title: r.title,
             courseName: r.course.name,
             dueAt: r.dueAt,
+            postedAt: r.postedAt,
             submission: r.submission,
           },
         ]),
       );
       const created = await applyComments(
-        { db, account, baseline, studentId: source.session.userId, now },
+        {
+          db,
+          account,
+          baseline,
+          studentId: source.session.userId,
+          now,
+          ...(options.depthDays !== undefined ? { depthDays: options.depthDays } : {}),
+        },
         fetched.comments,
         targets,
         stats.comments,

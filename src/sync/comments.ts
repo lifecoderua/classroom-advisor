@@ -2,6 +2,7 @@
 // comment id, `comment.new` events, and an alert for every fresh teacher comment (`panic` when
 // it asks to redo, fix or attach something, #44).
 
+import { beyondDepth } from "../checks/backlog.ts";
 import { isRedoRequest, redoDue, turnedInSince } from "../checks/redo.ts";
 import {
   commentsHaveMore,
@@ -81,6 +82,7 @@ export interface CommentTarget {
   title: string;
   courseName: string;
   dueAt?: Date | null;
+  postedAt?: Date | null;
   /** The watched student's submission as stored by this sync. */
   submission?: { state: string; turnedInAt: Date | null } | null;
 }
@@ -104,15 +106,18 @@ export const emptyCommentStats = (): CommentStats => ({
 
 /**
  * A comment is fresh (event, and an alert when a teacher wrote it) unless it is stored by the
- * baseline sync, or it sits on a baseline item and was posted before the account's baseline.
+ * baseline sync, it sits on a baseline item and was posted before the account's baseline, or its
+ * item is dated before `depthCutoffMs` (#69: last year's posts that show up at once).
  */
 export function isFreshComment(
   comment: Pick<ParsedComment, "at">,
-  target: Pick<CommentTarget, "baseline">,
+  target: Pick<CommentTarget, "baseline" | "dueAt" | "postedAt">,
   account: Pick<Account, "baselineAt">,
   baselineSync: boolean,
+  depthCutoffMs?: number,
 ): boolean {
   if (baselineSync) return false;
+  if (depthCutoffMs !== undefined && beyondDepth(target, depthCutoffMs)) return false;
   if (!target.baseline) return true;
   return account.baselineAt !== null && comment.at.getTime() > account.baselineAt.getTime();
 }
@@ -125,6 +130,8 @@ export interface ApplyCommentsContext {
   /** The watched student; comments of other submissions are ignored. */
   studentId: string;
   now: Date;
+  /** Digest depth in days (`backlogForgetDays`): older items get no fresh comments. */
+  depthDays?: number;
 }
 
 /**
@@ -162,6 +169,8 @@ export async function applyComments(
   stats: CommentStats,
 ): Promise<number> {
   const { db, account, now } = ctx;
+  const depthCutoff =
+    ctx.depthDays === undefined ? undefined : now.getTime() - ctx.depthDays * 86_400_000;
   let events = 0;
   for (const c of comments) {
     if (c.studentId && c.studentId !== ctx.studentId) continue;
@@ -171,7 +180,7 @@ export async function applyComments(
       continue;
     }
     stats.fetched++;
-    const fresh = isFreshComment(c, target, account, ctx.baseline);
+    const fresh = isFreshComment(c, target, account, ctx.baseline, depthCutoff);
     const { comment, created } = await upsertComment(
       db,
       {

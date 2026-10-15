@@ -44,6 +44,24 @@ export interface BacklogOptions {
   accountIds?: readonly number[];
 }
 
+/** An item's date for the digest depth (#69): its due date, else when it was posted. */
+export function itemDate(a: { dueAt?: Date | null; postedAt?: Date | null }): Date | null {
+  return a.dueAt ?? a.postedAt ?? null;
+}
+
+/**
+ * Older than the digest depth: dated (`itemDate`) before `cutoffMs`. Such an item's alerts and
+ * debts stay out of the digest, the report and `/status`, and get no new panics or comment
+ * alerts (e.g. last school year's posts that show up at once). An undated item is never too old.
+ */
+export function beyondDepth(
+  a: { dueAt?: Date | null; postedAt?: Date | null },
+  cutoffMs: number,
+): boolean {
+  const at = itemDate(a);
+  return at !== null && at.getTime() < cutoffMs;
+}
+
 /** One line per assignment: a redo request beats "missing", which beats "check by hand". */
 const PRIORITY: Record<DebtKind, number> = { redo: 0, missing: 1, unchecked: 2 };
 
@@ -59,7 +77,8 @@ const PRIORITY: Record<DebtKind, number> = { redo: 0, missing: 1, unchecked: 2 }
  * - `unchecked`: an unmuted `quality:<id>…:unchecked` alert of the latest version of a submission
  *   that is still turned in; since = the alert.
  * Redo and missing debts stay when their alert is muted (acked): only the state resolves them.
- * An `unchecked` debt with a muted alert, and any debt older than `forgetDays`, is left out.
+ * An `unchecked` debt with a muted alert, any debt older than `forgetDays`, and any debt of an
+ * assignment dated (`itemDate`) more than `forgetDays` ago (`beyondDepth`) are left out.
  * Oldest first.
  */
 export async function loadBacklog(db: Db, opts: BacklogOptions): Promise<Debt[]> {
@@ -75,6 +94,8 @@ export async function loadBacklog(db: Db, opts: BacklogOptions): Promise<Debt[]>
     kind: true,
     title: true,
     status: true,
+    dueAt: true,
+    postedAt: true,
     account: { select: { email: true, watched: true } },
     course: { select: { name: true, classroomId: true } },
   } as const;
@@ -84,6 +105,8 @@ export async function loadBacklog(db: Db, opts: BacklogOptions): Promise<Debt[]>
     classroomId: string;
     kind: string;
     title: string;
+    dueAt: Date | null;
+    postedAt: Date | null;
     account: { email: string };
     course: { name: string; classroomId: string };
   };
@@ -141,7 +164,7 @@ export async function loadBacklog(db: Db, opts: BacklogOptions): Promise<Debt[]>
     for (const c of redo) {
       const a = byId.get(c.assignmentId);
       const alert = alertOf.get(`comment:${c.id}`);
-      if (!a || turnedInSince(c.postedAt, a.submission)) continue;
+      if (!a || beyondDepth(a, cutoff) || turnedInSince(c.postedAt, a.submission)) continue;
       out.push(debt("redo", a, c.postedAt, alert));
     }
   }
@@ -156,8 +179,6 @@ export async function loadBacklog(db: Db, opts: BacklogOptions): Promise<Debt[]>
     },
     select: {
       ...assignmentSelect,
-      dueAt: true,
-      postedAt: true,
       firstSeenAt: true,
       baseline: true,
       submission: { select: { state: true } },
@@ -177,7 +198,7 @@ export async function loadBacklog(db: Db, opts: BacklogOptions): Promise<Debt[]>
       const since =
         a.dueAt ??
         (a.baseline ? (a.postedAt ?? a.firstSeenAt) : (alert?.createdAt ?? a.firstSeenAt));
-      if (since.getTime() < cutoff) continue;
+      if (since.getTime() < cutoff || beyondDepth(a, cutoff)) continue;
       out.push(debt("missing", a, since, alert));
     }
   }
@@ -219,6 +240,7 @@ export async function loadBacklog(db: Db, opts: BacklogOptions): Promise<Debt[]>
       const s = byVersion.get(id);
       if (!s || s.versions[0]?.id !== id || !DONE.has(s.state)) continue;
       const a = s.assignment;
+      if (beyondDepth(a, cutoff)) continue;
       if (opts.accountIds ? !opts.accountIds.includes(a.accountId) : !a.account.watched) continue;
       out.push(debt("unchecked", a, alert.createdAt, { id: alert.id, mutedAt: null }));
     }

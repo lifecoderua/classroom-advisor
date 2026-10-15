@@ -295,6 +295,21 @@ describe("deadlineAlerts with an expects-work verdict (#61)", () => {
   });
 });
 
+describe("deadlineAlerts beyond the digest depth (#69)", () => {
+  const depth = { depthMs: 14 * DAY_MS };
+  const codes = (assignment: Partial<DeadlineInput["assignment"]>) =>
+    deadlineAlerts(input({ assignment }), NOW, depth).map((d) => d.code);
+
+  it("raises nothing, panics included, for an item dated before the depth", () => {
+    expect(codes({ dueAt: ago(20 * DAY_MS), postedAt: ago(30 * DAY_MS) })).toEqual([]);
+    expect(codes({ dueAt: null, postedAt: ago(200 * DAY_MS), status: "missing" })).toEqual([]);
+  });
+
+  it("dates an item by its due date first", () => {
+    expect(codes({ dueAt: ago(HOUR_MS), postedAt: ago(30 * DAY_MS) })).toEqual(["missing"]);
+  });
+});
+
 describe("isoWeek", () => {
   it.each([
     ["2026-10-10T12:00:00Z", "2026-W41"],

@@ -143,6 +143,7 @@ export async function runSync(
                 lookbackDays: config.alertLookbackDays,
                 max: config.expectsWorkMaxPerRun,
               },
+              depthDays: config.backlogForgetDays,
             },
           );
         } finally {

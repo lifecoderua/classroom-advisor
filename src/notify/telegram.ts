@@ -740,6 +740,7 @@ export class TelegramNotifier {
       alertIds: [...new Set(alertIds)],
       ...(this.opts.watchedEmails ? { watchedEmails: this.opts.watchedEmails } : {}),
       backlog: { forgetDays: this.forgetDays },
+      depthDays: this.forgetDays,
       upcoming: { days: this.opts.upcomingDays ?? DEFAULT_UPCOMING_DAYS },
       ...(autoClosedSince ? { autoClosedSince } : {}),
     });
@@ -961,6 +962,7 @@ export class TelegramNotifier {
     const report = await buildReport(db, {
       now,
       alertIds: open.map((a) => a.id),
+      depthDays: this.forgetDays,
       upcoming: { days: this.opts.upcomingDays ?? DEFAULT_UPCOMING_DAYS },
       ...(this.opts.watchedEmails ? { watchedEmails: this.opts.watchedEmails } : {}),
     });

@@ -17,6 +17,7 @@ import {
   setWatchedAccounts,
   upsertAccount,
 } from "../../src/store/index.ts";
+import { isFreshComment } from "../../src/sync/comments.ts";
 import {
   diffAssignment,
   MAX_FULL_REFRESH_PER_SYNC,
@@ -371,6 +372,26 @@ describe("syncAccount: errors", () => {
     expect(cr.calls).not.toContain("t51ITc");
   });
 
+  it("closes the lost-login and drift alerts once a sync of the account succeeds", async () => {
+    await watchedAccount();
+    const cr = new FakeClassroom();
+    cr.failWith = new SessionExpiredError("batchexecute pONvgf");
+    await sync(cr, NOW);
+    cr.failWith = undefined;
+    // An item drifts: the run is ok, the session alert closes, the drift alert stays.
+    cr.subs.delete("441339928087");
+    await sync(cr, new Date(NOW.getTime() + H));
+    const open = async () =>
+      (await db.alert.findMany({ where: { mutedAt: null } })).map((a) => a.key);
+    expect(await open()).toEqual([expect.stringMatching(/^sync:\d+:drift:Zj93ge:/)]);
+    const closed = await db.alert.findFirstOrThrow({ where: { key: { contains: "session" } } });
+    expect(closed.muteReason).toBe("auto");
+    // A clean run closes the drift alert too.
+    cr.subs = new FakeClassroom().subs;
+    await sync(cr, new Date(NOW.getTime() + 2 * H));
+    expect(await open()).toEqual([]);
+  });
+
   it("keeps going when one item's details fail", async () => {
     await watchedAccount();
     const cr = new FakeClassroom();
@@ -618,5 +639,23 @@ describe("helpers", () => {
     const [id] = await pendingQualityVersions(db, "llm:fake");
     const input = await loadTurnedInInput(db, id as number, async () => undefined);
     expect(input?.assignment.instructions.length).toBeGreaterThan(0);
+  });
+});
+
+describe("isFreshComment", () => {
+  it("is not fresh on an item dated before the digest depth (#69)", () => {
+    const now = new Date("2026-10-15T08:00:00Z").getTime();
+    const cutoff = now - 14 * 86_400_000;
+    const c = { at: new Date(now) };
+    const account = { baselineAt: new Date(now - 30 * 86_400_000) };
+    const item = (days: number, due?: number) => ({
+      baseline: false,
+      postedAt: new Date(now - days * 86_400_000),
+      dueAt: due === undefined ? null : new Date(now - due * 86_400_000),
+    });
+    expect(isFreshComment(c, item(200), account, false, cutoff)).toBe(false);
+    expect(isFreshComment(c, item(200, 2), account, false, cutoff)).toBe(true);
+    expect(isFreshComment(c, item(3), account, false, cutoff)).toBe(true);
+    expect(isFreshComment(c, item(200), account, false)).toBe(true);
   });
 });

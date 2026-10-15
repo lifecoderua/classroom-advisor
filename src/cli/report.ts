@@ -60,6 +60,7 @@ export function registerReportCommands(program: Command): void {
           since,
           watchedEmails: config.watchedAccounts,
           backlog: { forgetDays: config.backlogForgetDays },
+          depthDays: config.backlogForgetDays,
           upcoming: { days: config.upcomingDays },
           ...(since ? { autoClosedSince: since } : {}),
         });
@@ -143,6 +144,7 @@ export function registerReportCommands(program: Command): void {
               sync: playwrightSync(config),
               deadlineOptions: {
                 lookbackDays: config.alertLookbackDays,
+                depthDays: config.backlogForgetDays,
                 // Lesson posts without homework don't get reminders (#61).
                 expectsWork: {
                   provider,
@@ -159,6 +161,7 @@ export function registerReportCommands(program: Command): void {
                 lang: config.digestLang,
               },
               watchedEmails: config.watchedAccounts,
+              depthDays: config.backlogForgetDays,
               lang: config.digestLang,
               timeZone: config.timeZone,
               signal: controller.signal,

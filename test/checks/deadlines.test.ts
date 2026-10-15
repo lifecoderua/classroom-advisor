@@ -280,10 +280,33 @@ describe("deadlineAlerts with an expects-work verdict (#61)", () => {
     expect(codes({ ...noDue, expectsWork })).toEqual(["untouched_24h", "no_due_date"]);
   });
 
+  it("`unclear` makes the untouched reminder low-noise (#69)", () => {
+    const levels = (expectsWork: "yes" | "unclear" | null) =>
+      deadlineAlerts(input({ assignment: { ...noDue, expectsWork } }), NOW).map((d) => d.level);
+    expect(levels("unclear")).toEqual(["info", "info"]);
+    expect(levels("yes")).toEqual(["alert", "info"]);
+    expect(levels(null)).toEqual(["alert", "info"]);
+  });
+
   it("never suppresses the panics", () => {
     expect(codes({ dueAt: ago(HOUR_MS), expectsWork: "no" })).toEqual(["missing"]);
     expect(codes({ dueAt: ahead(5 * HOUR_MS), expectsWork: "no" })).toEqual(["due_soon"]);
     expect(codes({ ...noDue, status: "missing", expectsWork: "no" })).toEqual(["missing"]);
+  });
+});
+
+describe("deadlineAlerts beyond the digest depth (#69)", () => {
+  const depth = { depthMs: 14 * DAY_MS };
+  const codes = (assignment: Partial<DeadlineInput["assignment"]>) =>
+    deadlineAlerts(input({ assignment }), NOW, depth).map((d) => d.code);
+
+  it("raises nothing, panics included, for an item dated before the depth", () => {
+    expect(codes({ dueAt: ago(20 * DAY_MS), postedAt: ago(30 * DAY_MS) })).toEqual([]);
+    expect(codes({ dueAt: null, postedAt: ago(200 * DAY_MS), status: "missing" })).toEqual([]);
+  });
+
+  it("dates an item by its due date first", () => {
+    expect(codes({ dueAt: ago(HOUR_MS), postedAt: ago(30 * DAY_MS) })).toEqual(["missing"]);
   });
 });
 

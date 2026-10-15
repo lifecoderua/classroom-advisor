@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ackKeepsDebt, debtAgeDays, loadBacklog } from "../../src/checks/backlog.ts";
+import { buildReport } from "../../src/notify/console.ts";
 import {
   type Db,
   muteAlert,
@@ -236,6 +237,34 @@ describe("loadBacklog", () => {
     await s.teacherSays(d.id, "Redo task 2", daysAgo(2));
     const debts = await loadBacklog(db, { now: NOW, forgetDays: 14 });
     expect(debts.map((x) => [x.kind, x.title])).toEqual([["redo", "D"]]);
+  });
+
+  it("leaves out items dated before the depth, even with a fresh comment (#69)", async () => {
+    const s = await setup();
+    const old = await s.assignment("Last year", { postedAt: daysAgo(200) });
+    const fresh = await s.teacherSays(old.id, "Redo task 2", daysAgo(1));
+    const overdue = await s.assignment("Old due", { postedAt: daysAgo(1), dueAt: daysAgo(20) });
+    await s.missingAlert(overdue.id, daysAgo(1));
+    const recent = await s.assignment("Recent", { postedAt: daysAgo(3) });
+    const ok = await s.teacherSays(recent.id, "Redo task 2", daysAgo(1));
+    const sync = await raiseAlert(
+      db,
+      { key: `sync:${s.kid.id}:session_missing:2026-10-10`, level: "alert", message: "Sync" },
+      daysAgo(0.1),
+    );
+    const debts = await loadBacklog(db, { now: NOW, forgetDays: 14 });
+    expect(debts.map((d) => d.title)).toEqual(["Recent"]);
+
+    const report = await buildReport(db, {
+      now: NOW,
+      alertIds: [fresh.id, ok.id, sync.alert.id],
+      depthDays: 14,
+    });
+    const ids = report.accounts.flatMap((a) => [...a.panics, ...a.alerts].map((x) => x.id));
+    expect(ids.sort()).toEqual([ok.id, sync.alert.id].sort());
+    // Without a depth (the default) the old one is listed.
+    const all = await buildReport(db, { now: NOW, alertIds: [fresh.id] });
+    expect(all.accounts[0]?.panics.map((x) => x.id)).toEqual([fresh.id]);
   });
 
   it("lists 'check by hand' items of the latest turned-in version until acked (ack drops them)", async () => {

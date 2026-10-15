@@ -1,5 +1,5 @@
 import { countAutoClosed } from "../checks/auto-ack.ts";
-import { type Debt, debtAgeDays, loadBacklog } from "../checks/backlog.ts";
+import { beyondDepth, type Debt, debtAgeDays, loadBacklog } from "../checks/backlog.ts";
 import { detailsUrl } from "../collector/classroom/todo.ts";
 import {
   DEFAULT_LANG,
@@ -111,6 +111,11 @@ export interface BuildReportOptions {
   backlog?: { forgetDays: number };
   /** Counts the alerts muted automatically since then (`✔️ Closed automatically: N`). */
   autoClosedSince?: Date;
+  /**
+   * Digest depth (#69, `backlogForgetDays`): alerts about an assignment dated (due, else posted)
+   * more than this many days ago are left out. Alerts not about an assignment (sync) stay.
+   */
+  depthDays?: number;
 }
 
 /** Display name, else the email's local part. */
@@ -140,7 +145,16 @@ export function parseAlertKey(
   return null;
 }
 
-async function alertAccounts(db: Db, alerts: readonly ReportAlert[]): Promise<Map<number, number>> {
+interface AlertOwner {
+  accountId: number;
+  /** The alert's assignment, when it is about one. */
+  item?: { dueAt: Date | null; postedAt: Date | null };
+}
+
+async function alertOwners(
+  db: Db,
+  alerts: readonly ReportAlert[],
+): Promise<Map<number, AlertOwner>> {
   const parsed = alerts.map((a) => [a.id, parseAlertKey(a.key)] as const);
   const assignmentIds = parsed.flatMap(([, p]) => (p?.kind === "deadline" ? [p.assignmentId] : []));
   const versionIds = parsed.flatMap(([, p]) => (p?.kind === "quality" ? [p.versionId] : []));
@@ -148,23 +162,28 @@ async function alertAccounts(db: Db, alerts: readonly ReportAlert[]): Promise<Ma
   const [assignments, versions, comments] = await Promise.all([
     db.assignment.findMany({
       where: { id: { in: assignmentIds } },
-      select: { id: true, accountId: true },
+      select: { id: true, ...OWNER_SELECT },
     }),
     db.submissionVersion.findMany({
       where: { id: { in: versionIds } },
-      select: { id: true, submission: { select: { assignment: { select: { accountId: true } } } } },
+      select: { id: true, submission: { select: { assignment: { select: OWNER_SELECT } } } },
     }),
     db.comment.findMany({
       where: { id: { in: commentIds } },
-      select: { id: true, assignment: { select: { accountId: true } } },
+      select: { id: true, assignment: { select: OWNER_SELECT } },
     }),
   ]);
-  const byAssignment = new Map(assignments.map((a) => [a.id, a.accountId]));
-  const byVersion = new Map(versions.map((v) => [v.id, v.submission.assignment.accountId]));
-  const byComment = new Map(comments.map((c) => [c.id, c.assignment.accountId]));
-  const out = new Map<number, number>();
+  type Item = { accountId: number; dueAt: Date | null; postedAt: Date | null };
+  const owner = ({ accountId, dueAt, postedAt }: Item): AlertOwner => ({
+    accountId,
+    item: { dueAt, postedAt },
+  });
+  const byAssignment = new Map(assignments.map((a) => [a.id, owner(a)]));
+  const byVersion = new Map(versions.map((v) => [v.id, owner(v.submission.assignment)]));
+  const byComment = new Map(comments.map((c) => [c.id, owner(c.assignment)]));
+  const out = new Map<number, AlertOwner>();
   for (const [id, p] of parsed) {
-    const accountId =
+    const o =
       p?.kind === "deadline"
         ? byAssignment.get(p.assignmentId)
         : p?.kind === "quality"
@@ -172,12 +191,14 @@ async function alertAccounts(db: Db, alerts: readonly ReportAlert[]): Promise<Ma
           : p?.kind === "comment"
             ? byComment.get(p.commentId)
             : p?.kind === "sync"
-              ? p.accountId
+              ? { accountId: p.accountId }
               : undefined;
-    if (accountId !== undefined) out.set(id, accountId);
+    if (o) out.set(id, o);
   }
   return out;
 }
+
+const OWNER_SELECT = { accountId: true, dueAt: true, postedAt: true } as const;
 
 interface StoredLlmFindings {
   output?: { summaryForParent?: string };
@@ -230,7 +251,7 @@ export async function buildReport(db: Db, opts: BuildReportOptions = {}): Promis
         : {},
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   });
-  const alerts: ReportAlert[] = alertRows.map((a) => ({
+  const all: ReportAlert[] = alertRows.map((a) => ({
     id: a.id,
     key: a.key,
     level: a.level as AlertLevel,
@@ -240,7 +261,13 @@ export async function buildReport(db: Db, opts: BuildReportOptions = {}): Promis
     mutedAt: a.mutedAt,
     muteReason: a.muteReason,
   }));
-  const owners = await alertAccounts(db, alerts);
+  const owners = await alertOwners(db, all);
+  const depthCutoff =
+    opts.depthDays === undefined ? undefined : now.getTime() - opts.depthDays * DAY_MS;
+  const alerts = all.filter((a) => {
+    const item = owners.get(a.id)?.item;
+    return depthCutoff === undefined || !item || !beyondDepth(item, depthCutoff);
+  });
 
   const reports = new Map<number, AccountReport>();
   for (const a of accounts) {
@@ -266,7 +293,7 @@ export async function buildReport(db: Db, opts: BuildReportOptions = {}): Promis
   );
   const other: ReportAlert[] = [];
   for (const alert of alerts) {
-    const owner = owners.get(alert.id);
+    const owner = owners.get(alert.id)?.accountId;
     const r = owner === undefined ? undefined : reports.get(owner);
     if (!r) other.push(alert);
     else if (alert.level === "panic") r.panics.push(alert);

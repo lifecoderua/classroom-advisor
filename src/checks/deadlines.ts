@@ -2,6 +2,7 @@
 // milliseconds (UTC), so local timezones and DST never matter.
 
 import type { AlertContent, AlertLevel } from "../store/types.ts";
+import { beyondDepth } from "./backlog.ts";
 
 export const HOUR_MS = 60 * 60 * 1000;
 export const DAY_MS = 24 * HOUR_MS;
@@ -29,7 +30,8 @@ export interface DeadlineInput {
     /**
      * Expects-work verdict of the current content version (#61): `no` (a lesson invite or a
      * schedule entry without homework) suppresses the reminders (`untouched_24h`,
-     * `no_due_date`). `yes`, `unclear` or unknown (null/absent) change nothing. Panics stay.
+     * `no_due_date`); `unclear` makes `untouched_24h` low-noise (`info`, #69). `yes` or unknown
+     * (null/absent) change nothing. Panics stay.
      */
     expectsWork?: ExpectsWork | null;
   };
@@ -82,6 +84,11 @@ export function isoWeek(date: Date): string {
 
 export interface DeadlineOptions {
   /**
+   * Digest depth (#69, `backlogForgetDays`): items dated (due, else posted) longer ago than this
+   * get no alerts at all, panics included (e.g. last school year's posts that show up at once).
+   */
+  depthMs?: number;
+  /**
    * `untouched_24h` and `no_due_date` apply only to items posted within this window
    * (default: no limit). Panics ignore it.
    */
@@ -98,6 +105,7 @@ export function deadlineAlerts(
   if (NO_SUBMISSION_KINDS.has(a.kind) || a.status === "excused" || isTurnedIn(input)) return [];
 
   const t = now.getTime();
+  if (options.depthMs !== undefined && beyondDepth(a, t - options.depthMs)) return [];
   const posted = (a.postedAt ?? a.firstSeenAt).getTime();
   const due = a.dueAt?.getTime();
   // Reminders only for recent, post-baseline items that may ask for work; old lesson posts and
@@ -138,7 +146,8 @@ export function deadlineAlerts(
   if (remind && out.length === 0 && t - posted > DAY_MS && noWork) {
     out.push({
       key: key("untouched_24h"),
-      level: "alert",
+      // Not sure the post asks for anything: a low-noise reminder, not an attention one (#69).
+      level: a.expectsWork === "unclear" ? "info" : "alert",
       code: "untouched_24h",
       content: { code: "deadline.untouched_24h", params: item },
     });

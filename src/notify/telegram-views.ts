@@ -9,7 +9,13 @@ import { formatAge, formatIn, formatTime, type Locale, messages } from "../i18n/
 import type { ProblemTag } from "../i18n/types.ts";
 import type { Db } from "../store/index.ts";
 import type { AlertContent, AlertLevel } from "../store/types.ts";
-import { alertText, type Report, type ReportAlert, type UpcomingItem } from "./console.ts";
+import {
+  alertText,
+  parseAlertKey,
+  type Report,
+  type ReportAlert,
+  type UpcomingItem,
+} from "./console.ts";
 
 /** List lines per page. */
 export const PAGE_SIZE = 5;
@@ -53,10 +59,20 @@ export interface Group {
   problems: Problem[];
 }
 
+/** A sync alert (lost login, parser drift): a line at the top of the kid's views, not an item. */
+export interface Banner {
+  alertId: number;
+  /** Plain text. */
+  text: string;
+  fresh: boolean;
+}
+
 export interface KidView {
   /** Account id; 0 for the kid-less "other" items. */
   id: number;
   label: string;
+  /** Open sync alerts; muted ones are left out. */
+  banners: Banner[];
   groups: Group[];
   upcoming: UpcomingItem[];
 }
@@ -150,10 +166,45 @@ function problemOf(a: ReportAlert, fresh: boolean, now: Date, loc: Locale): Prob
       };
     case "quality.llm_failed":
       return { ...base, tag: "notChecked" };
-    default:
+    case "sync.session":
+    case "sync.drift":
       return { ...base, tag: "sync", quote: alertText(a, loc) };
+    default:
+      return { ...base, tag: legacyTag(a), quote: alertText(a, loc) };
   }
 }
+
+/**
+ * The tag of a free-text alert (`code: "text"`, e.g. one from before #49), from its key:
+ * `deadline:<id>:<code>[:…]`, `quality:<id>[:c<n>|:r<n>][:unchecked|:llm-failed]`, `comment:<id>`.
+ */
+export function legacyTag(a: Pick<ReportAlert, "key" | "level">): ProblemTag {
+  const [kind, , ...rest] = a.key.split(":");
+  const last = rest.at(-1);
+  switch (kind) {
+    case "deadline": {
+      const code = rest[0];
+      if (code === "missing") return "missing";
+      if (code === "due_soon") return "dueSoon";
+      if (code === "untouched_24h") return "untouched";
+      if (code === "no_due_date") return "noDueDate";
+      return "other";
+    }
+    case "quality":
+      if (last === "unchecked") return "checkByHand";
+      if (last === "llm-failed") return "notChecked";
+      return a.level === "panic" ? "redo" : "incomplete";
+    case "comment":
+      return a.level === "panic" ? "redo" : "comment";
+    case "sync":
+      return "sync";
+    default:
+      return "other";
+  }
+}
+
+const isSyncAlert = (a: ReportAlert) =>
+  a.content.code.startsWith("sync.") || parseAlertKey(a.key)?.kind === "sync";
 
 const DEBT_TAG = { redo: "redo", missing: "missing", unchecked: "checkByHand" } as const;
 const DEBT_RANK = { redo: 0, missing: 1, unchecked: 2 } as const;
@@ -165,8 +216,13 @@ const DEBT_RANK = { redo: 0, missing: 1, unchecked: 2 } as const;
 export function buildModel(input: ModelInput): DigestModel {
   const { report, loc } = input;
   const now = report.generatedAt;
-  const kid = (id: number, label: string, upcoming: UpcomingItem[], alerts: ReportAlert[]) => {
+  const kid = (id: number, label: string, upcoming: UpcomingItem[], all: ReportAlert[]) => {
     const groups = new Map<string, Group>();
+    const fresh = (a: ReportAlert) => (input.fresh ? input.fresh.has(a.id) : a.sentAt === null);
+    const banners = all
+      .filter((a) => isSyncAlert(a) && !a.mutedAt)
+      .map((a) => ({ alertId: a.id, text: flat(alertText(a, loc)), fresh: fresh(a) }));
+    const alerts = all.filter((a) => !isSyncAlert(a));
     const group = (assignmentId: number | undefined, fallback: () => string, alertId: number) => {
       const ref = assignmentId !== undefined ? `a${assignmentId}` : `x${alertId}`;
       let g = groups.get(ref);
@@ -189,9 +245,8 @@ export function buildModel(input: ModelInput): DigestModel {
     };
     for (const a of alerts) {
       const fallback = () => flat(alertText(a, loc));
-      const fresh = input.fresh ? input.fresh.has(a.id) : a.sentAt === null;
       group(input.alertAssignments.get(a.id), fallback, a.id).problems.push(
-        problemOf(a, fresh, now, loc),
+        problemOf(a, fresh(a), now, loc),
       );
     }
     const account = report.accounts.find((x) => x.id === id);
@@ -225,7 +280,7 @@ export function buildModel(input: ModelInput): DigestModel {
         when(b) - when(a) ||
         a.ref.localeCompare(b.ref),
     );
-    return { id, label, groups: list, upcoming };
+    return { id, label, banners, groups: list, upcoming };
   };
   const kids = report.accounts.map((a) =>
     kid(a.id, a.label, a.upcoming, [...a.panics, ...a.alerts, ...a.checkByHand, ...a.info]),
@@ -235,7 +290,7 @@ export function buildModel(input: ModelInput): DigestModel {
   }
   return {
     generatedAt: now,
-    kids: kids.filter((k) => k.groups.length || k.upcoming.length),
+    kids: kids.filter((k) => k.banners.length || k.groups.length || k.upcoming.length),
     upcomingDays: report.upcomingDays,
     autoClosed: report.autoClosed,
   };
@@ -385,13 +440,32 @@ const dayMonth = (d: Date, loc: Locale) =>
     ...(loc.timeZone ? { timeZone: loc.timeZone } : {}),
   }).format(d);
 
-/** "13.10 Геометрія. Тематична…" → "Геометрія. Тематична…": the date is shown separately. */
-export function shortTitle(title: string, max = 42): string {
-  const date = String.raw`\d{1,2}\.\d{1,2}(?:\.\d{2,4})?`;
-  const t = flat(title)
-    .replace(new RegExp(String.raw`^${date}(?:\s*[-–]\s*${date})?\.?\s*`), "")
-    .replace(new RegExp(String.raw`\s+${date}\.?$`), "");
-  return cut(t || flat(title), max);
+const DATE = String.raw`\d{1,2}\.\d{1,2}(?:\.\d{2,4})?`;
+const LEADING_DATE = new RegExp(String.raw`^${DATE}(?:\s*[-–—]\s*${DATE})?\.?[\s\-–—:,.]*`);
+const TRAILING_DATE = new RegExp(String.raw`[\s\-–—:,]+${DATE}\.?$`);
+const MAX_TITLE = 42;
+
+/**
+ * "13.10 Геометрія. Тематична…" → "Геометрія. Тематична…": the list line shows a date anyway.
+ * Separators the date leaves behind ("08.10.2026-географія") go too.
+ */
+export function shortTitle(title: string, max = MAX_TITLE): string {
+  const full = flat(title);
+  const t = full.replace(LEADING_DATE, "").replace(TRAILING_DATE, "").trim();
+  return cut(t || full, max);
+}
+
+/**
+ * `shortTitle` of each, except where two different titles would come out the same
+ * ("English. 09.10.2026" and "English. 12.10.2026" → "English."): those keep their date.
+ */
+export function shortTitles(titles: readonly string[], max = MAX_TITLE): string[] {
+  const short = titles.map((t) => shortTitle(t, max));
+  const fulls = new Map<string, Set<string>>();
+  for (const [i, s] of short.entries()) {
+    fulls.set(s, (fulls.get(s) ?? new Set()).add(flat(titles[i] ?? "")));
+  }
+  return short.map((s, i) => ((fulls.get(s)?.size ?? 0) > 1 ? cut(flat(titles[i] ?? ""), max) : s));
 }
 
 const icon = (g: Group) => (isDone(g) ? "✅" : RANK_ICON[groupRank(g)]);
@@ -422,9 +496,12 @@ export function summaryView(model: DigestModel, title: string, loc: Locale): Vie
       ...(k.upcoming.length ? [v.upcoming(k.upcoming.length)] : []),
     ];
     lines.push(`👤 <b>${escapeHtml(k.label)}</b> — ${parts.join(" · ")}`);
+    lines.push(...k.banners.map(bannerLine));
   }
   if (model.autoClosed) lines.push("", t.report.autoClosed(model.autoClosed));
-  if (!model.kids.some((k) => k.groups.length)) lines.push("", t.telegram.nothingPending);
+  if (!model.kids.some((k) => k.groups.length || k.banners.length)) {
+    lines.push("", t.telegram.nothingPending);
+  }
   const kids = model.kids
     .filter((k) => k.groups.length)
     .map((k) => btn(`👤 ${k.label} (${openGroups(k)})`, { kind: "list", kid: k.id, page: 0 }));
@@ -438,9 +515,13 @@ export function summaryView(model: DigestModel, title: string, loc: Locale): Vie
   return { html: lines.join("\n"), keyboard };
 }
 
-function listLine(g: Group, n: number, loc: Locale): string {
+function bannerLine(b: Banner): string {
+  return `⚠️${b.fresh ? NEW : ""} <i>${escapeHtml(cut(b.text, 300))}</i>`;
+}
+
+function listLine(g: Group, short: string, n: number, loc: Locale): string {
   const v = messages(loc.lang).telegram.view;
-  const name = escapeHtml(shortTitle(g.title));
+  const name = escapeHtml(short);
   const when = g.dueAt
     ? v.dueShort(dayMonth(g.dueAt, loc))
     : g.postedAt
@@ -461,7 +542,13 @@ export function listView(model: DigestModel, kidId: number, page: number, loc: L
   const p = Math.min(Math.max(0, page), pages - 1);
   const slice = k.groups.slice(p * PAGE_SIZE, (p + 1) * PAGE_SIZE);
   const lines = [`👤 <b>${escapeHtml(k.label)}</b> · ${v.page(p + 1, pages)}`];
-  for (const [i, g] of slice.entries()) lines.push(listLine(g, p * PAGE_SIZE + i + 1, loc));
+  if (k.banners.length) lines.push(k.banners.map(bannerLine).join("\n"));
+  // Over the whole list, so a title reads the same on every page.
+  const names = shortTitles(k.groups.map((g) => g.title));
+  for (const [i, g] of slice.entries()) {
+    const n = p * PAGE_SIZE + i;
+    lines.push(listLine(g, names[n] ?? g.title, n + 1, loc));
+  }
   const keyboard: Button[][] = [
     slice.map((g, i) =>
       btn(`${isDone(g) ? "✅" : ""}${p * PAGE_SIZE + i + 1}`, {
@@ -562,10 +649,11 @@ export function upcomingView(model: DigestModel, loc: Locale): View {
   const lines = [v.upcomingTitle(model.upcomingDays)];
   for (const k of model.kids) {
     if (!k.upcoming.length) continue;
-    const rows = k.upcoming.map((u) => {
+    const names = shortTitles(k.upcoming.map((u) => u.title));
+    const rows = k.upcoming.map((u, i) => {
       const rel = formatIn(u.dueAt.getTime() - model.generatedAt.getTime(), loc.lang);
       const when = escapeHtml(`${v.dueFull(formatTime(u.dueAt, loc))} (${rel})`);
-      return `<a href="${escapeHtml(u.url)}">${escapeHtml(shortTitle(u.title))}</a>\n<i>${when}</i>`;
+      return `<a href="${escapeHtml(u.url)}">${escapeHtml(names[i] ?? u.title)}</a>\n<i>${when}</i>`;
     });
     lines.push(
       "",

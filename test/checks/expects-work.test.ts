@@ -409,6 +409,27 @@ describe("posts whose tasks sit in an attachment", () => {
     expect(v.expectsWorkReason?.startsWith(DOWNGRADE_NOTE)).toBe(true);
   });
 
+  it("reference videos don't trip the safety net (#69)", async () => {
+    const { add } = await seed();
+    const post = await add(WEEK1, {
+      materials: [
+        { title: "Lesson video 1", url: "https://www.youtube.com/watch?v=aaaaaaaaaaa" },
+        { title: "Lesson video 2", url: "https://youtu.be/bbbbbbbbbbb" },
+      ],
+    });
+    const provider = classifier();
+    expect(await classifyVersion(db, post.versionId, { provider })).toEqual({
+      status: "llm",
+      expectsWork: "no",
+    });
+    expect(provider.jsonCalls[0]?.input).toMatchObject({
+      attachments: [
+        { kind: "video", contentUnavailable: true },
+        { kind: "video", contentUnavailable: true },
+      ],
+    });
+  });
+
   it("reads the deck's extracted text and finds the tasks", async () => {
     const post = await mathPost({ contentPath: "files/deck1/nomod.txt" });
     const provider = strict();

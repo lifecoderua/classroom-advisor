@@ -150,7 +150,7 @@ export const en: Messages = {
     debtCount: (n) => `📌 Open debts: ${n}`,
     upcomingCount: (n) => `🟢 Coming up: ${n}`,
     statusFooter: (time, days) =>
-      `Daily digest at ${time}. Open = not marked seen, 7 days; debts are forgotten after ${days} days.`,
+      `Daily digest at ${time}. Open = not marked seen, 7 days; debts are forgotten after ${days} days, and items older than that are left out.`,
     nothingPending: "Nothing pending.",
     help: [
       "<b>classroom-advisor</b>",
@@ -190,6 +190,7 @@ export const en: Messages = {
         checkByHand: "check by hand",
         notChecked: "not checked",
         sync: "sync problem",
+        other: "notice",
       },
       dueShort: (d) => `due ${d}`,
       postedShort: (d) => `from ${d}`,

@@ -35,6 +35,8 @@ export interface CycleDeps {
   now?: () => Date;
   log?: (line: string) => void;
   watchedEmails?: readonly string[];
+  /** Digest depth of the printed digest (`backlogForgetDays`, see `BuildReportOptions`). */
+  depthDays?: number;
   /** Language and IANA time zone of the printed digest. */
   lang?: Lang;
   timeZone?: string;
@@ -131,6 +133,7 @@ export async function runCycle(deps: CycleDeps): Promise<CycleResult> {
       now: now(),
       alertIds: newAlertIds,
       ...(deps.watchedEmails ? { watchedEmails: deps.watchedEmails } : {}),
+      ...(deps.depthDays !== undefined ? { depthDays: deps.depthDays } : {}),
     });
     if (reportHasAlerts(report)) {
       result.digest = formatReport(report, {

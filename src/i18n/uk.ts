@@ -157,7 +157,7 @@ export const uk: Messages = {
     debtCount: (n) => `📌 Хвости: ${n}`,
     upcomingCount: (n) => `🟢 Термін попереду: ${n}`,
     statusFooter: (time, days) =>
-      `Підсумок дня о ${time}. Відкриті — ще не позначені переглянутими, за 7 днів; хвости забуваються через ${days} ${plural(LOCALE, days, DAYS)}.`,
+      `Підсумок дня о ${time}. Відкриті — ще не позначені переглянутими, за 7 днів; хвости забуваються через ${days} ${plural(LOCALE, days, DAYS)}, старіші завдання не показуються.`,
     nothingPending: "Нічого нового.",
     help: [
       "<b>classroom-advisor</b>",
@@ -198,6 +198,7 @@ export const uk: Messages = {
         checkByHand: "перевірити вручну",
         notChecked: "не перевірено",
         sync: "проблема синхронізації",
+        other: "повідомлення",
       },
       dueShort: (d) => `до ${d}`,
       postedShort: (d) => `від ${d}`,

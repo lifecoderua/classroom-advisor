@@ -151,9 +151,11 @@ describe("digest model", () => {
 
     const list = listView(model, 1, 0, loc);
     expect(list.html).toMatch(/⚠️🆕 <i>Sync stopped for Kid/);
-    expect(list.html).toContain("1. ");
-    expect(list.html).not.toContain("2. ");
-    expect(list.keyboard[0]).toHaveLength(1);
+    expect(list.html).not.toContain("Art");
+    // One full-width button per assignment, opening its card; then Back.
+    expect(list.keyboard.map((row) => row.length)).toEqual([1, 1]);
+    expect(list.keyboard[0]?.[0]?.text).toBe("🟠🆕 Art · from 15/10");
+    expect(list.keyboard[0]?.[0]?.callback_data).toMatch(/^c:1:0:a5$/);
     expect(summaryView(model, "Digest", loc).html).toMatch(/Kid<\/b>.*\n⚠️/);
   });
 

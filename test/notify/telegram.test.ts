@@ -382,13 +382,10 @@ describe("TelegramNotifier", () => {
     expect(f.edits()[0]?.body).toMatchObject({ chat_id: CHAT, message_id: digestId });
     const list = text(f.edits()[0]);
     expect(list).toContain("👤 <b>Student &lt;One&gt;</b> · page 1/1");
-    expect(list).toMatch(
-      /1\. 🔴🆕 <a href="[^"]*MjIy[^"]*">Fractions<\/a>\n {6}<i>due soon, not started<\/i>/,
-    );
-    expect(list).toContain(">Geometry. Angles</a>\n      <i>due 09/10 · not turned in</i>");
+    expect(list).not.toContain("Fractions");
     expect(buttons(f.edits()[0]?.body)).toEqual([
-      `1=c:${account.id}:0:a${assignmentId}`,
-      `2=c:${account.id}:0:a${other.id}`,
+      `🔴🆕 Fractions=c:${account.id}:0:a${assignmentId}`,
+      `🟠🆕 Geometry. Angles · due 09/10=c:${account.id}:0:a${other.id}`,
       "⬅ Back=h",
     ]);
 
@@ -400,15 +397,14 @@ describe("TelegramNotifier", () => {
       `⬅ Back=l:${account.id}:0`,
     ]);
 
-    // Seen: both alerts muted, a popup, straight back to the list with it last and crossed out.
+    // Seen: both alerts muted, a popup, straight back to the list with it last and marked ✅.
     await n.handleUpdate(tap(CHAT, digestId, `s:${account.id}:0:a${assignmentId}`));
     expect(f.toasts().at(-1)).toBe("Marked as seen");
     expect((await db.alert.findUniqueOrThrow({ where: { id: panicId } })).mutedAt).not.toBeNull();
     expect((await db.alert.findUniqueOrThrow({ where: { id: alertId } })).mutedAt).not.toBeNull();
-    const after = text(f.edits()[2]);
-    expect(after).toMatch(/1\. 🟠🆕 <a [^>]*>Geometry\. Angles<\/a>/);
-    expect(after).toContain("2. ✅ <s>Fractions</s>");
-    expect(buttons(f.edits()[2]?.body)[1]).toBe(`✅2=c:${account.id}:0:a${assignmentId}`);
+    const after = buttons(f.edits()[2]?.body);
+    expect(after[0]).toMatch(/^🟠🆕 Geometry\. Angles · /);
+    expect(after[1]).toBe(`✅ Fractions=c:${account.id}:0:a${assignmentId}`);
 
     await n.handleUpdate(tap(CHAT, digestId, "h"));
     expect(text(f.edits()[3])).toContain("👤 <b>Student &lt;One&gt;</b> — 🆕 1 · open 1 · ✅ 1");
@@ -453,8 +449,10 @@ describe("TelegramNotifier", () => {
     await n.handleUpdate(tap(CHAT, 101, `l:${account.id}:1`));
     const page = text(f.edits()[0]);
     expect(page).toContain("page 2/2");
-    expect(page).toContain("6. ");
-    expect(page).toContain("7. ");
+    expect(buttons(f.edits()[0]?.body).filter((b) => b.startsWith("🟠"))).toEqual([
+      expect.stringMatching(/^🟠🆕 Task \d · due /),
+      expect.stringMatching(/^🟠🆕 Task \d · due /),
+    ]);
     expect(buttons(f.edits()[0]?.body)).toContain(`◀=l:${account.id}:0`);
     expect(buttons(f.edits()[0]?.body)).toContain("2/2=n");
   });
@@ -504,7 +502,7 @@ describe("TelegramNotifier", () => {
 
     await n.handleUpdate(tap(CHAT, digestId, `s:${account.id}:0:a${assignment.id}`));
     expect(f.toasts().at(-1)).toContain("debt stays");
-    expect(text(f.edits()[1])).toContain("1. ✅ <s>Overdue &lt;map&gt;</s>");
+    expect(buttons(f.edits()[1]?.body)[0]).toMatch(/^✅ Overdue <map> · due /);
     await n.handleUpdate(msg("/status"));
     expect(text(f.sent()[2])).toContain("📌 Open debts: 1");
 

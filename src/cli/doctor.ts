@@ -4,7 +4,7 @@ import { delimiter, isAbsolute, join } from "node:path";
 import { chromium } from "playwright";
 import type { Config } from "../config/index.ts";
 import { databasePath, openDbAt } from "../store/index.ts";
-import { nodeVersionProblem } from "./node-version.ts";
+import { NATIVE_REBUILD_HINT, nodeVersionProblem } from "./node-version.ts";
 
 export interface CheckResult {
   name: string;
@@ -147,7 +147,13 @@ export async function checkDatabase(config: Pick<Config, "dataDir">): Promise<Ch
     ]);
     return { name: "Database", ok: true, detail: `${watched} watched of ${total} account(s)` };
   } catch (err) {
-    return { name: "Database", ok: false, detail: (err as Error).message.split("\n")[0] ?? "" };
+    const message = (err as Error).message;
+    if (message.includes("NODE_MODULE_VERSION")) {
+      const detail = `better-sqlite3 was built for another Node version: run ${NATIVE_REBUILD_HINT}`;
+      return { name: "Database", ok: false, detail };
+    }
+    const line = message.split("\n").find((l) => l.trim()) ?? "";
+    return { name: "Database", ok: false, detail: line.trim() };
   } finally {
     await db.$disconnect();
   }

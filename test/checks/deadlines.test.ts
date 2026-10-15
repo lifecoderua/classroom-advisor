@@ -280,6 +280,14 @@ describe("deadlineAlerts with an expects-work verdict (#61)", () => {
     expect(codes({ ...noDue, expectsWork })).toEqual(["untouched_24h", "no_due_date"]);
   });
 
+  it("`unclear` makes the untouched reminder low-noise (#69)", () => {
+    const levels = (expectsWork: "yes" | "unclear" | null) =>
+      deadlineAlerts(input({ assignment: { ...noDue, expectsWork } }), NOW).map((d) => d.level);
+    expect(levels("unclear")).toEqual(["info", "info"]);
+    expect(levels("yes")).toEqual(["alert", "info"]);
+    expect(levels(null)).toEqual(["alert", "info"]);
+  });
+
   it("never suppresses the panics", () => {
     expect(codes({ dueAt: ago(HOUR_MS), expectsWork: "no" })).toEqual(["missing"]);
     expect(codes({ dueAt: ahead(5 * HOUR_MS), expectsWork: "no" })).toEqual(["due_soon"]);

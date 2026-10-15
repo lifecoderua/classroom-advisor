@@ -15,7 +15,7 @@ import { kindFromMime } from "./heuristics.ts";
 import { allocate, truncate } from "./quality.ts";
 
 /** Versioned domain prompt (`src/checks/prompts/<id>.md`). */
-export const EXPECTS_WORK_PROMPT_VERSION = "expects-work.v2";
+export const EXPECTS_WORK_PROMPT_VERSION = "expects-work.v3";
 
 let promptCache: string | undefined;
 
@@ -216,7 +216,7 @@ export interface VersionSnapshot {
    * yet: sync fetches it (`pickMaterialPrefetch`), so classifying waits for it.
    */
   awaitingContent: boolean;
-  /** Some material other than a call link has no readable text (safety net for `no`). */
+  /** Some material other than a call link or a video has no readable text (safety net for `no`). */
   missingContent: boolean;
 }
 
@@ -289,10 +289,12 @@ export async function loadVersionSnapshot(
     if (row && !row.contentPath && !row.fetchError && TEXT_CONTENT_KINDS.has(attachmentKind(row))) {
       awaitingContent = true;
     }
-    if (!text && !isCallLink(url)) missingContent = true;
+    const kind = kindFromMime(asString(m.mime) ?? row?.mime ?? null, url);
+    // A call link carries no task, and a video never has text: watching it isn't work (#69).
+    if (!text && !isCallLink(url) && kind !== "video") missingContent = true;
     attachments.push({
       title: asString(m.title) ?? row?.title ?? url,
-      kind: kindFromMime(asString(m.mime) ?? row?.mime ?? null, url),
+      kind,
       ...(text ? { text } : { contentUnavailable: true as const }),
     });
   }
@@ -422,8 +424,8 @@ export async function classifyVersion(
 export const DOWNGRADE_NOTE = "[no -> unclear: attachment content not available]";
 
 /**
- * Deterministic safety net: never `no` when an attachment other than a call link couldn't be
- * read (its content may hold the homework). Such a `no` becomes `unclear` (reminders as before).
+ * Deterministic safety net: never `no` when an attachment other than a call link or a video
+ * couldn't be read (its content may hold the homework). Such a `no` becomes `unclear` (reminders as before).
  */
 export function safetyNet(out: ExpectsWorkOutput, missingContent: boolean): ExpectsWorkOutput {
   if (out.expectsWork !== "no" || !missingContent) return out;

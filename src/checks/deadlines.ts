@@ -29,7 +29,8 @@ export interface DeadlineInput {
     /**
      * Expects-work verdict of the current content version (#61): `no` (a lesson invite or a
      * schedule entry without homework) suppresses the reminders (`untouched_24h`,
-     * `no_due_date`). `yes`, `unclear` or unknown (null/absent) change nothing. Panics stay.
+     * `no_due_date`); `unclear` makes `untouched_24h` low-noise (`info`, #69). `yes` or unknown
+     * (null/absent) change nothing. Panics stay.
      */
     expectsWork?: ExpectsWork | null;
   };
@@ -138,7 +139,8 @@ export function deadlineAlerts(
   if (remind && out.length === 0 && t - posted > DAY_MS && noWork) {
     out.push({
       key: key("untouched_24h"),
-      level: "alert",
+      // Not sure the post asks for anything: a low-noise reminder, not an attention one (#69).
+      level: a.expectsWork === "unclear" ? "info" : "alert",
       code: "untouched_24h",
       content: { code: "deadline.untouched_24h", params: item },
     });

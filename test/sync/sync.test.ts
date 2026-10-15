@@ -371,6 +371,26 @@ describe("syncAccount: errors", () => {
     expect(cr.calls).not.toContain("t51ITc");
   });
 
+  it("closes the lost-login and drift alerts once a sync of the account succeeds", async () => {
+    await watchedAccount();
+    const cr = new FakeClassroom();
+    cr.failWith = new SessionExpiredError("batchexecute pONvgf");
+    await sync(cr, NOW);
+    cr.failWith = undefined;
+    // An item drifts: the run is ok, the session alert closes, the drift alert stays.
+    cr.subs.delete("441339928087");
+    await sync(cr, new Date(NOW.getTime() + H));
+    const open = async () =>
+      (await db.alert.findMany({ where: { mutedAt: null } })).map((a) => a.key);
+    expect(await open()).toEqual([expect.stringMatching(/^sync:\d+:drift:Zj93ge:/)]);
+    const closed = await db.alert.findFirstOrThrow({ where: { key: { contains: "session" } } });
+    expect(closed.muteReason).toBe("auto");
+    // A clean run closes the drift alert too.
+    cr.subs = new FakeClassroom().subs;
+    await sync(cr, new Date(NOW.getTime() + 2 * H));
+    expect(await open()).toEqual([]);
+  });
+
   it("keeps going when one item's details fail", async () => {
     await watchedAccount();
     const cr = new FakeClassroom();

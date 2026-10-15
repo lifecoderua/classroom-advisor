@@ -28,7 +28,8 @@ export type ProblemTag =
   | "incomplete"
   | "checkByHand"
   | "notChecked"
-  | "sync";
+  | "sync"
+  | "other";
 
 export interface Messages {
   /** BCP 47 locale for `Intl` (dates, plural rules). */

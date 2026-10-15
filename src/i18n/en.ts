@@ -190,6 +190,7 @@ export const en: Messages = {
         checkByHand: "check by hand",
         notChecked: "not checked",
         sync: "sync problem",
+        other: "notice",
       },
       dueShort: (d) => `due ${d}`,
       postedShort: (d) => `from ${d}`,

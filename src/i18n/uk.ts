@@ -198,6 +198,7 @@ export const uk: Messages = {
         checkByHand: "перевірити вручну",
         notChecked: "не перевірено",
         sync: "проблема синхронізації",
+        other: "повідомлення",
       },
       dueShort: (d) => `до ${d}`,
       postedShort: (d) => `від ${d}`,

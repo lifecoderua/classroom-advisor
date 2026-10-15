@@ -3,6 +3,7 @@
 // only through an injected `Transport` (read-only rpcids) and `HttpGet`, so this runs
 // against fakes in tests.
 
+import { MUTE_AUTO, muteAlerts } from "../checks/auto-ack.ts";
 import { type AssignmentDetail, parseAssignmentDetail } from "../collector/classroom/detail.ts";
 import { ParseDriftError } from "../collector/classroom/parse-util.ts";
 import {
@@ -471,6 +472,8 @@ export async function syncAccount(
     const ctxBase = { db, account, baseline, now, stats };
     const turnedIn: number[] = [];
     let drift: ParseDriftError | undefined;
+    // This run hit parser drift: the account's drift alerts stay open.
+    let drifted = false;
     for (const [id, detail] of details) {
       const summary = summaries.get(id);
       if (!summary) continue;
@@ -486,7 +489,10 @@ export async function syncAccount(
       const r = await applyDetail({ ...ctxBase, courseId }, summary, detail);
       if (r.turnedIn) turnedIn.push(r.assignmentId);
     }
-    if (drift) await driftAlert(db, account, drift, label, now);
+    if (drift) {
+      drifted = true;
+      await driftAlert(db, account, drift, label, now);
+    }
 
     // Private comments of every listed submission (batched, so a few calls per account): a
     // new comment does not always change the submission's update time, so the picked items
@@ -500,7 +506,10 @@ export async function syncAccount(
         log,
       });
       stats.comments.errors += fetched.errors;
-      if (fetched.drift) await driftAlert(db, account, fetched.drift, label, now);
+      if (fetched.drift) {
+        drifted = true;
+        await driftAlert(db, account, fetched.drift, label, now);
+      }
       const rows = await db.assignment.findMany({
         where: { accountId: account.id, classroomId: { in: commentKeys.map((k) => k.itemId) } },
         select: {
@@ -612,6 +621,7 @@ export async function syncAccount(
       await db.account.update({ where: { id: account.id }, data: { baselineAt: now } });
     }
     await finishSyncRun(db, run.id, { status: "ok", stats }, now);
+    await closeSyncAlerts(db, account.id, now, { drift: !drifted });
     return { status: "ok", stats };
   } catch (err) {
     const e = err as Error;
@@ -627,6 +637,31 @@ export async function syncAccount(
     await finishSyncRun(db, run.id, { status, stats, error }, now);
     return { status, stats, error };
   }
+}
+
+/**
+ * A successful sync closes the account's open lost-login alerts and, when it hit no parser
+ * drift (`drift`), its drift alerts too: muted with reason `auto`, so they leave the digest.
+ * Returns the muted ids.
+ */
+export async function closeSyncAlerts(
+  db: Db,
+  accountId: number,
+  now: Date,
+  opts: { drift: boolean },
+): Promise<number[]> {
+  const open = await db.alert.findMany({
+    where: { mutedAt: null, key: { startsWith: `sync:${accountId}:` } },
+    select: { id: true, key: true },
+  });
+  const ids = open
+    .filter((a) => {
+      const kind = a.key.split(":")[2] ?? "";
+      return kind.startsWith("session_") || (opts.drift && kind === "drift");
+    })
+    .map((a) => a.id);
+  if (ids.length) await muteAlerts(db, ids, MUTE_AUTO, now);
+  return ids;
 }
 
 /** Alert for a lost login; one per account per day. */

@@ -1,4 +1,4 @@
-# Does this post ask for work? (expects-work.v2)
+# Does this post ask for work? (expects-work.v3)
 
 You help a parent follow a child's Google Classroom (primary or middle school). Classroom shows
 many posts as "assignments" even when they are only a lesson schedule entry: the same title every
@@ -14,7 +14,8 @@ The input JSON has the post's `title`, its `description` (the teacher's text; ma
 marker says so) and `attachments`: what the teacher attached, each with a `title`, a `kind` and,
 when available, its extracted `text` (may be truncated). An attachment marked
 `contentUnavailable: true` could not be read: you only know its title and kind, not what is
-inside. Teachers often put the actual tasks only in an attached deck or document.
+inside. Teachers often put the actual tasks only in an attached deck or document. Videos (`kind:
+"video"`, e.g. YouTube links) never have text: you only know their titles.
 
 ## How to decide
 
@@ -35,10 +36,16 @@ inside. Teachers often put the actual tasks only in an attached deck or document
   entry, or an announcement, with no hint of a task anywhere. A video-call invite (link, meeting
   id, passcode, topic, time) alone means `no`, even when the topic names the lesson subject.
   Joining or attending the lesson is not homework.
+- **Reference videos are not a task.** A call invite or lesson topic plus attached videos (e.g.
+  YouTube links to watch in class or to look at for the topic) still means `no` when nothing
+  asks for a task. Do not answer `unclear` just because a video's content can't be read: videos
+  are watched, not done. A video counts towards `yes` only when the text says to do something
+  with it (answer questions on it, write a summary, take notes to hand in, do the exercises shown
+  in it).
 - `unclear`: when you are not sure. In particular, when the post has an attachment with
-  `contentUnavailable: true` (other than a call link) and the text doesn't settle it, answer
-  `unclear`, never `no`: the tasks may be inside. `unclear` is the safe fallback: the parent keeps
-  getting reminders.
+  `contentUnavailable: true` that can hold tasks (a deck, a document, a PDF, a file, a form; not
+  a call link or a video) and the text doesn't settle it, answer `unclear`, never `no`: the tasks
+  may be inside. `unclear` is the safe fallback: the parent still gets a low-key reminder.
 
 ## Output
 

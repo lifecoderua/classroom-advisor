@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
+import type { Report, ReportAlert } from "../../src/notify/console.ts";
 import {
   type Action,
+  buildModel,
   decodeAction,
   encodeAction,
+  legacyTag,
+  listView,
   shortTitle,
+  shortTitles,
+  summaryView,
 } from "../../src/notify/telegram-views.ts";
+import type { AlertContent, AlertLevel } from "../../src/store/types.ts";
 
 describe("telegram views", () => {
   it("round-trips callback data within Telegram's 64 bytes", () => {
@@ -36,5 +43,132 @@ describe("telegram views", () => {
     expect(shortTitle("13.10")).toBe("13.10");
     expect(shortTitle("A".repeat(60))).toBe(`${"A".repeat(41)}…`);
     expect(shortTitle("line one\n  line two")).toBe("line one line two");
+    // Separators the date leaves behind go too.
+    expect(shortTitle("08.10.2026-географія о 09:40")).toBe("географія о 09:40");
+    expect(shortTitle("08.10.2026 – історія")).toBe("історія");
+    expect(shortTitle("Історія - 08.10.2026")).toBe("Історія");
+  });
+
+  it("keeps the dates of titles that would look like duplicates", () => {
+    expect(
+      shortTitles(["English. 09.10.2026", "English. 12.10.2026", "13.10 Геометрія", "Алгебра"]),
+    ).toEqual(["English. 09.10.2026", "English. 12.10.2026", "Геометрія", "Алгебра"]);
+    // The same title twice is the same post name, not a collision to explain.
+    expect(shortTitles(["Music 01.10", "Music 01.10"])).toEqual(["Music", "Music"]);
+  });
+
+  it("tags free-text (legacy) alerts by their key", () => {
+    const tag = (key: string, level: AlertLevel = "alert") => legacyTag({ key, level });
+    expect(tag("deadline:7:untouched_24h")).toBe("untouched");
+    expect(tag("deadline:7:due_soon", "panic")).toBe("dueSoon");
+    expect(tag("deadline:7:missing", "panic")).toBe("missing");
+    expect(tag("deadline:7:no_due_date:2026-W41", "info")).toBe("noDueDate");
+    expect(tag("quality:9", "alert")).toBe("incomplete");
+    expect(tag("quality:9", "panic")).toBe("redo");
+    expect(tag("quality:9:unchecked", "info")).toBe("checkByHand");
+    expect(tag("quality:9:c4:unchecked", "info")).toBe("checkByHand");
+    expect(tag("quality:9:llm-failed")).toBe("notChecked");
+    expect(tag("comment:3")).toBe("comment");
+    expect(tag("sync:1:session_missing:2026-10-15")).toBe("sync");
+    expect(tag("misc:1")).toBe("other");
+  });
+});
+
+describe("digest model", () => {
+  const NOW = new Date("2026-10-15T08:00:00Z");
+  const loc = { lang: "en" as const, timeZone: "UTC" };
+  let nextId = 1;
+  const alert = (key: string, level: AlertLevel, content: AlertContent, muted = false) =>
+    ({
+      id: nextId++,
+      key,
+      level,
+      content,
+      createdAt: NOW,
+      sentAt: null,
+      mutedAt: muted ? NOW : null,
+    }) satisfies ReportAlert;
+  const report = (alerts: ReportAlert[]): Report => ({
+    generatedAt: NOW,
+    since: null,
+    alertsOnly: true,
+    accounts: [
+      {
+        id: 1,
+        email: "kid@school.example",
+        label: "Kid",
+        panics: [],
+        alerts,
+        checkByHand: [],
+        info: [],
+        turnedIn: [],
+        upcoming: [],
+        backlog: [],
+      },
+    ],
+    other: [],
+    autoClosed: 0,
+    upcomingDays: 0,
+  });
+
+  it("shows sync alerts as a banner, not as list items, and tags legacy alerts by key", () => {
+    const session = alert("sync:1:session_missing:2026-10-15", "alert", {
+      code: "sync.session",
+      params: { account: "Kid", state: "missing" },
+    });
+    const closed = alert(
+      "sync:1:drift:abc:2026-10-14",
+      "alert",
+      { code: "sync.drift", params: { account: "Kid", rpcid: "abc", error: "x" } },
+      true,
+    );
+    const legacy = alert("deadline:5:untouched_24h", "alert", {
+      code: "text",
+      params: { text: "Not started: Art" },
+    });
+    const model = buildModel({
+      report: report([session, closed, legacy]),
+      alertAssignments: new Map([[legacy.id, 5]]),
+      assignments: new Map([
+        [
+          5,
+          {
+            title: "Art",
+            course: "Art",
+            dueAt: null,
+            postedAt: NOW,
+            url: "https://classroom.example/a/5",
+            turnedIn: false,
+          },
+        ],
+      ]),
+      loc,
+    });
+    const kid = model.kids[0];
+    expect(kid?.banners.map((b) => b.alertId)).toEqual([session.id]);
+    expect(kid?.groups.map((g) => g.ref)).toEqual(["a5"]);
+    expect(kid?.groups[0]?.problems.map((p) => p.tag)).toEqual(["untouched"]);
+
+    const list = listView(model, 1, 0, loc);
+    expect(list.html).toMatch(/⚠️🆕 <i>Sync stopped for Kid/);
+    expect(list.html).toContain("1. ");
+    expect(list.html).not.toContain("2. ");
+    expect(list.keyboard[0]).toHaveLength(1);
+    expect(summaryView(model, "Digest", loc).html).toMatch(/Kid<\/b>.*\n⚠️/);
+  });
+
+  it("keeps a kid with only a sync banner on the summary", () => {
+    const session = alert("sync:1:session_expired:2026-10-15", "alert", {
+      code: "sync.session",
+      params: { account: "Kid", state: "expired" },
+    });
+    const model = buildModel({
+      report: report([session]),
+      alertAssignments: new Map(),
+      assignments: new Map(),
+      loc,
+    });
+    expect(model.kids).toHaveLength(1);
+    expect(summaryView(model, "Digest", loc).html).toContain("⚠️");
   });
 });

@@ -235,6 +235,17 @@ export class Cursor {
     return this.expected(path, "decimal id", v);
   }
 
+  /**
+   * Material ids (description refs, `t51ITc` keys) are signed 64-bit decimals; negative ones
+   * arrive as strings like `"-12345678901"`.
+   */
+  signedId(path: Path): string {
+    const v = this.get(path);
+    if (typeof v === "string" && /^-?\d+$/.test(v)) return v;
+    if (typeof v === "number" && Number.isSafeInteger(v)) return String(v);
+    return this.expected(path, "signed decimal id", v);
+  }
+
   /** Checks the payload type tag at `[0]`, e.g. `hrq.sub`. */
   tag(expected: string): void {
     const v = this.get([0]);

@@ -24,6 +24,7 @@ Each `*.json` file is `{ rpcid, sourcePath, request, response }`, where `request
 | `annotated-attachment.Zj93ge.json` | `Zj93ge` | student file + teacher-annotated copy (`[15]` = 3) |
 | `private-comments.sLc6hf.json`, `class-comments-empty.sLc6hf.json` | `sLc6hf` | private comments on a submission; empty class comments |
 | `private-comments-batch.sLc6hf.json` | `sLc6hf` | **synthetic**: one request over three submission keys (teacher + student comments on two of them), the shape the sync sends |
+| `material-ref-signed.pONvgf.json`, `material-ref-signed.t51ITc.json` | `pONvgf`, `t51ITc` | one To-do item (trimmed page) whose description refs one positive and one **negative** material id, and its materials (link + YouTube) (#68) |
 | `classwork.dpT4Vd.json` | `dpT4Vd` | classwork topic page with a material post (type 7) and an assignment |
 | `material-detail.tQShAc.json` | `tQShAc` | material post by id |
 | `course-user.O1Xqee.json`, `detail.cCzVwf.json` | | membership; add-on attachments (?) |

@@ -2,7 +2,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { frame } from "../scripts/anonymize.ts";
-import { parseItem } from "../src/collector/classroom/detail.ts";
+import {
+  parseAssignmentDetail,
+  parseItem,
+  parseMaterials,
+} from "../src/collector/classroom/detail.ts";
 import { ParseDriftError } from "../src/collector/classroom/parse-util.ts";
 import type { ClassroomSession, Transport } from "../src/collector/classroom/rpc.ts";
 import {
@@ -91,6 +95,38 @@ describe("parsers on fixtures", () => {
     const due = page.rows.find((r) => r.id === "441339928087");
     expect(due?.dueAt).toEqual(new Date(1760734740000));
     expect(due?.maxPoints).toBeNull();
+  });
+
+  it("pONvgf: a drifted item is skipped, the rest still parse", () => {
+    const todo = clone(TODO);
+    todo[2][3][1][0][5] = 42; // title is not a string
+    const page = parseTodoPage(todo);
+    expect(page.rows).toHaveLength(11);
+    expect(page.skipped).toHaveLength(1);
+    expect(page.skipped[0]).toBeInstanceOf(ParseDriftError);
+    expect(page.skipped[0]?.message).toContain("[2][3][1][0][5]");
+  });
+
+  it("material refs with signed (negative) ids, matched by t51ITc (#68)", () => {
+    const page = parseTodoPage(fixture("material-ref-signed.pONvgf.json").response);
+    expect(page.skipped).toEqual([]);
+    const item = page.rows[0]?.item;
+    expect(item?.materialIds).toEqual(["320666909491", "-10346807927"]);
+    const mats = parseMaterials(fixture("material-ref-signed.t51ITc.json").response);
+    expect(mats.map((m) => m.materialId).sort()).toEqual([...(item?.materialIds ?? [])].sort());
+    const detail = parseAssignmentDetail({
+      item,
+      materials: fixture("material-ref-signed.t51ITc.json").response,
+    });
+    expect(detail.materials.map((m) => m.type).sort()).toEqual(["link", "youtube"]);
+  });
+
+  it("material refs: a non-numeric id still drifts", () => {
+    const todo = clone(fixture("material-ref-signed.pONvgf.json").response);
+    todo[2][0][1][0][27][0][4][0][1][1] = "abc";
+    const page = parseTodoPage(todo);
+    expect(page.rows).toEqual([]);
+    expect(page.skipped[0]?.message).toContain("signed decimal id");
   });
 
   it("material posts: body at [5], no due date", () => {
@@ -238,9 +274,11 @@ describe("listTodo", () => {
     const badTitle = clone(TODO);
     badTitle[1] = [false];
     badTitle[2][0][1][0][5] = 42;
-    const err = await run({ ...ok, pONvgf: () => badTitle }).catch((e) => e);
-    expect(err).toBeInstanceOf(ParseDriftError);
-    expect(err.message).toContain("[2][0][1][0][5]");
+    // A drifted item is skipped, not fatal (#68).
+    const listing = await run({ ...ok, pONvgf: () => badTitle });
+    expect(listing.items).toHaveLength(11);
+    expect(listing.skipped).toHaveLength(1);
+    expect(listing.skipped[0]?.message).toContain("[2][0][1][0][5]");
 
     const noToken = clone(TODO);
     noToken[1] = [true];
@@ -254,11 +292,11 @@ describe("listTodo", () => {
     const badDue = clone(TODO);
     badDue[1] = [false];
     badDue[2][0][1][1][0] = "do eiusmod";
-    const err = await listTodo(
+    const { skipped } = await listTodo(
       fakeTransport({ gXtzob: () => COURSES, pONvgf: () => badDue, Zj93ge: () => SUBS }).transport,
       SESSION,
-    ).catch((e) => e);
-    expect(err).toBeInstanceOf(ParseDriftError);
-    expect(err.message).not.toContain("eiusmod");
+    );
+    expect(skipped[0]).toBeInstanceOf(ParseDriftError);
+    expect(skipped[0]?.message).not.toContain("eiusmod");
   });
 });

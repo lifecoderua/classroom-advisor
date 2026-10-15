@@ -59,7 +59,7 @@ export function formatOutcome(o: AccountOutcome): string {
   const c = s.comments;
   return [
     `Account #${o.index}: ${o.status}${s.baseline ? " (baseline)" : ""}`,
-    `${s.items} item(s) in ${s.courses} course(s)`,
+    `${s.items} item(s) in ${s.courses} course(s)${s.skippedItems ? ` (+${s.skippedItems} skipped: drift)` : ""}`,
     `details ${s.details}${s.detailErrors ? ` (+${s.detailErrors} failed)` : ""}`,
     `assignments new ${s.assignments.new} / updated ${s.assignments.updated}`,
     `submission versions ${s.submissionVersions}`,

@@ -120,16 +120,24 @@ export interface StreamItem {
   item: ParsedItem;
 }
 
+/** One page of stream items; items that failed to parse are left out of `rows`. */
+export interface TodoPage extends Page<StreamItem> {
+  /** Drift of each skipped item, so one odd item doesn't stop the account's sync. */
+  skipped: ParseDriftError[];
+}
+
 /** `pONvgf` → `["hrsi.qr", [hasMore, [nextPageToken]], [item…]]`; items parsed as in #6. */
-export function parseTodoPage(payload: unknown): Page<StreamItem> {
+export function parseTodoPage(payload: unknown): TodoPage {
   const rpcid = "pONvgf";
   const p = expectTag(rpcid, payload, "hrsi.qr");
   const items = reader(rpcid).optArr(p, [2]) ?? [];
-  return {
-    rows: items.map((it, i): StreamItem => {
+  const rows: StreamItem[] = [];
+  const skipped: ParseDriftError[] = [];
+  items.forEach((it, i) => {
+    try {
       const item = parseItem(it, rpcid, [2, i]);
       if (!item.createdAt) throw reader(rpcid).drift([2, i, 1, 0, 1], "epoch ms", null);
-      return {
+      rows.push({
         id: item.id,
         courseId: item.courseId,
         kind: item.kind,
@@ -139,10 +147,13 @@ export function parseTodoPage(payload: unknown): Page<StreamItem> {
         dueAt: item.dueAt,
         maxPoints: item.maxPoints ?? null,
         item,
-      };
-    }),
-    ...paging(rpcid, p),
-  };
+      });
+    } catch (err) {
+      if (!(err instanceof ParseDriftError)) throw err;
+      skipped.push(err);
+    }
+  });
+  return { rows, skipped, ...paging(rpcid, p) };
 }
 
 // ---- submissions (Zj93ge) ---------------------------------------------------------------
@@ -266,6 +277,8 @@ export interface TodoListing {
   summaries: AssignmentSummary[];
   /** The listed items (same order as `summaries`), with their full parsed form. */
   items: StreamItem[];
+  /** Drift of listed items that failed to parse and were left out. */
+  skipped: ParseDriftError[];
 }
 
 /**
@@ -310,15 +323,16 @@ export async function listTodo(
   const active = courses.filter((c) => c.active);
 
   const items: StreamItem[] = [];
+  const skipped: ParseDriftError[] = [];
   const seen = new Set<string>();
   for (const course of active) {
-    const rows = await pages(
-      async (t) =>
-        parseTodoPage(
-          await client.call("pONvgf", todoArgs([course.id], options.buckets ?? ALL_BUCKETS, t)),
-        ),
-      "pONvgf",
-    );
+    const rows = await pages(async (t) => {
+      const page = parseTodoPage(
+        await client.call("pONvgf", todoArgs([course.id], options.buckets ?? ALL_BUCKETS, t)),
+      );
+      skipped.push(...page.skipped);
+      return page;
+    }, "pONvgf");
     for (const row of rows) {
       const k = itemKey(row.id, row.courseId);
       if (seen.has(k)) continue;
@@ -340,6 +354,7 @@ export async function listTodo(
     courses,
     summaries: joinSummaries(items, submissions, courses, account.authuser),
     items,
+    skipped,
   };
 }
 

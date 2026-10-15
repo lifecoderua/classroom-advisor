@@ -384,6 +384,21 @@ describe("syncAccount: errors", () => {
       expect.stringMatching(/^sync:\d+:drift:Zj93ge:/),
     ]);
   });
+
+  it("skips a drifted listed item, alerts once and syncs the rest (#68)", async () => {
+    await watchedAccount();
+    const cr = new FakeClassroom();
+    cr.item("441339928087")[1][0][5] = 42; // title is not a string
+    const res = await sync(cr, NOW);
+    expect(res.status).toBe("ok");
+    expect(res.stats.items).toBe(11);
+    expect(res.stats.skippedItems).toBe(1);
+    expect(res.stats.details).toBe(11);
+    expect(await db.assignment.count()).toBe(11);
+    expect((await db.alert.findMany()).map((a) => a.key)).toEqual([
+      expect.stringMatching(/^sync:\d+:drift:pONvgf:/),
+    ]);
+  });
 });
 
 describe("syncAccount: private comments", () => {

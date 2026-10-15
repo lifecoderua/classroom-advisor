@@ -4,6 +4,7 @@ import { delimiter, isAbsolute, join } from "node:path";
 import { chromium } from "playwright";
 import type { Config } from "../config/index.ts";
 import { databasePath, openDbAt } from "../store/index.ts";
+import { nodeVersionProblem } from "./node-version.ts";
 
 export interface CheckResult {
   name: string;
@@ -90,13 +91,13 @@ export function chromeCheck(
 }
 
 export function runDoctor(config: Config): CheckResult[] {
-  const nodeMajor = Number(process.versions.node.split(".")[0]);
+  const nodeProblem = nodeVersionProblem();
   const claude = which(config.claudeBin);
   return [
     {
       name: "Node",
-      ok: nodeMajor >= 22,
-      detail: `${process.version}${nodeMajor >= 22 ? "" : " (need >= 22)"}`,
+      ok: !nodeProblem,
+      detail: nodeProblem ?? process.version,
     },
     chromeCheck(config.chromeChannel),
     {

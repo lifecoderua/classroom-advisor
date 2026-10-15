@@ -444,6 +444,8 @@ const DATE = String.raw`\d{1,2}\.\d{1,2}(?:\.\d{2,4})?`;
 const LEADING_DATE = new RegExp(String.raw`^${DATE}(?:\s*[-–—]\s*${DATE})?\.?[\s\-–—:,.]*`);
 const TRAILING_DATE = new RegExp(String.raw`[\s\-–—:,]+${DATE}\.?$`);
 const MAX_TITLE = 42;
+/** A phone shows ~35 characters of a full-width button; the icon and date take ~12 of them. */
+const BUTTON_TITLE = 24;
 
 /**
  * "13.10 Геометрія. Тематична…" → "Геометрія. Тематична…": the list line shows a date anyway.
@@ -469,11 +471,6 @@ export function shortTitles(titles: readonly string[], max = MAX_TITLE): string[
 }
 
 const icon = (g: Group) => (isDone(g) ? "✅" : RANK_ICON[groupRank(g)]);
-
-function tags(g: Group, loc: Locale): string {
-  const t = messages(loc.lang).telegram.view.tag;
-  return [...new Set(g.problems.map((p) => t[p.tag]))].join(", ");
-}
 
 export function openGroups(k: KidView): number {
   return k.groups.filter((g) => !isDone(g)).length;
@@ -519,21 +516,21 @@ function bannerLine(b: Banner): string {
   return `⚠️${b.fresh ? NEW : ""} <i>${escapeHtml(cut(b.text, 300))}</i>`;
 }
 
-function listLine(g: Group, short: string, n: number, loc: Locale): string {
+/** A list button's label (plain text): icon, short title, the due or posted date. */
+function listLabel(g: Group, short: string, loc: Locale): string {
   const v = messages(loc.lang).telegram.view;
-  const name = escapeHtml(short);
   const when = g.dueAt
     ? v.dueShort(dayMonth(g.dueAt, loc))
     : g.postedAt
       ? v.postedShort(dayMonth(g.postedAt, loc))
       : "";
-  const meta = `<i>${escapeHtml([when, tags(g, loc)].filter(Boolean).join(" · "))}</i>`;
-  if (isDone(g)) return `${n}. ✅ <s>${name}</s>\n      ${meta}`;
-  const title = g.url ? `<a href="${escapeHtml(g.url)}">${name}</a>` : name;
-  return `${n}. ${icon(g)}${isNew(g) ? NEW : ""} ${title}\n      ${meta}`;
+  return `${icon(g)}${isNew(g) ? NEW : ""} ${[short, when].filter(Boolean).join(" · ")}`;
 }
 
-/** Level 2: a kid's assignments, one line each; the title links to Classroom, a number opens the card. */
+/**
+ * Level 2: a kid's assignments as full-width buttons, one per row, each opening the card (the
+ * card links to Classroom and lists the problems). The message itself is the header and banners.
+ */
 export function listView(model: DigestModel, kidId: number, page: number, loc: Locale): View {
   const k = model.kids.find((x) => x.id === kidId);
   if (!k) return summaryView(model, messages(loc.lang).telegram.digest, loc);
@@ -544,21 +541,18 @@ export function listView(model: DigestModel, kidId: number, page: number, loc: L
   const lines = [`👤 <b>${escapeHtml(k.label)}</b> · ${v.page(p + 1, pages)}`];
   if (k.banners.length) lines.push(k.banners.map(bannerLine).join("\n"));
   // Over the whole list, so a title reads the same on every page.
-  const names = shortTitles(k.groups.map((g) => g.title));
-  for (const [i, g] of slice.entries()) {
-    const n = p * PAGE_SIZE + i;
-    lines.push(listLine(g, names[n] ?? g.title, n + 1, loc));
-  }
-  const keyboard: Button[][] = [
-    slice.map((g, i) =>
-      btn(`${isDone(g) ? "✅" : ""}${p * PAGE_SIZE + i + 1}`, {
-        kind: "card",
-        kid: k.id,
-        page: p,
-        ref: g.ref,
-      }),
-    ),
-  ];
+  const names = shortTitles(
+    k.groups.map((g) => g.title),
+    BUTTON_TITLE,
+  );
+  const keyboard: Button[][] = slice.map((g, i) => [
+    btn(listLabel(g, names[p * PAGE_SIZE + i] ?? g.title, loc), {
+      kind: "card",
+      kid: k.id,
+      page: p,
+      ref: g.ref,
+    }),
+  ]);
   if (pages > 1) {
     keyboard.push([
       btn(p > 0 ? "◀" : "·", p > 0 ? { kind: "list", kid: k.id, page: p - 1 } : { kind: "noop" }),

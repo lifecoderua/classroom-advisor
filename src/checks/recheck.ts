@@ -87,6 +87,32 @@ export interface RecheckResult {
   verdict?: Verdict;
   /** The alert the recheck raised, if any (warn/panic or check by hand). */
   content?: AlertContent;
+  /**
+   * The LLM review's summary. An `ok` verdict raises at most a check-by-hand alert, which lists
+   * only the parts the review couldn't verify: without this the parts it did check are lost.
+   */
+  summary?: string;
+}
+
+/** `summaryForParent` of the newest `source` CheckResult of a version, if any. */
+async function reviewSummary(
+  db: Db,
+  submissionVersionId: number,
+  source: string,
+): Promise<string | undefined> {
+  const r = await db.checkResult.findFirst({
+    where: { submissionVersionId, source },
+    orderBy: { id: "desc" },
+    select: { findings: true },
+  });
+  if (!r) return undefined;
+  try {
+    const f = JSON.parse(r.findings) as { output?: { summaryForParent?: unknown } };
+    const s = f.output?.summaryForParent;
+    return typeof s === "string" && s.trim() ? s.trim() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -154,11 +180,13 @@ export async function recheckAssignments(
         orderBy: { id: "desc" },
         select: { code: true, params: true },
       });
+      const summary = await reviewSummary(db, latest.id, llmSource(provider));
       out.push({
         ...base,
         status: "reviewed",
         verdict: fresh.verdict as Verdict,
         ...(alert ? { content: alertContent(alert) } : {}),
+        ...(summary ? { summary } : {}),
       });
       continue;
     }
@@ -176,11 +204,16 @@ export async function recheckAssignments(
         now,
       );
     }
+    const summary =
+      res.status === "reviewed"
+        ? await reviewSummary(db, latest.id, llmSource(provider))
+        : undefined;
     out.push({
       ...base,
       status: res.status === "reviewed" ? "reviewed" : "failed",
       ...(res.verdict ? { verdict: res.verdict } : {}),
       ...(res.content ? { content: res.content } : {}),
+      ...(summary ? { summary } : {}),
     });
   }
   return out;

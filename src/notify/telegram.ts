@@ -927,10 +927,15 @@ export class TelegramNotifier {
       const item = escapeHtml(itemLabel(r.title, r.course, this.lang));
       let html: string;
       if (r.status === "reviewed" && r.verdict) {
+        // A warn/panic alert already carries the summary.
+        const summary =
+          r.summary && r.content?.code !== "quality.review"
+            ? `\n${escapeHtml(truncate(r.summary, LINE_CAP))}`
+            : "";
         const alert = r.content
           ? `\n${escapeHtml(truncate(renderAlert(r.content, this.now(), this.loc), LINE_CAP))}`
           : "";
-        html = `${t.recheckDone(item, verdicts[r.verdict])}${alert}`;
+        html = `${t.recheckDone(item, verdicts[r.verdict])}${summary}${alert}`;
       } else if (r.status === "not_turned_in") {
         html = t.recheckNotTurnedIn(item);
       } else {

@@ -150,6 +150,38 @@ describe("runCycle with rechecks", () => {
     expect(res.newAlertIds).toEqual([alerts[1]?.id]);
   });
 
+  it("returns the review summary with an ok verdict's check-by-hand alert", async () => {
+    const { essay } = await seed();
+    const provider = new FakeProvider({
+      respond: {
+        verdict: "ok",
+        addressesAssignment: true,
+        missingParts: [],
+        issues: [],
+        summaryForParent: "Part 3 is done: all questions answered.",
+        confidence: 0.8,
+        unverifiable: [{ what: "Part 1", why: "oral" }],
+      },
+    });
+    const res = await runCycle({
+      db,
+      sync: async () => undefined,
+      provider,
+      readText: async () => "My essay text.",
+      now: () => NOW,
+      log: () => undefined,
+      recheck: [essay.id],
+    });
+    expect(res.rechecked).toEqual([
+      expect.objectContaining({
+        status: "reviewed",
+        verdict: "ok",
+        content: expect.objectContaining({ code: "quality.unchecked" }),
+        summary: "Part 3 is done: all questions answered.",
+      }),
+    ]);
+  });
+
   it("answers 'not turned in' for an item without work", async () => {
     const { draft } = await seed();
     const res = await runCycle({

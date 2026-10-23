@@ -873,6 +873,51 @@ describe("TelegramNotifier", () => {
       expect(String(answers[0]?.body.text)).toContain("🟠 warn");
       expect(String(answers[0]?.body.text)).toContain("Task 2 missing.");
     });
+
+    it("a recheck answer shows the summary next to a check-by-hand alert", async () => {
+      await seed();
+      const assignment = await db.assignment.findFirstOrThrow();
+      await upsertSubmission(
+        db,
+        {
+          assignmentId: assignment.id,
+          state: "turned_in",
+          turnedInAt: clock,
+          hash: "s",
+          payload: {},
+        },
+        clock,
+      );
+      const f = fakeFetch();
+      const n = notifier(f);
+      await n.handleUpdate(say(CHAT, `/recheck_${assignment.id}`));
+      n.startCycle();
+      await n.afterCycle({
+        rechecked: [
+          {
+            assignmentId: assignment.id,
+            title: "Fractions",
+            course: "Math",
+            status: "reviewed",
+            verdict: "ok",
+            summary: "Task 3 is done in the notebook.",
+            content: {
+              code: "quality.unchecked",
+              params: {
+                title: "Fractions",
+                course: "Math",
+                items: [{ what: "Task 1", why: "oral" }],
+              },
+            },
+          },
+        ],
+      });
+      const answer = String(
+        f.sent().find((c) => String(c.body.text).includes("Checked again"))?.body.text,
+      );
+      expect(answer).toContain("Task 3 is done in the notebook.");
+      expect(answer).toContain("Task 1");
+    });
   });
 
   it("answers commands in a linked group, also with @bot", async () => {

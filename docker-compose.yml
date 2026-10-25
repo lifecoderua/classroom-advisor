@@ -1,9 +1,10 @@
 # Example deployment; see docs/DEPLOY.md.
 #
 #   docker compose build
-#   docker compose run --rm -p 127.0.0.1:6080:6080 advisor login   # one-time hand login (noVNC)
+#   docker compose run --rm -p 127.0.0.1:6080:6080 advisor login   # first hand login (noVNC)
 #   docker compose run --rm advisor doctor --session
 #   docker compose up -d                                            # `run` loop
+#   docker compose exec advisor entrypoint.sh login                 # re-login, loop keeps running
 services:
   advisor:
     build:
@@ -26,7 +27,12 @@ services:
       # Fixed container paths; these win over a laptop-style .env.
       CA_PROFILE_DIR: /profile
       CA_DATA_DIR: /data
+      CA_LOGIN_MODE: vnc
       CA_LLM_PROVIDER: ${CA_LLM_PROVIDER:-gemini}
+    # noVNC of a hand login opened by the loop (`login`), on the host's loopback only. On a remote
+    # machine reach it through an SSH tunnel.
+    ports:
+      - 127.0.0.1:6080:6080
     volumes:
       - profile:/profile
       - data:/data

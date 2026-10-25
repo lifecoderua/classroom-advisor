@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { acquireRunLock, lockPath, RunLockedError } from "../../src/run/lock.ts";
+import { acquireRunLock, lockPath, RunLockedError, runLockHolder } from "../../src/run/lock.ts";
 import { inQuietHours, parseDuration, parseQuietHours } from "../../src/run/schedule.ts";
 
 // Local-time dates: quiet hours are evaluated in the process's time zone.
@@ -109,5 +109,14 @@ describe("run lock", () => {
     writeFileSync(lockPath(dir), JSON.stringify({ pid: 4, host: hostname() }));
     lock.release();
     expect(JSON.parse(readFileSync(lockPath(dir), "utf8")).pid).toBe(4);
+  });
+
+  it("names the live holder for `login` (a loop on this host or another one)", () => {
+    expect(runLockHolder(dir)).toBeUndefined();
+    writeFileSync(lockPath(dir), JSON.stringify({ pid: 9, host: hostname() }));
+    expect(runLockHolder(dir, () => true)?.pid).toBe(9);
+    expect(runLockHolder(dir, () => false)).toBeUndefined();
+    writeFileSync(lockPath(dir), JSON.stringify({ pid: 9, host: "elsewhere.invalid" }));
+    expect(runLockHolder(dir, () => false)?.host).toBe("elsewhere.invalid");
   });
 });

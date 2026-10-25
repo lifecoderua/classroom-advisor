@@ -1,7 +1,7 @@
 #!/bin/sh
 # Container entrypoint. See docs/DEPLOY.md.
 #   run [--once]     default: migrate the DB, then the `run` loop
-#   login            noVNC + headful Chrome on /profile so a human logs in by hand
+#   login [--done]   hand login over noVNC: asks the running loop to open it, or opens it here
 #   <cli command>    any other classroom-advisor command (doctor, sync, report, ...)
 #   sh|bash|claude|node ...   run as is (e.g. `claude` to log the CLI in)
 set -eu
@@ -16,8 +16,9 @@ if [ -z "${CA_CHROME_CHANNEL:-}" ]; then
   fi
 fi
 
+# `login` touches no DB; skip the migration (the loop may be running next to it).
 if [ "${1:-run}" = "login" ]; then
-  exec /usr/local/bin/login.sh
+  exec ./node_modules/.bin/tsx src/cli/index.ts "$@"
 fi
 
 case "${1:-}" in

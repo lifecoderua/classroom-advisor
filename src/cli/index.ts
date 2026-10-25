@@ -15,6 +15,7 @@ import { syncWatchList } from "../sync/index.ts";
 import { accountRows, formatRows, listSessionAccounts } from "./accounts.ts";
 import { registerClassroomCommands } from "./classroom.ts";
 import { checkDatabase, runDoctor } from "./doctor.ts";
+import { registerLoginCommand } from "./login.ts";
 import { nodeVersionProblem } from "./node-version.ts";
 import { readTargetsFile, runRecon, TODO_PATHS } from "./recon.ts";
 import { registerReportCommands } from "./report.ts";
@@ -174,6 +175,7 @@ check
 registerReportCommands(program);
 registerClassroomCommands(program);
 registerTelegramCommands(program);
+registerLoginCommand(program);
 
 program
   .command("recon")

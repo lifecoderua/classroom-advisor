@@ -22,6 +22,7 @@ Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/DECISIONS.md](doc
    open -na "Google Chrome" --args --user-data-dir="$HOME/.classroom-advisor/chrome-profile"
    ```
    Open classroom.google.com once for each account, then **quit that Chrome** (Cmd+Q). The collector can't use the profile while Chrome has it open.
+   Later, when sync reports a lost login, `pnpm cli login` opens the same Chrome window for you: with `run` going, the loop opens it between cycles and syncs as soon as you quit it (Cmd+Q, or `pnpm cli login --done`); without `run`, the command opens it itself. Either way it then checks which watched accounts are logged in.
 2. Install the `claude` CLI and log in, if you want the default LLM provider.
 3. `pnpm i`, then `pnpm db:migrate`, then `pnpm cli doctor`. Commands are documented in the CLI's `--help` as they land.
 4. `pnpm cli accounts watch <email>` for each kid, then `pnpm cli sync`. The first sync per account is a baseline: it stores everything and only raises alerts for work that is missing or due within 24h. After that, `pnpm cli run` keeps syncing and checking every hour.

@@ -342,4 +342,63 @@ describe("runLoop", () => {
     expect(finished).toBe(true);
     expect(res.cycles).toBe(1);
   });
+
+  it("runs a requested login between cycles, then syncs at once even in quiet hours", async () => {
+    const controller = new AbortController();
+    const events: string[] = [];
+    let wake = new AbortController();
+    let pending = false;
+    let sleeps = 0;
+    await runLoop({
+      intervalMin: 60,
+      quietHours: quiet,
+      signal: controller.signal,
+      log: () => {},
+      now: clock(23),
+      login: {
+        pending: () => pending,
+        wakeSignal: () => wake.signal,
+        run: async () => {
+          events.push("login");
+          pending = false;
+          wake = new AbortController();
+        },
+      },
+      cycle: async () => {
+        events.push("cycle");
+      },
+      sleep: async (_ms, signal) => {
+        sleeps++;
+        if (sleeps === 1) {
+          // The request arrives while the loop waits: the wait ends early.
+          pending = true;
+          wake.abort();
+          expect(signal.aborted).toBe(true);
+          return;
+        }
+        controller.abort();
+      },
+    });
+    expect(events).toEqual(["login", "cycle"]);
+  });
+
+  it("ignores login requests with --once", async () => {
+    const events: string[] = [];
+    await runLoop({
+      intervalMin: 60,
+      once: true,
+      signal: new AbortController().signal,
+      login: {
+        pending: () => true,
+        wakeSignal: () => new AbortController().signal,
+        run: async () => {
+          events.push("login");
+        },
+      },
+      cycle: async () => {
+        events.push("cycle");
+      },
+    });
+    expect(events).toEqual(["cycle"]);
+  });
 });

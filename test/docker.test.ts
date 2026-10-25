@@ -18,4 +18,9 @@ describe("Docker packaging", () => {
       expect(ignored).toContain(entry);
     }
   });
+
+  it("runs the login on the noVNC display in the container", () => {
+    expect(read("Dockerfile")).toMatch(/CA_LOGIN_MODE=vnc/);
+    expect(read("docker-compose.yml")).toMatch(/127\.0\.0\.1:6080:6080/);
+  });
 });

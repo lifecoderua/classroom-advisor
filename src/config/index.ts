@@ -19,6 +19,17 @@ export const configSchema = z.strictObject({
    */
   chromeChannel: z.string().min(1).default("chrome"),
   dataDir: z.string().min(1).default("./.data"),
+  /**
+   * Hand login (#78): `local` opens the browser on this machine's screen, `vnc` on a virtual
+   * display behind noVNC (the Docker image sets it).
+   */
+  loginMode: z.enum(["local", "vnc"]).default("local"),
+  /** noVNC port of a `vnc` login. */
+  loginPort: z.coerce.number().int().positive().default(6080),
+  /** Base URL the login link points at (default `http://localhost:<loginPort>`). */
+  loginBaseUrl: z.url().optional(),
+  /** An open login ends by itself after this many minutes. */
+  loginTimeoutMin: z.coerce.number().int().positive().default(30),
   watchedAccounts: z.array(z.email()).default([]),
   llmProvider: z.enum(LLM_PROVIDERS).default("claude-cli"),
   claudeBin: z.string().min(1).default("claude"),
@@ -95,6 +106,10 @@ const ENV_KEYS = {
   CA_PROFILE_DIR: "profileDir",
   CA_CHROME_CHANNEL: "chromeChannel",
   CA_DATA_DIR: "dataDir",
+  CA_LOGIN_MODE: "loginMode",
+  CA_LOGIN_PORT: "loginPort",
+  CA_LOGIN_BASE_URL: "loginBaseUrl",
+  CA_LOGIN_TIMEOUT_MIN: "loginTimeoutMin",
   CA_WATCHED_ACCOUNTS: "watchedAccounts",
   CA_LLM_PROVIDER: "llmProvider",
   CA_CLAUDE_BIN: "claudeBin",

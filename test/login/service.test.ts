@@ -132,6 +132,28 @@ describe("LoginService", () => {
     expect(t.states.at(-1)?.info.url).toBeUndefined();
   });
 
+  it("reports every state change to onState (the bot follows the login)", async () => {
+    const seen: string[] = [];
+    const { spawn, procs } = fakeSpawner();
+    const service = new LoginService({
+      config: config({ loginMode: "vnc" }),
+      spawn,
+      browserPath: "/bin/chrome",
+      profileInUse: () => false,
+      startVnc: async () => ({ display: ":99", stop: async () => {} }),
+      saveState: () => {},
+      onState: (s) => seen.push(`${s.status}:${s.info.url ? "link" : "-"}`),
+      checkAccounts: async () => [KID1, KID2],
+      log: () => {},
+    });
+    expect(service.mode).toBe("vnc");
+    const run = service.run(new AbortController().signal);
+    await settle();
+    procs[0]?.exit(0);
+    await run;
+    expect(seen).toEqual(["active:link", "done:-"]);
+  });
+
   it("ends by itself after the timeout", async () => {
     vi.useFakeTimers();
     const t = setup({ loginTimeoutMin: 1 });

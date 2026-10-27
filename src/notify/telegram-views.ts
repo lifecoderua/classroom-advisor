@@ -7,6 +7,7 @@
 import { ackKeepsDebt, debtAgeDays } from "../checks/backlog.ts";
 import { formatAge, formatIn, formatTime, type Locale, messages } from "../i18n/index.ts";
 import type { ProblemTag } from "../i18n/types.ts";
+import type { LoginInfo, LoginLayout, LoginResult } from "../login/index.ts";
 import type { Db } from "../store/index.ts";
 import type { AlertContent, AlertLevel } from "../store/types.ts";
 import {
@@ -65,6 +66,8 @@ export interface Banner {
   /** Plain text. */
   text: string;
   fresh: boolean;
+  /** A lost login (`sync.session`): the views offer 🔑 (#79). */
+  login: boolean;
 }
 
 export interface KidView {
@@ -221,7 +224,12 @@ export function buildModel(input: ModelInput): DigestModel {
     const fresh = (a: ReportAlert) => (input.fresh ? input.fresh.has(a.id) : a.sentAt === null);
     const banners = all
       .filter((a) => isSyncAlert(a) && !a.mutedAt)
-      .map((a) => ({ alertId: a.id, text: flat(alertText(a, loc)), fresh: fresh(a) }));
+      .map((a) => ({
+        alertId: a.id,
+        text: flat(alertText(a, loc)),
+        fresh: fresh(a),
+        login: a.content.code === "sync.session" || /^sync:\d+:session_/.test(a.key),
+      }));
     const alerts = all.filter((a) => !isSyncAlert(a));
     const group = (assignmentId: number | undefined, fallback: () => string, alertId: number) => {
       const ref = assignmentId !== undefined ? `a${assignmentId}` : `x${alertId}`;
@@ -354,6 +362,10 @@ export type Action =
   | { kind: "recheck"; assignmentId: number }
   | { kind: "upcoming" }
   | { kind: "refresh" }
+  /** Open a hand login (#79); without a layout, ask for one first (noVNC only). */
+  | { kind: "login"; layout?: LoginLayout }
+  /** End the open login: close the browser and check the accounts. */
+  | { kind: "loginDone" }
   /** A label button (page counter). */
   | { kind: "noop" };
 
@@ -377,6 +389,10 @@ export function encodeAction(a: Action): string {
       return "u";
     case "refresh":
       return "f";
+    case "login":
+      return a.layout ? `L:${a.layout === "phone" ? "p" : "d"}` : "L";
+    case "loginDone":
+      return "LD";
     case "noop":
       return "n";
   }
@@ -395,6 +411,13 @@ export function decodeAction(data: string): Action | null {
       return { kind: "refresh" };
     case "n":
       return { kind: "noop" };
+    case "L":
+      if (x === undefined) return { kind: "login" };
+      return x === "p" || x === "d"
+        ? { kind: "login", layout: x === "p" ? "phone" : "desktop" }
+        : null;
+    case "LD":
+      return { kind: "loginDone" };
     case "l":
       return Number.isInteger(num(x)) && Number.isInteger(num(y))
         ? { kind: "list", kid: num(x), page: num(y) }
@@ -504,6 +527,9 @@ export function summaryView(model: DigestModel, title: string, loc: Locale): Vie
     .map((k) => btn(`👤 ${k.label} (${openGroups(k)})`, { kind: "list", kid: k.id, page: 0 }));
   const keyboard: Button[][] = [];
   for (let i = 0; i < kids.length; i += 2) keyboard.push(kids.slice(i, i + 2));
+  if (model.kids.some((k) => k.banners.some((b) => b.login))) {
+    keyboard.push([btn(t.telegram.login.button, { kind: "login" })]);
+  }
   const upcoming = model.kids.reduce((n, k) => n + k.upcoming.length, 0);
   keyboard.push([
     ...(upcoming ? [btn(v.button.upcoming(upcoming), { kind: "upcoming" })] : []),
@@ -562,6 +588,9 @@ export function listView(model: DigestModel, kidId: number, page: number, loc: L
         p < pages - 1 ? { kind: "list", kid: k.id, page: p + 1 } : { kind: "noop" },
       ),
     ]);
+  }
+  if (k.banners.some((b) => b.login)) {
+    keyboard.push([btn(messages(loc.lang).telegram.login.button, { kind: "login" })]);
   }
   keyboard.push([btn(v.button.back, { kind: "home" })]);
   return { html: lines.join("\n\n"), keyboard };
@@ -656,4 +685,96 @@ export function upcomingView(model: DigestModel, loc: Locale): View {
     );
   }
   return { html: lines.join("\n"), keyboard: [[btn(v.button.back, { kind: "home" })]] };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Hand login (#79): one message per request, edited in place from the question to the result.
+
+const clock = (d: Date, loc: Locale) =>
+  new Intl.DateTimeFormat(messages(loc.lang).locale, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    ...(loc.timeZone ? { timeZone: loc.timeZone } : {}),
+  }).format(d);
+
+/** A link Telegram accepts in a button: http(s) with a dotted host (not `localhost`). */
+function buttonUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return /^https?:$/.test(u.protocol) && u.hostname.includes(".");
+  } catch {
+    return false;
+  }
+}
+
+const loginButton = (loc: Locale, retry = false): Button[] => {
+  const l = messages(loc.lang).telegram.login;
+  return [btn(retry ? l.retry : l.button, { kind: "login" })];
+};
+
+/** Pushed when a sync finds a lost login. */
+export function loginLostView(labels: readonly string[], loc: Locale): View {
+  const l = messages(loc.lang).telegram.login;
+  return { html: l.lost(escapeHtml(labels.join(", "))), keyboard: [loginButton(loc)] };
+}
+
+/** Where the parent will log in: the virtual screen gets that size. */
+export function loginAskView(loc: Locale): View {
+  const l = messages(loc.lang).telegram.login;
+  return {
+    html: l.ask,
+    keyboard: [
+      [
+        btn(l.computer, { kind: "login", layout: "desktop" }),
+        btn(l.phone, { kind: "login", layout: "phone" }),
+      ],
+    ],
+  };
+}
+
+/** Asked for; the loop opens it after the current cycle. */
+export function loginWaitView(loc: Locale): View {
+  return { html: messages(loc.lang).telegram.login.waiting, keyboard: [] };
+}
+
+/** Open: the link (noVNC) or a note that Chrome opened on the computer, and ✅ Done. */
+export function loginOpenView(info: LoginInfo, missing: readonly string[], loc: Locale): View {
+  const l = messages(loc.lang).telegram.login;
+  const until = clock(new Date(info.expiresAt), loc);
+  const lines = [info.url ? l.openVnc(until) : l.openLocal(until)];
+  const keyboard: Button[][] = [];
+  if (info.url) {
+    if (buttonUrl(info.url)) keyboard.push([{ text: l.openPage, url: info.url }]);
+    else lines.push(`<code>${escapeHtml(info.url)}</code>`);
+  }
+  if (missing.length) lines.push(l.missingNow(escapeHtml(missing.join(", "))));
+  lines.push("", l.steps);
+  keyboard.push([btn(l.done, { kind: "loginDone" })]);
+  return { html: lines.join("\n"), keyboard };
+}
+
+/** ✅ Done was tapped: the browser closes and the accounts are checked. */
+export function loginCheckingView(loc: Locale): View {
+  return { html: messages(loc.lang).telegram.login.checking, keyboard: [] };
+}
+
+/** How it ended; `missing` are the labels of watched accounts still logged out. */
+export function loginResultView(
+  result: LoginResult,
+  missing: readonly string[],
+  loc: Locale,
+): View {
+  const l = messages(loc.lang).telegram.login;
+  const labels = escapeHtml(missing.join(", "));
+  if (result.error)
+    return { html: l.failed(escapeHtml(result.error)), keyboard: [loginButton(loc, true)] };
+  if (result.end === "stopped") return { html: l.stopped, keyboard: [] };
+  const lines = result.end === "timeout" ? [l.timeout] : [];
+  if (missing.length) {
+    lines.push(l.stillMissing(labels));
+    return { html: lines.join("\n"), keyboard: [loginButton(loc, true)] };
+  }
+  lines.push(l.allBack(result.loggedIn.length));
+  return { html: lines.join("\n"), keyboard: [] };
 }

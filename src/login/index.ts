@@ -202,6 +202,8 @@ export interface LoginDeps {
   token?: () => string;
   /** Default: `<dataDir>/login.json`. */
   saveState?: (state: LoginState) => void;
+  /** Called after every state change (the Telegram bot follows the login, #79). */
+  onState?: (state: LoginState) => void;
   log?: (line: string) => void;
 }
 
@@ -246,6 +248,10 @@ export class LoginService {
     return this.wake.signal;
   }
 
+  get mode(): Config["loginMode"] {
+    return this.deps.config.loginMode;
+  }
+
   /** The open login, if any. */
   get active(): LoginInfo | undefined {
     return this.current?.info;
@@ -278,13 +284,13 @@ export class LoginService {
   }
 
   private save(state: LoginState): void {
-    if (this.deps.saveState) {
-      this.deps.saveState(state);
-      return;
+    if (this.deps.saveState) this.deps.saveState(state);
+    else {
+      const { dataDir } = this.deps.config;
+      mkdirSync(dataDir, { recursive: true });
+      writePrivate(loginStatePath(dataDir), `${JSON.stringify(state, null, 2)}\n`);
     }
-    const { dataDir } = this.deps.config;
-    mkdirSync(dataDir, { recursive: true });
-    writePrivate(loginStatePath(dataDir), `${JSON.stringify(state, null, 2)}\n`);
+    this.deps.onState?.(state);
   }
 
   /**

@@ -119,7 +119,7 @@ export interface Messages {
     help: string;
     test: string;
     /** Bot menu (`setMyCommands`): command → short description. */
-    commands: Record<"status" | "digest" | "refresh" | "recheck" | "help", string>;
+    commands: Record<"status" | "digest" | "refresh" | "recheck" | "login" | "help", string>;
     refreshing: string;
     alreadyRunning: string;
     cooldown(leftMin: number, everyMin: number): string;
@@ -129,6 +129,34 @@ export interface Messages {
     recheckNotTurnedIn(item: string): string;
     recheckDone(item: string, verdict: string): string;
     recheckFailed(item: string): string;
+    /** Hand login from the chat (#79). HTML unless noted; `labels` are escaped kid labels. */
+    login: {
+      /** Buttons (plain). */
+      button: string;
+      retry: string;
+      computer: string;
+      phone: string;
+      openPage: string;
+      done: string;
+      /** Pushed after a sync found a lost login. */
+      lost(labels: string): string;
+      ask: string;
+      waiting: string;
+      openVnc(until: string): string;
+      openLocal(until: string): string;
+      missingNow(labels: string): string;
+      steps: string;
+      checking: string;
+      allBack(n: number): string;
+      stillMissing(labels: string): string;
+      timeout: string;
+      stopped: string;
+      failed(error: string): string;
+      /** No loop that could open a login (e.g. `run --once`). */
+      unavailable: string;
+      /** Popups after a tap (plain). */
+      toast: { opening: string; checking: string; notOpen: string };
+    };
     /** The navigable digest and cards (#66). */
     view: {
       tag: Record<ProblemTag, string>;

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { pickChat } from "../../src/cli/telegram.ts";
 import { formatAgo } from "../../src/i18n/index.ts";
+import type { LoginInfo, LoginLayout, LoginState } from "../../src/login/index.ts";
 import { buildReport } from "../../src/notify/console.ts";
 import {
   chatsOf,
@@ -702,6 +703,169 @@ describe("TelegramNotifier", () => {
     expect(text(f.sent()[1])).toContain("🟢 Термін попереду: 2");
   });
 
+  describe("hand login (#79)", () => {
+    /** A stand-in for the loop's `LoginService`. */
+    function fakeLogin(mode: "local" | "vnc" = "vnc") {
+      const c = {
+        mode,
+        active: undefined as LoginInfo | undefined,
+        requested: [] as (LoginLayout | undefined)[],
+        finished: 0,
+        pending: () => c.requested.length > 0 && !c.active,
+        request(layout?: LoginLayout) {
+          if (!c.active) c.requested.push(layout);
+        },
+        finish() {
+          if (!c.active) return false;
+          c.finished++;
+          return true;
+        },
+      };
+      return c;
+    }
+    const info = (url?: string): LoginInfo => ({
+      mode: url ? "vnc" : "local",
+      layout: "phone",
+      startedAt: at(12).toISOString(),
+      expiresAt: at(12, 30).toISOString(),
+      ...(url ? { url } : {}),
+    });
+    const lostLogin = (accountId: number) =>
+      raiseAlert(
+        db,
+        {
+          key: `sync:${accountId}:session_missing:2026-10-10`,
+          level: "alert",
+          code: "sync.session",
+          params: { account: "x", state: "missing" },
+        },
+        clock,
+      );
+
+    it("asks computer or phone, then follows the login from waiting to the result", async () => {
+      const { account } = await seed();
+      await db.syncRun.create({
+        data: { accountId: account.id, startedAt: clock, status: "session_missing" },
+      });
+      const f = fakeFetch();
+      const login = fakeLogin();
+      const n = notifier(f, { login });
+
+      await n.handleUpdate(say(CHAT, "/login"));
+      expect(text(f.sent()[0])).toContain("Where will you log in?");
+      expect(buttons(f.sent()[0]?.body)).toEqual(["🖥 Computer=L:d", "📱 Phone=L:p"]);
+
+      await n.handleUpdate(tap(CHAT, 101, "L:p", 2));
+      expect(login.requested).toEqual(["phone"]);
+      expect(f.edits()[0]?.body).toMatchObject({ message_id: 101 });
+      expect(text(f.edits()[0])).toContain("after the current check");
+
+      // The loop opened it: the link (a localhost one can't be a button) and ✅ Done.
+      login.active = info("http://localhost:6080/vnc.html?autoconnect=1#password=Tok3nAbc");
+      await n.onLoginState({ status: "active", info: login.active, updatedAt: "x" });
+      const open = f.edits().at(-1);
+      expect(text(open)).toContain("The login is open</b> until 12:30");
+      expect(text(open)).toContain("<code>http://localhost:6080/vnc.html");
+      expect(text(open)).toContain("Logged out: <b>Student &lt;One&gt;</b>");
+      expect(buttons(open?.body)).toEqual(["✅ Done=LD"]);
+
+      await n.handleUpdate(tap(CHAT, 101, "LD", 3));
+      expect(login.finished).toBe(1);
+      expect(f.toasts().at(-1)).toBe("Checking the accounts…");
+      expect(text(f.edits().at(-1))).toContain("checking the accounts");
+
+      login.active = undefined;
+      const done: LoginState = {
+        status: "done",
+        info: info(),
+        result: { end: "done", loggedIn: [], missing: ["student-one@school.example"] },
+        updatedAt: "x",
+      };
+      await n.onLoginState(done);
+      expect(text(f.edits().at(-1))).toContain("Still logged out: <b>Student &lt;One&gt;</b>");
+      expect(buttons(f.edits().at(-1)?.body)).toEqual(["🔑 Try again=L"]);
+      // The message no longer follows logins.
+      const before = f.edits().length;
+      await n.onLoginState(done);
+      expect(f.edits()).toHaveLength(before);
+    });
+
+    it("links a real host as a button and reports all accounts back", async () => {
+      const f = fakeFetch();
+      const login = fakeLogin();
+      login.active = info("https://box.example.ts.net/vnc.html#password=x");
+      const n = notifier(f, { login });
+      await n.handleUpdate(say(CHAT, "/login"));
+      expect(login.requested).toEqual([]);
+      expect(buttons(f.sent()[0]?.body)).toEqual([
+        "🖥 Open the login page=https://box.example.ts.net/vnc.html#password=x",
+        "✅ Done=LD",
+      ]);
+      await n.onLoginState({
+        status: "done",
+        info: info(),
+        result: { end: "closed", loggedIn: ["a@x.example", "b@x.example"], missing: [] },
+        updatedAt: "x",
+      });
+      expect(text(f.edits().at(-1))).toContain("Logged in again: 2 account(s)");
+    });
+
+    it("opens at once on the computer in local mode", async () => {
+      const f = fakeFetch();
+      const login = fakeLogin("local");
+      const n = notifier(f, { login });
+      await n.handleUpdate(say(CHAT, "/login"));
+      expect(login.requested).toEqual(["desktop"]);
+      expect(text(f.sent()[0])).toContain("after the current check");
+      login.active = info();
+      await n.onLoginState({ status: "active", info: login.active, updatedAt: "x" });
+      expect(text(f.edits().at(-1))).toContain("Chrome opened on the computer");
+    });
+
+    it("says when no login can be opened, or none is open", async () => {
+      const f = fakeFetch();
+      const n = notifier(f);
+      await n.handleUpdate(say(CHAT, "/login"));
+      expect(text(f.sent()[0])).toContain("only be opened while the checker runs");
+      await n.handleUpdate(tap(CHAT, 5, "L", 2));
+      expect(f.toasts().at(-1)).toContain("only be opened while the checker runs");
+      const m = notifier(f, { login: fakeLogin() });
+      await m.handleUpdate(tap(CHAT, 5, "LD", 3));
+      expect(f.toasts().at(-1)).toBe("No login is open.");
+    });
+
+    it("offers 🔑 on a digest with a lost login and answers it in a new message", async () => {
+      const { account } = await seed();
+      await lostLogin(account.id);
+      const f = fakeFetch();
+      const n = notifier(f, { login: fakeLogin() });
+      await n.handleUpdate(say(CHAT, "/digest"));
+      expect(buttons(f.sent()[0]?.body)).toContain("🔑 Log in=L");
+      await n.handleUpdate(tap(CHAT, 101, "L", 2));
+      expect(f.edits()).toHaveLength(0);
+      expect(text(f.sent().at(-1))).toContain("Where will you log in?");
+    });
+
+    it("announces a new lost login right after the cycle, unless a login is under way", async () => {
+      const { account } = await seed();
+      const { alert } = await lostLogin(account.id);
+      const f = fakeFetch();
+      const login = fakeLogin();
+      const n = notifier(f, { login });
+      await n.afterCycle({ newAlertIds: [alert.id] });
+      const lost = f.sent().find((c) => text(c).includes("Logged out of Google"));
+      expect(text(lost)).toContain("<b>Student &lt;One&gt;</b>");
+      expect(buttons(lost?.body)).toEqual(["🔑 Log in=L"]);
+      // Still in the daily digest as a banner.
+      expect(await sentAt(alert.id)).toBeNull();
+
+      const g = fakeFetch();
+      login.request("desktop");
+      await notifier(g, { login }).afterCycle({ newAlertIds: [alert.id] });
+      expect(g.sent().some((c) => text(c).includes("Logged out of Google"))).toBe(false);
+    });
+  });
+
   describe("manual triggers (#54)", () => {
     const GROUP = "-1001234567890";
 
@@ -722,6 +886,7 @@ describe("TelegramNotifier", () => {
         "digest",
         "refresh",
         "recheck",
+        "login",
         "help",
       ]);
     });

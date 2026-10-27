@@ -158,6 +158,7 @@ export const en: Messages = {
       "/digest – send the pending digest now",
       "/refresh – sync and check now, then send a fresh digest here",
       "/recheck &lt;Classroom link&gt; – check an assignment again (or tap 🔄 on its card)",
+      "/login – log the kids' Google accounts in again (opens a browser for you)",
     ].join("\n"),
     test: "✅ Test message: Telegram works.",
     commands: {
@@ -165,6 +166,7 @@ export const en: Messages = {
       digest: "Send the pending digest now",
       refresh: "Sync, check and send a fresh digest now",
       recheck: "Check an assignment again (number or Classroom link)",
+      login: "Log the kids' accounts in again",
       help: "Help",
     },
     refreshing: "🔄 Refreshing: sync and checks. I'll send the digest here.",
@@ -177,6 +179,35 @@ export const en: Messages = {
     recheckNotTurnedIn: (item) => `${item} isn't turned in yet: nothing to check.`,
     recheckDone: (item, verdict) => `🔁 Checked again: ${item} — ${verdict}`,
     recheckFailed: (item) => `Couldn't check ${item} again (the review failed). Try again later.`,
+    login: {
+      button: "🔑 Log in",
+      retry: "🔑 Try again",
+      computer: "🖥 Computer",
+      phone: "📱 Phone",
+      openPage: "🖥 Open the login page",
+      done: "✅ Done",
+      lost: (labels) =>
+        `⚠️ Logged out of Google: <b>${labels}</b>. Classroom can't be checked until you log in again.`,
+      ask: "🔑 Where will you log in? The browser screen gets that size.",
+      waiting: "🔑 Opening the login after the current check…",
+      openVnc: (until) => `🔑 <b>The login is open</b> until ${until}.`,
+      openLocal: (until) => `🔑 <b>Chrome opened on the computer</b> (until ${until}).`,
+      missingNow: (labels) => `Logged out: <b>${labels}</b>`,
+      steps:
+        "Log in to every kid account by hand (use the account switcher), open classroom.google.com once for each, then tap ✅ Done.",
+      checking: "⏳ Closing the browser and checking the accounts…",
+      allBack: (n) => `✅ Logged in again: ${n} account(s). Syncing now.`,
+      stillMissing: (labels) => `⚠️ Still logged out: <b>${labels}</b>.`,
+      timeout: "⌛ The login closed after its time ran out.",
+      stopped: "The login stopped: the checker was shut down.",
+      failed: (error) => `❌ The login couldn't open: <i>${error}</i>`,
+      unavailable: "A login can only be opened while the checker runs.",
+      toast: {
+        opening: "Opening the login…",
+        checking: "Checking the accounts…",
+        notOpen: "No login is open.",
+      },
+    },
     view: {
       tag: {
         dueSoon: "due soon",

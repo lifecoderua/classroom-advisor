@@ -24,6 +24,10 @@ describe("telegram views", () => {
       { kind: "recheck", assignmentId: 42 },
       { kind: "upcoming" },
       { kind: "refresh" },
+      { kind: "login" },
+      { kind: "login", layout: "phone" },
+      { kind: "login", layout: "desktop" },
+      { kind: "loginDone" },
       { kind: "noop" },
     ];
     for (const a of actions) {
@@ -31,7 +35,7 @@ describe("telegram views", () => {
       expect(data.length).toBeLessThanOrEqual(64);
       expect(decodeAction(data)).toEqual(a);
     }
-    for (const bad of ["", "zz", "l:x:1", "c:1:0:b5", "S:", "r:abc"]) {
+    for (const bad of ["", "zz", "l:x:1", "c:1:0:b5", "S:", "r:abc", "L:x"]) {
       expect(decodeAction(bad)).toBeNull();
     }
   });
@@ -152,8 +156,9 @@ describe("digest model", () => {
     const list = listView(model, 1, 0, loc);
     expect(list.html).toMatch(/⚠️🆕 <i>Sync stopped for Kid/);
     expect(list.html).not.toContain("Art");
-    // One full-width button per assignment, opening its card; then Back.
-    expect(list.keyboard.map((row) => row.length)).toEqual([1, 1]);
+    // One full-width button per assignment, opening its card; 🔑 for the lost login; then Back.
+    expect(list.keyboard.map((row) => row.length)).toEqual([1, 1, 1]);
+    expect(list.keyboard[1]?.[0]).toMatchObject({ text: "🔑 Log in", callback_data: "L" });
     expect(list.keyboard[0]?.[0]?.text).toBe("🟠🆕 Art · from 15/10");
     expect(list.keyboard[0]?.[0]?.callback_data).toMatch(/^c:1:0:a5$/);
     expect(summaryView(model, "Digest", loc).html).toMatch(/Kid<\/b>.*\n⚠️/);
@@ -171,6 +176,26 @@ describe("digest model", () => {
       loc,
     });
     expect(model.kids).toHaveLength(1);
-    expect(summaryView(model, "Digest", loc).html).toContain("⚠️");
+    const summary = summaryView(model, "Digest", loc);
+    expect(summary.html).toContain("⚠️");
+    expect(summary.keyboard.flat().map((b) => b.callback_data)).toContain("L");
+  });
+
+  it("offers no 🔑 for a parser drift banner", () => {
+    const drift = alert("sync:1:drift:abc:2026-10-15", "alert", {
+      code: "sync.drift",
+      params: { account: "Kid", rpcid: "abc", error: "x" },
+    });
+    const model = buildModel({
+      report: report([drift]),
+      alertAssignments: new Map(),
+      assignments: new Map(),
+      loc,
+    });
+    expect(
+      summaryView(model, "Digest", loc)
+        .keyboard.flat()
+        .map((b) => b.callback_data),
+    ).not.toContain("L");
   });
 });

@@ -1257,7 +1257,15 @@ export class TelegramNotifier {
           this.log(`telegram: login message update failed: ${this.describe(err)}`);
         }
       }
-      if (state.status === "done") this.loginMsgs.clear();
+      if (state.status === "done") {
+        // Everyone is back: the sync that follows the login turns these messages into the fresh
+        // digest, as the 🔄 button does (they promise it).
+        const r = state.result;
+        if (r && !r.error && r.end !== "stopped" && r.missing.length === 0) {
+          for (const [key, m] of this.loginMsgs) this.refreshWaiters.set(key, m);
+        }
+        this.loginMsgs.clear();
+      }
     } catch (err) {
       this.log(`telegram: login message update failed: ${this.describe(err)}`);
     }

@@ -784,9 +784,11 @@ describe("TelegramNotifier", () => {
       await n.onLoginState(done);
       expect(text(f.edits().at(-1))).toContain("Still logged out: <b>Student &lt;One&gt;</b>");
       expect(buttons(f.edits().at(-1)?.body)).toEqual(["🔑 Try again=L"]);
-      // The message no longer follows logins.
+      // The message no longer follows logins, and with a kid still out it doesn't become a digest.
       const before = f.edits().length;
       await n.onLoginState(done);
+      n.startCycle();
+      await n.afterCycle({ rechecked: [] });
       expect(f.edits()).toHaveLength(before);
     });
 
@@ -808,6 +810,12 @@ describe("TelegramNotifier", () => {
         updatedAt: "x",
       });
       expect(text(f.edits().at(-1))).toContain("Logged in again: 2 account(s)");
+      // The sync after the login turns the message into the fresh digest it promised.
+      expect(n.manualPending()).toBe(false);
+      n.startCycle();
+      await n.afterCycle({ rechecked: [] });
+      expect(f.edits().at(-1)?.body).toMatchObject({ message_id: 101 });
+      expect(text(f.edits().at(-1))).toContain("🔄 <b>Fresh digest</b>");
     });
 
     it("opens at once on the computer in local mode", async () => {

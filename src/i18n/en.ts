@@ -196,7 +196,8 @@ export const en: Messages = {
       steps:
         "Log in to every kid account by hand (use the account switcher), open classroom.google.com once for each, then tap ✅ Done.",
       checking: "⏳ Closing the browser and checking the accounts…",
-      allBack: (n) => `✅ Logged in again: ${n} account(s). Syncing now.`,
+      allBack: (n) =>
+        `✅ Logged in again: ${n} account(s). Syncing; the fresh digest will show up here.`,
       stillMissing: (labels) => `⚠️ Still logged out: <b>${labels}</b>.`,
       timeout: "⌛ The login closed after its time ran out.",
       stopped: "The login stopped: the checker was shut down.",

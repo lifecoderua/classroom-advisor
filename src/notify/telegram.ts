@@ -14,11 +14,13 @@ import {
   renderAlert,
   zonedClock,
 } from "../i18n/index.ts";
+import type { LoginInfo, LoginLayout, LoginState } from "../login/index.ts";
 import { abortableSleep } from "../run/cycle.ts";
 import { inQuietHours, type QuietHours } from "../run/schedule.ts";
 import { type Db, markAlertsSent, muteAlert } from "../store/index.ts";
 import type { AlertLevel } from "../store/types.ts";
 import {
+  accountLabel,
   buildReport,
   DEFAULT_UPCOMING_DAYS,
   parseAlertKey,
@@ -37,6 +39,12 @@ import {
   findGroup,
   listView,
   loadModelInput,
+  loginAskView,
+  loginCheckingView,
+  loginLostView,
+  loginOpenView,
+  loginResultView,
+  loginWaitView,
   summaryView,
   upcomingView,
   type View,
@@ -493,13 +501,24 @@ export interface NotifierOptions {
   refreshCooldownMin?: number;
   /** Bot username (no `@`); `setup()` reads it with `getMe` when not given. */
   botUsername?: string;
+  /** The `run` loop's hand login (#79); without it `/login` says it's unavailable. */
+  login?: LoginControl;
+}
+
+/** What the bot needs of `LoginService` (#78). */
+export interface LoginControl {
+  readonly mode: "local" | "vnc";
+  readonly active: LoginInfo | undefined;
+  pending(): boolean;
+  request(layout?: LoginLayout): void;
+  finish(): boolean;
 }
 
 /** Default `refreshCooldownMin`. */
 export const DEFAULT_REFRESH_COOLDOWN_MIN = 5;
 
 /** The bot's commands, for `setMyCommands`. */
-export const BOT_COMMANDS = ["status", "digest", "refresh", "recheck", "help"] as const;
+export const BOT_COMMANDS = ["status", "digest", "refresh", "recheck", "login", "help"] as const;
 
 export class TelegramNotifier {
   private readonly now: () => Date;
@@ -527,6 +546,8 @@ export class TelegramNotifier {
   /** When the last manual cycle started (epoch ms). */
   private lastManualAt = Number.NEGATIVE_INFINITY;
   private bot: string | undefined;
+  /** Login messages that follow the asked-for or open login (#79), keyed `chat:message`. */
+  private loginMsgs = new Map<string, { chatId: string; messageId: number }>();
 
   constructor(private readonly opts: NotifierOptions) {
     this.now = opts.now ?? (() => new Date());
@@ -891,12 +912,19 @@ export class TelegramNotifier {
    * After a `run` cycle: panics at once, answers the rechecks, sends a fresh digest to every chat
    * that asked with `/refresh`, then the daily digest if it's due. Never throws.
    */
-  async afterCycle(result: { rechecked?: readonly RecheckResult[] } = {}): Promise<void> {
+  async afterCycle(
+    result: { rechecked?: readonly RecheckResult[]; newAlertIds?: readonly number[] } = {},
+  ): Promise<void> {
     try {
       const n = await this.sendCards();
       if (n) this.log(`telegram: sent ${n} urgent alert(s) or comment(s) as cards`);
     } catch (err) {
       this.log(`telegram: sending cards failed: ${this.describe(err)}`);
+    }
+    try {
+      await this.pushLostLogin(result.newAlertIds ?? []);
+    } catch (err) {
+      this.log(`telegram: lost-login message failed: ${this.describe(err)}`);
     }
     await this.answerRechecks(result.rechecked ?? []);
     const waiters = [...this.refreshWaiters.values()];
@@ -1083,6 +1111,9 @@ export class TelegramNotifier {
         await this.reply(chatId, t.recheckQueued(item));
         return;
       }
+      case "login":
+        if (!(await this.openLogin(chatId, {}))) await this.reply(chatId, t.login.unavailable);
+        return;
       default:
         await this.reply(chatId, t.help);
     }
@@ -1112,6 +1143,165 @@ export class TelegramNotifier {
     return { ...model, autoClosed: view.closed ?? 0 };
   }
 
+  /** Labels of watched accounts whose latest sync found no valid login. */
+  private async lostLoginLabels(): Promise<string[]> {
+    const accounts = await this.opts.db.account.findMany({
+      where: { watched: true },
+      orderBy: { id: "asc" },
+      select: {
+        email: true,
+        displayName: true,
+        syncRuns: { orderBy: [{ startedAt: "desc" }, { id: "desc" }], take: 1 },
+      },
+    });
+    return accounts
+      .filter((a) => /^session_/.test(a.syncRuns[0]?.status ?? ""))
+      .map((a) => accountLabel(a));
+  }
+
+  /** Kid labels for emails (the account's label when it's in the DB). */
+  private async labelsOf(emails: readonly string[]): Promise<string[]> {
+    const rows = await this.opts.db.account.findMany({
+      where: { email: { in: [...emails] } },
+      select: { email: true, displayName: true },
+    });
+    const by = new Map(rows.map((r) => [r.email, accountLabel(r)]));
+    return emails.map((e) => by.get(e) ?? accountLabel({ email: e, displayName: null }));
+  }
+
+  /** Sends `view`, or rewrites message `edit` with it; returns the message id. */
+  private async showView(chatId: string, view: View, edit?: number): Promise<number> {
+    if (edit !== undefined) {
+      await this.opts.api.editMessage(chatId, edit, view.html, view.keyboard);
+      return edit;
+    }
+    return (await this.opts.api.sendMessage(chatId, view.html, view.keyboard)).message_id;
+  }
+
+  /**
+   * `/login` or 🔑 (#79): with noVNC and no layout yet, asks computer or phone; otherwise asks the
+   * loop for a login (unless one is open) and shows it. The message then follows the login
+   * (`onLoginState`). `edit` rewrites a login message instead of sending a new one. False when
+   * no loop can open a login.
+   */
+  private async openLogin(
+    chatId: string,
+    opts: { layout?: LoginLayout; edit?: number },
+  ): Promise<boolean> {
+    const login = this.opts.login;
+    if (!login) return false;
+    if (!login.active && !opts.layout && login.mode === "vnc") {
+      await this.showView(chatId, loginAskView(this.loc), opts.edit);
+      return true;
+    }
+    if (!login.active) login.request(opts.layout ?? "desktop");
+    const info = login.active;
+    const view = info
+      ? loginOpenView(info, await this.lostLoginLabels(), this.loc)
+      : loginWaitView(this.loc);
+    const messageId = await this.showView(chatId, view, opts.edit);
+    this.loginMsgs.set(`${chatId}:${messageId}`, { chatId, messageId });
+    return true;
+  }
+
+  /** 🔑 and ✅ Done taps; a 🔑 on a digest opens a new message, on a login message edits it. */
+  private async handleLoginTap(
+    queryId: string,
+    chatId: string,
+    messageId: number,
+    action: Extract<Action, { kind: "login" | "loginDone" }>,
+    onDigest: boolean,
+  ): Promise<void> {
+    const api = this.opts.api;
+    const l = messages(this.lang).telegram.login;
+    if (action.kind === "loginDone") {
+      if (!this.opts.login?.finish()) {
+        await api.answerCallback(queryId, l.toast.notOpen);
+        return;
+      }
+      await api.answerCallback(queryId, l.toast.checking);
+      const view = loginCheckingView(this.loc);
+      for (const m of this.loginMsgs.values()) {
+        await api.editMessage(m.chatId, m.messageId, view.html, view.keyboard);
+      }
+      return;
+    }
+    if (!this.opts.login) {
+      await api.answerCallback(queryId, l.unavailable);
+      return;
+    }
+    await api.answerCallback(queryId, l.toast.opening);
+    await this.openLogin(chatId, {
+      ...(action.layout ? { layout: action.layout } : {}),
+      ...(onDigest ? {} : { edit: messageId }),
+    });
+  }
+
+  /**
+   * Called by `LoginService` on every change: the login messages show the open login (with its
+   * link), then how it ended. Never throws.
+   */
+  async onLoginState(state: LoginState): Promise<void> {
+    try {
+      const view =
+        state.status === "active"
+          ? loginOpenView(state.info, await this.lostLoginLabels(), this.loc)
+          : state.result
+            ? loginResultView(state.result, await this.labelsOf(state.result.missing), this.loc)
+            : null;
+      if (!view) return;
+      for (const m of this.loginMsgs.values()) {
+        try {
+          await this.opts.api.editMessage(m.chatId, m.messageId, view.html, view.keyboard);
+        } catch (err) {
+          this.log(`telegram: login message update failed: ${this.describe(err)}`);
+        }
+      }
+      if (state.status === "done") {
+        // Everyone is back: the sync that follows the login turns these messages into the fresh
+        // digest, as the 🔄 button does (they promise it).
+        const r = state.result;
+        if (r && !r.error && r.end !== "stopped" && r.missing.length === 0) {
+          for (const [key, m] of this.loginMsgs) this.refreshWaiters.set(key, m);
+        }
+        this.loginMsgs.clear();
+      }
+    } catch (err) {
+      this.log(`telegram: login message update failed: ${this.describe(err)}`);
+    }
+  }
+
+  /**
+   * A cycle raised a lost-login alert (once per account and day): say so at once with 🔑, so
+   * the fix doesn't wait for the daily digest. Not while a login is asked for or open.
+   */
+  private async pushLostLogin(newAlertIds: readonly number[]): Promise<void> {
+    const login = this.opts.login;
+    if (!login || login.active || login.pending() || !newAlertIds.length) return;
+    const alerts = await this.opts.db.alert.findMany({
+      where: { id: { in: [...newAlertIds] }, code: "sync.session", mutedAt: null },
+      select: { key: true },
+    });
+    const ids = alerts.flatMap((a) => {
+      const k = parseAlertKey(a.key);
+      return k?.kind === "sync" ? [k.accountId] : [];
+    });
+    if (!ids.length) return;
+    const accounts = await this.opts.db.account.findMany({
+      where: { id: { in: ids } },
+      orderBy: { id: "asc" },
+      select: { email: true, displayName: true },
+    });
+    const view = loginLostView(
+      accounts.map((a) => accountLabel(a)),
+      this.loc,
+    );
+    for (const chatId of this.chatIds) {
+      await this.opts.api.sendMessage(chatId, view.html, view.keyboard);
+    }
+    this.log(`telegram: lost login of ${accounts.length} account(s) announced`);
+  }
+
   /**
    * A button tap (#66): answered with a short popup at most, and the message is rewritten in
    * place, so the chat never scrolls. Taps from other chats and on unknown messages are ignored.
@@ -1127,6 +1317,10 @@ export class TelegramNotifier {
     const v = messages(this.lang).telegram.view;
     const action = decodeAction(q.data ?? "");
     const view = this.state.views?.[`${chatId}:${msg.message_id}`];
+    if (action?.kind === "login" || action?.kind === "loginDone") {
+      await this.handleLoginTap(q.id, chatId, msg.message_id, action, Boolean(view));
+      return;
+    }
     if (!action || !view) {
       await api.answerCallback(q.id, v.toast.stale);
       return;

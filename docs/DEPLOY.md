@@ -61,7 +61,9 @@ docker compose up -d                               # run loop
 docker compose logs -f advisor
 ```
 
-**Logging in again** while the loop runs (sync reported a lost login):
+**Logging in again** while the loop runs (sync reported a lost login): with Telegram, tap 🔑 on
+the bot's message (or send `/login`), pick computer or phone, open the link, log in, tap ✅ Done.
+Without Telegram:
 
 ```bash
 docker compose exec advisor entrypoint.sh login

@@ -7,7 +7,7 @@ import {
 import { loadConfig } from "../config/index.ts";
 import { replaceTelegramChat } from "../config/local.ts";
 import { createProvider } from "../llm/index.ts";
-import { LoginService } from "../login/index.ts";
+import { LoginService, type LoginState } from "../login/index.ts";
 import { buildReport, formatReport } from "../notify/console.ts";
 import { TelegramApi, TelegramNotifier, telegramStatePath } from "../notify/telegram.ts";
 import { abortableSleep, runCycle, runLoop } from "../run/cycle.ts";
@@ -90,7 +90,11 @@ export function registerReportCommands(program: Command): void {
       process.on("SIGTERM", onSigint);
       const log = (line: string) => console.log(`[${stamp()}] ${line}`);
       // Hand login (#78): `login` drops a request file; the loop opens the browser between cycles.
-      const login = opts.once ? undefined : new LoginService({ config, log });
+      // The bot follows the login (#79); it is created below.
+      let onLoginState: ((state: LoginState) => void) | undefined;
+      const login = opts.once
+        ? undefined
+        : new LoginService({ config, log, onState: (s) => onLoginState?.(s) });
       login?.resetStale();
       const loginPoll = login && setInterval(() => login.pollRequests(), 2000);
       try {
@@ -116,9 +120,11 @@ export function registerReportCommands(program: Command): void {
                 statePath: telegramStatePath(config.dataDir),
                 watchedEmails: config.watchedAccounts,
                 log,
+                ...(login ? { login } : {}),
               })
             : undefined;
         if (notifier) {
+          onLoginState = (s) => void notifier.onLoginState(s);
           await notifier.setup();
           log(
             `telegram: ${notifier.chats.length} chat(s), digest at ${config.telegramDigestTime} (${config.timeZone}, ${config.digestLang})`,

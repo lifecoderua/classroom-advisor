@@ -7,6 +7,7 @@ import {
 import { loadConfig } from "../config/index.ts";
 import { replaceTelegramChat } from "../config/local.ts";
 import { createProvider } from "../llm/index.ts";
+import { LoginService } from "../login/index.ts";
 import { buildReport, formatReport } from "../notify/console.ts";
 import { TelegramApi, TelegramNotifier, telegramStatePath } from "../notify/telegram.ts";
 import { abortableSleep, runCycle, runLoop } from "../run/cycle.ts";
@@ -88,6 +89,10 @@ export function registerReportCommands(program: Command): void {
       process.on("SIGINT", onSigint);
       process.on("SIGTERM", onSigint);
       const log = (line: string) => console.log(`[${stamp()}] ${line}`);
+      // Hand login (#78): `login` drops a request file; the loop opens the browser between cycles.
+      const login = opts.once ? undefined : new LoginService({ config, log });
+      login?.resetStale();
+      const loginPoll = login && setInterval(() => login.pollRequests(), 2000);
       try {
         const provider = createProvider(config);
         const notifier =
@@ -133,6 +138,17 @@ export function registerReportCommands(program: Command): void {
           ...(notifier ? { manualPending: () => notifier.manualPending() } : {}),
           once: Boolean(opts.once),
           signal: controller.signal,
+          ...(login
+            ? {
+                login: {
+                  pending: () => login.pending(),
+                  wakeSignal: () => login.wakeSignal(),
+                  // Telegram commands keep being answered while the browser is open.
+                  run: (signal) =>
+                    notifier ? notifier.during(login.run(signal)) : login.run(signal),
+                },
+              }
+            : {}),
           log,
           // With Telegram, the wait between cycles long-polls for commands and sends the digest.
           sleep: notifier ? (ms, signal) => notifier.idle(ms, signal) : abortableSleep,
@@ -179,6 +195,7 @@ export function registerReportCommands(program: Command): void {
           },
         });
       } finally {
+        clearInterval(loginPoll);
         process.off("SIGINT", onSigint);
         process.off("SIGTERM", onSigint);
         await db.$disconnect();

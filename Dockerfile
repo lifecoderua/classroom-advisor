@@ -36,7 +36,7 @@ ARG TARGETARCH
 # Set to 1 to bake in the `claude` CLI (llmProvider claude-cli); the default container uses Gemini.
 ARG INSTALL_CLAUDE=0
 
-# noVNC stack for the one-time hand login (`login` command): Xvfb + x11vnc + websockify/noVNC.
+# noVNC stack for the hand login (`login`, src/login/): Xvfb + x11vnc + websockify/noVNC.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify tini \
   && rm -rf /var/lib/apt/lists/*
@@ -55,8 +55,8 @@ COPY package.json pnpm-lock.yaml prisma.config.ts tsconfig.json ./
 COPY prisma ./prisma
 COPY src ./src
 COPY --from=deps /app/src/store/generated ./src/store/generated
-COPY docker/entrypoint.sh docker/login.sh /usr/local/bin/
-RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/login.sh \
+COPY docker/entrypoint.sh /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/entrypoint.sh \
   && mkdir -p /data /profile \
   && chown pwuser:pwuser /data /profile
 
@@ -66,6 +66,7 @@ ENV NODE_ENV=production \
     HOME=/home/pwuser \
     CA_PROFILE_DIR=/profile \
     CA_DATA_DIR=/data \
+    CA_LOGIN_MODE=vnc \
     CA_LLM_PROVIDER=gemini
 VOLUME ["/data", "/profile"]
 EXPOSE 6080

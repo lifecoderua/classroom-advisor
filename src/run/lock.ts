@@ -11,7 +11,7 @@ export interface RunLock {
   release(): void;
 }
 
-interface LockInfo {
+export interface RunLockInfo {
   pid: number;
   host?: string;
   startedAt?: string;
@@ -31,13 +31,27 @@ export function pidAlive(pid: number): boolean {
   }
 }
 
-function readInfo(path: string): LockInfo | undefined {
+function readInfo(path: string): RunLockInfo | undefined {
   try {
-    const info = JSON.parse(readFileSync(path, "utf8")) as LockInfo;
+    const info = JSON.parse(readFileSync(path, "utf8")) as RunLockInfo;
     return Number.isInteger(info.pid) && info.pid > 0 ? info : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The live holder of `<dataDir>/run.lock` (a `run` loop, `sync` or `login`), if any. A lock from
+ * another host counts as live, as in {@link acquireRunLock}.
+ */
+export function runLockHolder(
+  dataDir: string,
+  isAlive: (pid: number) => boolean = pidAlive,
+): RunLockInfo | undefined {
+  const info = readInfo(lockPath(dataDir));
+  if (!info) return undefined;
+  if (info.host !== undefined && info.host !== hostname()) return info;
+  return info.pid !== process.pid && isAlive(info.pid) ? info : undefined;
 }
 
 export interface AcquireOptions {

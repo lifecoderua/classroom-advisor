@@ -14,8 +14,10 @@ Docker image. The image runs the `run` loop; the Chrome profile and the data liv
 - Volumes: `/profile` (Chrome user-data-dir, `CA_PROFILE_DIR`) and `/data` (SQLite, cached files,
   `run.lock`; `CA_DATA_DIR`).
 - `docker/entrypoint.sh`: `run` (default) and every other CLI command first run
-  `prisma migrate deploy` on `/data/app.db`. `login` starts the hand-login session (below).
-  `sh`, `bash`, `claude` and `node` run as is.
+  `prisma migrate deploy` on `/data/app.db`. `login` (no migration) starts the hand login
+  (below). `sh`, `bash`, `claude` and `node` run as is.
+- `CA_LOGIN_MODE=vnc`: the hand login runs Chrome on a virtual display behind noVNC (port 6080),
+  which compose publishes on the host's loopback only.
 - Browser: `CA_CHROME_CHANNEL=chrome` when `/opt/google/chrome/chrome` exists, else `chromium`
   (Playwright's bundled build; Google ships no Chrome for linux/arm64). Set it explicitly to
   override. The profile must be logged in with the same browser the collector uses; `login` does
@@ -46,9 +48,11 @@ docker compose build    # Apple Silicon builds arm64 → bundled Chromium
 docker compose run --rm -p 127.0.0.1:6080:6080 advisor login
 ```
 
-Open <http://localhost:6080/vnc.html>, click Connect, log in to every kid account by hand (use
-the account switcher), open classroom.google.com once per account, then quit Chrome from its
-menu (Exit). The container stops and the profile stays in the `profile` volume. Then:
+Open the link it prints (`http://localhost:6080/vnc.html?...#password=...`; the one-time
+password is in the link), log in to every kid account by hand (use the account switcher), open
+classroom.google.com once per account, then quit Chrome from its menu (Exit). The command
+checks which watched accounts are logged in and exits; the profile stays in the `profile`
+volume. Then:
 
 ```bash
 docker compose run --rm advisor doctor --session   # counts logged-in accounts
@@ -57,9 +61,21 @@ docker compose up -d                               # run loop
 docker compose logs -f advisor
 ```
 
+**Logging in again** while the loop runs (sync reported a lost login):
+
+```bash
+docker compose exec advisor entrypoint.sh login
+```
+
+The loop opens the login after its current cycle and the command prints the link. Quit Chrome
+when you're done (or `docker compose exec advisor entrypoint.sh login --done`): the loop checks
+the accounts, prints the result and syncs at once. An open login closes by itself after
+`CA_LOGIN_TIMEOUT_MIN` (30) minutes.
+
 Notes:
-- **Stop the loop before logging in again** (`docker compose stop advisor`). Two Chromes on one
-  profile corrupt it; Chrome's lock only protects same-host processes.
+- **Never start a second container on the profile** while the loop runs (`docker compose run
+  ... login` is for when it doesn't): two Chromes on one profile corrupt it, and Chrome's lock
+  only protects same-host processes. `exec` goes through the running loop instead.
 - The compose file pins `hostname: classroom-advisor`. Chrome's `SingletonLock` and `run.lock`
   record `<host>-<pid>`, and a lock from another host counts as held, so a random hostname per
   container would block the next start after a crash.
@@ -103,17 +119,17 @@ heaviest part). amd64 gets Google Chrome; arm64 (Graviton, Ampere) gets the bund
    # on the VM:
    docker compose run --rm -p 127.0.0.1:6080:6080 advisor login
    ```
-   and open <http://localhost:6080/vnc.html> on the laptop. Logging in from the VM means the
+   and open the printed link on the laptop. Logging in from the VM means the
    session is born on the VM's IP, which is what Google will see later.
 3. `docker compose run --rm advisor sync`, then `docker compose up -d`.
 
 Expect **re-verification**: Google may challenge or drop a session that is used from a
 datacenter IP, more so right after it moves there. When that happens sync records
-`session_expired` / `session_missing`, raises an alert, and never tries to log in. Fix it by
-stopping the loop and running `login` again through the tunnel. If it happens often, run the
+`session_expired` / `session_missing`, raises an alert, and never tries to log in. Fix it with
+`docker compose exec advisor entrypoint.sh login` through the tunnel (the loop keeps running). If it happens often, run the
 collector from home instead (laptop or a home box), or fall back to the extension route (D3, #16).
 
-Keep the VM private: no published ports (the compose file publishes none; `login` binds noVNC to
-the VM's loopback), an encrypted disk if the provider offers one, and backups of the `data`
+Keep the VM private: nothing published beyond the VM's loopback (compose binds noVNC to
+`127.0.0.1:6080`, and it only listens while a login is open), an encrypted disk if the provider offers one, and backups of the `data`
 volume (`/data/app.db` plus `files/`). The `profile` volume holds live Google sessions of the kid
 accounts; treat it like a password.

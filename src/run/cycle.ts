@@ -145,6 +145,14 @@ export async function runCycle(deps: CycleDeps): Promise<CycleResult> {
   return result;
 }
 
+/** Hand login (#78, `LoginService`): runs between cycles, never during one. */
+export interface LoopLogin {
+  pending(): boolean;
+  /** Aborts when a login is requested; ends the wait between cycles. */
+  wakeSignal(): AbortSignal;
+  run(signal: AbortSignal): Promise<unknown>;
+}
+
 export interface LoopOptions {
   intervalMin: number;
   quietHours?: QuietHours;
@@ -160,6 +168,8 @@ export interface LoopOptions {
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   signal: AbortSignal;
   log?: (line: string) => void;
+  /** A requested login runs instead of the next cycle, then a cycle follows at once. */
+  login?: LoopLogin;
 }
 
 export function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -184,7 +194,13 @@ export async function runLoop(opts: LoopOptions): Promise<{ cycles: number; skip
   let skipped = 0;
   while (!opts.signal.aborted) {
     const manual = opts.manualPending?.() ?? false;
-    if (
+    if (!opts.once && opts.login?.pending()) {
+      await opts.login.run(opts.signal);
+      if (opts.signal.aborted) break;
+      // Someone just logged in: sync now, quiet hours or not.
+      cycles++;
+      await opts.cycle();
+    } else if (
       !opts.once &&
       !manual &&
       opts.quietHours &&
@@ -197,7 +213,11 @@ export async function runLoop(opts: LoopOptions): Promise<{ cycles: number; skip
       await opts.cycle();
     }
     if (opts.once || opts.signal.aborted) break;
-    await sleep(opts.intervalMin * 60_000, opts.signal);
+    const wake = opts.login?.wakeSignal();
+    await sleep(
+      opts.intervalMin * 60_000,
+      wake ? AbortSignal.any([opts.signal, wake]) : opts.signal,
+    );
   }
   return { cycles, skipped };
 }

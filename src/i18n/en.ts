@@ -221,8 +221,9 @@ export const en: Messages = {
           provider === "claude-cli"
             ? "On the collector machine, run <code>claude</code> and log in again (<code>/login</code>)."
             : "Check the API key and quota."
-        }`,
+        }\n\nThen tap 🔄 to check right away.`,
       back: "✅ Automatic review works again: postponed work is being reviewed.",
+      retry: "🔄 Try again now",
     },
     view: {
       tag: {

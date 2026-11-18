@@ -35,6 +35,7 @@ import {
   cardView,
   type DigestModel,
   decodeAction,
+  encodeAction,
   escapeHtml,
   findGroup,
   listView,
@@ -1286,7 +1287,6 @@ export class TelegramNotifier {
    * fix doesn't wait for the daily digest (the open alert also stays a digest banner).
    */
   private async pushAgentHealth(result: { agentDown?: number; agentRecovered?: boolean }) {
-    let html: string | undefined;
     const t = messages(this.lang).telegram.agent;
     if (result.agentDown !== undefined) {
       const alert = await this.opts.db.alert.findUnique({
@@ -1294,15 +1294,19 @@ export class TelegramNotifier {
         select: { params: true },
       });
       const p = JSON.parse(alert?.params ?? "{}") as { provider?: string; error?: string };
-      html = t.down(escapeHtml(p.provider ?? ""), escapeHtml((p.error ?? "").slice(0, 300)));
+      const view: View = {
+        html: t.down(escapeHtml(p.provider ?? ""), escapeHtml((p.error ?? "").slice(0, 300))),
+        // 🔄 after the fix: a cycle now, then this notice becomes the fresh digest (#86).
+        keyboard: [[{ text: t.retry, callback_data: encodeAction({ kind: "refresh" }) }]],
+      };
+      for (const chatId of this.chatIds) {
+        await this.sendView(chatId, view, { alerts: [result.agentDown] });
+      }
+      this.log("telegram: review agent down announced");
     } else if (result.agentRecovered) {
-      html = t.back;
+      for (const chatId of this.chatIds) await this.opts.api.sendMessage(chatId, t.back);
+      this.log("telegram: review agent back announced");
     }
-    if (!html) return;
-    for (const chatId of this.chatIds) await this.opts.api.sendMessage(chatId, html);
-    this.log(
-      `telegram: review agent ${result.agentDown !== undefined ? "down" : "back"} announced`,
-    );
   }
 
   /**

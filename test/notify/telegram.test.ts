@@ -896,6 +896,17 @@ describe("TelegramNotifier", () => {
       const down = f.sent().find((c) => text(c).includes("Automatic review is down"));
       expect(text(down)).toContain("OAuth &lt;session&gt; expired");
       expect(text(down)).toContain("<code>/login</code>");
+      expect(text(down)).toContain("Then tap 🔄");
+      expect(buttons(down?.body)).toEqual(["🔄 Try again now=f"]);
+
+      // 🔄 after the fix: a cycle now, then the notice becomes the fresh digest (#86).
+      await n.handleUpdate(tap(CHAT, 101, "f"));
+      expect(f.toasts().at(-1)).toContain("Refreshing");
+      expect(n.manualPending()).toBe(true);
+      n.startCycle();
+      await n.afterCycle({ rechecked: [] });
+      expect(f.edits().at(-1)?.body).toMatchObject({ chat_id: CHAT, message_id: 101 });
+      expect(text(f.edits().at(-1))).toContain("🔄 <b>Fresh digest</b>");
 
       const g = fakeFetch();
       await notifier(g).handleUpdate(say(CHAT, "/digest"));

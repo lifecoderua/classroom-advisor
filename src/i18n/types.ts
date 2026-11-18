@@ -165,6 +165,8 @@ export interface Messages {
       down(provider: string, error: string): string;
       /** Pushed when it works again. */
       back: string;
+      /** The notice's 🔄 button (plain): a cycle now, after the fix (#86). */
+      retry: string;
     };
     /** The navigable digest and cards (#66). */
     view: {

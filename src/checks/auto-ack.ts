@@ -1,15 +1,18 @@
-// Auto-ack (#51): once work is resolved (turned in with attachments and checked ok, or returned /
-// graded by the teacher), the alerts that were about the old state are muted with reason `auto`,
-// so they leave the digest, `/status` and the backlog by themselves (D19).
+// Auto-ack (#51): once work is resolved (turned in with attachments and fully reviewed, or
+// returned / graded by the teacher), the alerts that were about the old state are muted with
+// reason `auto`, so they leave the digest, `/status` and the backlog by themselves (D19).
 
-import type { Db } from "../store/index.ts";
+import { type Db, isUncheckedAlertKey } from "../store/index.ts";
 
 export const MUTE_AUTO = "auto";
 
 const DONE: ReadonlySet<string> = new Set(["turned_in", "returned"]);
 
 interface Resolved {
-  /** When the evidence appeared: the ok review, or now for returned/graded work. */
+  /**
+   * When the evidence appeared: the ok review (or the ✅ on its check-by-hand parts, if later),
+   * or now for returned/graded work.
+   */
   resolvedAt: Date;
   turnedInAt: Date | null;
   latestVersionId: number;
@@ -17,8 +20,9 @@ interface Resolved {
 
 /**
  * Assignments of watched accounts whose work is resolved: turned in (the `missing` bucket wins),
- * and either returned/graded by the teacher, or with attachments and an `ok` latest LLM review of
- * the latest version.
+ * and either returned/graded by the teacher, or with attachments and a finished review of the
+ * latest version: an `ok` latest LLM review and no open check-by-hand (`…:unchecked`) alert of
+ * that version (#88). A check-by-hand marked ✅ is the manual part of the review.
  */
 export async function resolvedAssignments(db: Db, now: Date): Promise<Map<number, Resolved>> {
   const subs = await db.submission.findMany({
@@ -47,6 +51,10 @@ export async function resolvedAssignments(db: Db, now: Date): Promise<Map<number
       },
     },
   });
+  const byHand = await uncheckedAlerts(
+    db,
+    subs.flatMap((s) => s.versions.map((v) => v.id)),
+  );
   const out = new Map<number, Resolved>();
   for (const s of subs) {
     const v = s.versions[0];
@@ -57,9 +65,34 @@ export async function resolvedAssignments(db: Db, now: Date): Promise<Map<number
       continue;
     }
     const check = v.checkResults[0];
-    if (check?.verdict === "ok" && attachmentCount(v.payload) > 0) {
-      out.set(s.assignmentId, { ...base, resolvedAt: check.createdAt });
-    }
+    if (check?.verdict !== "ok" || attachmentCount(v.payload) === 0) continue;
+    const parts = byHand.get(v.id) ?? [];
+    if (parts.some((a) => a.mutedAt === null)) continue; // the review isn't finished
+    const checkedAt = Math.max(
+      check.createdAt.getTime(),
+      ...parts.map((a) => a.mutedAt?.getTime() ?? 0),
+    );
+    out.set(s.assignmentId, { ...base, resolvedAt: new Date(checkedAt) });
+  }
+  return out;
+}
+
+/** Check-by-hand alerts of the given versions, by version id. */
+async function uncheckedAlerts(
+  db: Db,
+  versionIds: readonly number[],
+): Promise<Map<number, { mutedAt: Date | null }[]>> {
+  const out = new Map<number, { mutedAt: Date | null }[]>();
+  if (versionIds.length === 0) return out;
+  const wanted = new Set(versionIds);
+  const alerts = await db.alert.findMany({
+    where: { key: { startsWith: "quality:", endsWith: ":unchecked" } },
+    select: { key: true, mutedAt: true },
+  });
+  for (const a of alerts) {
+    const id = Number(a.key.split(":")[1]);
+    if (!isUncheckedAlertKey(a.key) || !wanted.has(id)) continue;
+    out.set(id, [...(out.get(id) ?? []), { mutedAt: a.mutedAt }]);
   }
   return out;
 }

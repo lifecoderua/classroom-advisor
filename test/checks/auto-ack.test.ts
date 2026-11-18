@@ -178,9 +178,38 @@ describe("autoAck", () => {
     );
     const thanks = await s.alert(`comment:${later.id}`, "alert", ago(2));
 
+    // The ok review left a part to check by hand: not finished yet (#88).
+    expect(await autoAck(db, NOW)).toEqual([]);
+    await db.alert.update({ where: { id: byHand.id }, data: { mutedAt: ago(1) } }); // ✅ by hand
     expect((await autoAck(db, NOW)).sort()).toEqual([warn.id, redo.id].sort());
-    expect((await s.state(byHand.id)).mutedAt).toBeNull(); // the latest version's own item
     expect((await s.state(thanks.id)).mutedAt).toBeNull();
+  });
+
+  it("waits for the check-by-hand parts of an ok review to be marked seen (#88)", async () => {
+    const s = await setup();
+    const a = await s.assignment("Workbook", new Date(NOW.getTime() + 20 * H));
+    const untouched = await s.alert(`deadline:${a.id}:untouched_24h`, "alert", ago(30));
+    const v = await s.turnIn(a.id, ago(6));
+    await s.review(v.id, "ok", ago(5));
+    const byHand = await s.alert(`quality:${v.id}:unchecked`, "info", ago(5));
+    // Raised after the review, before the parent checked the rest by hand.
+    const dueSoon = await s.alert(`deadline:${a.id}:due_soon`, "panic", ago(3));
+
+    expect(await autoAck(db, NOW)).toEqual([]);
+    for (const id of [untouched.id, dueSoon.id]) expect((await s.state(id)).mutedAt).toBeNull();
+
+    await db.alert.update({ where: { id: byHand.id }, data: { mutedAt: ago(1) } });
+    expect((await autoAck(db, NOW)).sort()).toEqual([untouched.id, dueSoon.id].sort());
+    expect((await s.state(byHand.id)).muteReason).toBeNull(); // stays the parent's own ✅
+  });
+
+  it("doesn't wait for check-by-hand parts of returned or graded work", async () => {
+    const s = await setup();
+    const a = await s.assignment("Graded scan");
+    const missing = await s.alert(`deadline:${a.id}:missing`, "panic", ago(30));
+    const v = await s.turnIn(a.id, ago(6), { grade: "11" });
+    await s.alert(`quality:${v.id}:unchecked`, "info", ago(5));
+    expect(await autoAck(db, NOW)).toEqual([missing.id]);
   });
 
   it("supersedes every alert of a replaced turn-in, but not after a grade-only change", async () => {

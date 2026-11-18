@@ -87,6 +87,12 @@ export const uk: Messages = {
     checkByHand: (item, list) => `Перевірте самостійно: ${item}: ${list}`,
     llmFailed: (item, n, provider, error) =>
       `Автоматична перевірка не вдалася: ${item}, спроб: ${n} (${provider}: ${error}). Перевірте роботу самостійно.`,
+    agent: (provider, error) =>
+      `Автоматична перевірка робіт не працює (${provider}: ${error}). Роботи чекають і перевіряться, щойно агент запрацює. ${
+        provider === "claude-cli"
+          ? "На комп'ютері збирача запустіть claude і увійдіть знову (/login)."
+          : "Перевірте ключ API і квоту."
+      }`,
     session: (account, state) =>
       `Синхронізацію для ${account} зупинено: ${
         state === "expired" ? "сесія Google закінчилася" : "вхід у Google не виконано"
@@ -216,6 +222,15 @@ export const uk: Messages = {
         checking: "Перевіряю акаунти…",
         notOpen: "Вхід не відкрито.",
       },
+    },
+    agent: {
+      down: (provider, error) =>
+        `⚠️ <b>Автоматична перевірка робіт не працює</b> (${provider}).\n<i>${error}</i>\n\nЗдані роботи чекають і перевіряться, щойно агент запрацює. ${
+          provider === "claude-cli"
+            ? "На комп'ютері збирача запустіть <code>claude</code> і увійдіть знову (<code>/login</code>)."
+            : "Перевірте ключ API і квоту."
+        }`,
+      back: "✅ Автоматична перевірка знову працює: відкладені роботи перевіряються.",
     },
     view: {
       tag: {

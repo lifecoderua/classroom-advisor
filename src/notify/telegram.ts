@@ -913,7 +913,12 @@ export class TelegramNotifier {
    * that asked with `/refresh`, then the daily digest if it's due. Never throws.
    */
   async afterCycle(
-    result: { rechecked?: readonly RecheckResult[]; newAlertIds?: readonly number[] } = {},
+    result: {
+      rechecked?: readonly RecheckResult[];
+      newAlertIds?: readonly number[];
+      agentDown?: number;
+      agentRecovered?: boolean;
+    } = {},
   ): Promise<void> {
     try {
       const n = await this.sendCards();
@@ -925,6 +930,11 @@ export class TelegramNotifier {
       await this.pushLostLogin(result.newAlertIds ?? []);
     } catch (err) {
       this.log(`telegram: lost-login message failed: ${this.describe(err)}`);
+    }
+    try {
+      await this.pushAgentHealth(result);
+    } catch (err) {
+      this.log(`telegram: review agent message failed: ${this.describe(err)}`);
     }
     await this.answerRechecks(result.rechecked ?? []);
     const waiters = [...this.refreshWaiters.values()];
@@ -1269,6 +1279,30 @@ export class TelegramNotifier {
     } catch (err) {
       this.log(`telegram: login message update failed: ${this.describe(err)}`);
     }
+  }
+
+  /**
+   * The review agent went down or works again (#84): said at once, like a lost login, so the
+   * fix doesn't wait for the daily digest (the open alert also stays a digest banner).
+   */
+  private async pushAgentHealth(result: { agentDown?: number; agentRecovered?: boolean }) {
+    let html: string | undefined;
+    const t = messages(this.lang).telegram.agent;
+    if (result.agentDown !== undefined) {
+      const alert = await this.opts.db.alert.findUnique({
+        where: { id: result.agentDown },
+        select: { params: true },
+      });
+      const p = JSON.parse(alert?.params ?? "{}") as { provider?: string; error?: string };
+      html = t.down(escapeHtml(p.provider ?? ""), escapeHtml((p.error ?? "").slice(0, 300)));
+    } else if (result.agentRecovered) {
+      html = t.back;
+    }
+    if (!html) return;
+    for (const chatId of this.chatIds) await this.opts.api.sendMessage(chatId, html);
+    this.log(
+      `telegram: review agent ${result.agentDown !== undefined ? "down" : "back"} announced`,
+    );
   }
 
   /**

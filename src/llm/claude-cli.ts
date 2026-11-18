@@ -14,8 +14,10 @@ import {
 import {
   type GenerateOptions,
   type JsonTask,
+  LlmAgentError,
   LlmError,
   type LlmProvider,
+  looksLikeAgentFailure,
   type ReviewInput,
   type ReviewOptions,
   type ReviewOutput,
@@ -59,7 +61,8 @@ export const spawnRunner: Runner = (bin, { args, stdin, cwd, timeoutMs }) =>
     });
     child.on("error", (err) => {
       clearTimeout(timer);
-      reject(new LlmError(`failed to start '${bin}': ${err.message}`));
+      // The CLI isn't there (or can't run): the agent is down, not the task.
+      reject(new LlmAgentError(`failed to start '${bin}': ${err.message}`));
     });
     child.on("close", (code) => {
       clearTimeout(timer);
@@ -107,6 +110,10 @@ class InvalidOutput extends Error {}
 
 const tail = (s: string, n = 2_000) => (s.length > n ? `…${s.slice(-n)}` : s).trim();
 
+/** An `LlmAgentError` when `detail` says the CLI itself can't work (login, quota), #84. */
+const cliError = (message: string, detail: string): LlmError =>
+  looksLikeAgentFailure(detail) ? new LlmAgentError(message) : new LlmError(message);
+
 /** Turns the CLI's JSON envelope into a validated `ReviewOutput` (or the `schema`'s output). */
 export function parseEnvelope(stdout: string): ReviewOutput;
 export function parseEnvelope<T>(stdout: string, schema: z.ZodType<T>): T;
@@ -121,8 +128,10 @@ export function parseEnvelope(
     throw new LlmError(`claude CLI returned non-JSON output: ${tail(stdout, 500)}`);
   }
   if (envelope.is_error === true) {
-    throw new LlmError(
-      `claude CLI reported an error (${String(envelope.subtype ?? "unknown")}): ${String(envelope.result ?? "")}`,
+    const result = String(envelope.result ?? "");
+    throw cliError(
+      `claude CLI reported an error (${String(envelope.subtype ?? "unknown")}): ${result}`,
+      result,
     );
   }
   let payload: unknown = envelope.structured_output;
@@ -223,7 +232,7 @@ export class ClaudeCliProvider implements LlmProvider {
       } catch {
         if (!detail) detail = tail(res.stdout, 500);
       }
-      throw new LlmError(`claude CLI exited with code ${res.code}: ${detail || "(no output)"}`);
+      throw cliError(`claude CLI exited with code ${res.code}: ${detail || "(no output)"}`, detail);
     }
     return parseEnvelope(res.stdout, schema);
   }

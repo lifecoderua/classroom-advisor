@@ -83,6 +83,12 @@ export const en: Messages = {
     checkByHand: (item, list) => `Check by hand: ${item}: ${list}`,
     llmFailed: (item, n, provider, error) =>
       `Automatic review couldn't run: ${item} failed ${n} times (${provider}: ${error}). Check the work by hand.`,
+    agent: (provider, error) =>
+      `Automatic review is down (${provider}: ${error}). Turned-in work waits and gets reviewed as soon as the agent works again. ${
+        provider === "claude-cli"
+          ? "On the collector machine, run claude and log in again (/login)."
+          : "Check the API key and quota."
+      }`,
     session: (account, state) =>
       `Sync stopped for ${account}: the Google session is ${state}. Log in by hand in the collector profile.`,
     drift: (account, rpcid, error) =>
@@ -208,6 +214,15 @@ export const en: Messages = {
         checking: "Checking the accounts…",
         notOpen: "No login is open.",
       },
+    },
+    agent: {
+      down: (provider, error) =>
+        `⚠️ <b>Automatic review is down</b> (${provider}).\n<i>${error}</i>\n\nTurned-in work waits and gets reviewed as soon as the agent works again. ${
+          provider === "claude-cli"
+            ? "On the collector machine, run <code>claude</code> and log in again (<code>/login</code>)."
+            : "Check the API key and quota."
+        }`,
+      back: "✅ Automatic review works again: postponed work is being reviewed.",
     },
     view: {
       tag: {

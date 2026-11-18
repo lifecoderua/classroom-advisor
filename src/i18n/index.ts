@@ -166,6 +166,8 @@ export function renderAlert(content: AlertContent, createdAt: Date, loc: Locale)
       const f = content.params;
       return a.llmFailed(item, f.failures, f.provider, f.error);
     }
+    case "llm.agent":
+      return a.agent(content.params.provider, content.params.error);
     case "sync.session":
       return a.session(content.params.account, content.params.state);
     case "sync.drift":

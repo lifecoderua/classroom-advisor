@@ -206,8 +206,11 @@ export function legacyTag(a: Pick<ReportAlert, "key" | "level">): ProblemTag {
   }
 }
 
+/** Sync alerts and the review agent's health (#84): banners, not items. */
 const isSyncAlert = (a: ReportAlert) =>
-  a.content.code.startsWith("sync.") || parseAlertKey(a.key)?.kind === "sync";
+  a.content.code.startsWith("sync.") ||
+  a.content.code === "llm.agent" ||
+  parseAlertKey(a.key)?.kind === "sync";
 
 const DEBT_TAG = { redo: "redo", missing: "missing", unchecked: "checkByHand" } as const;
 const DEBT_RANK = { redo: 0, missing: 1, unchecked: 2 } as const;

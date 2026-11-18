@@ -20,7 +20,7 @@ import {
   UNCHECKED_RETRIES,
 } from "../../src/checks/quality.ts";
 import type { PptxSummary } from "../../src/collector/office.ts";
-import { FakeProvider, LlmError, type ReviewOutput } from "../../src/llm/index.ts";
+import { FakeProvider, LlmAgentError, LlmError, type ReviewOutput } from "../../src/llm/index.ts";
 import {
   type Db,
   listCheckResults,
@@ -362,7 +362,11 @@ describe("reviewSubmission", () => {
     const failing = new FakeProvider({ respond: () => new LlmError("timed out") });
 
     for (const n of [1, 2]) {
-      expect(await run(id, failing)).toEqual({ status: "fallback", llmFailures: n });
+      expect(await run(id, failing)).toEqual({
+        status: "fallback",
+        error: "timed out",
+        llmFailures: n,
+      });
     }
     expect(await db.alert.count()).toBe(0);
     expect((await listCheckResults(db, id)).map((r) => r.source)).toEqual(["heuristic"]);
@@ -370,6 +374,7 @@ describe("reviewSubmission", () => {
 
     expect(await run(id, failing)).toEqual({
       status: "fallback",
+      error: "timed out",
       llmFailures: 3,
       failureAlertCreated: true,
     });
@@ -387,6 +392,27 @@ describe("reviewSubmission", () => {
       "heuristic",
       "llm:fake",
     ]);
+    // The review ran after all: its "couldn't run" alert closes by itself (#84).
+    const closed = await db.alert.findUnique({ where: { key: `quality:${id}:llm-failed` } });
+    expect(closed?.mutedAt).not.toBeNull();
+    expect(closed?.muteReason).toBe("auto");
+  });
+
+  it("an agent-side failure (login, quota) isn't counted against the item (#84)", async () => {
+    const id = await seed();
+    const down = new FakeProvider({
+      respond: () => new LlmAgentError("Failed to authenticate: OAuth session expired"),
+    });
+    for (let n = 0; n < 4; n++) {
+      expect(await run(id, down)).toEqual({
+        status: "agent_down",
+        error: "Failed to authenticate: OAuth session expired",
+      });
+    }
+    expect(await db.alert.count()).toBe(0);
+    const heur = (await listCheckResults(db, id))[0];
+    expect(JSON.parse(heur?.findings ?? "{}").llmFailures).toBeUndefined();
+    expect(await pendingQualityVersions(db, "llm:fake")).toEqual([id]);
   });
 
   it("on provider failure still alerts a direct heuristic panic", async () => {
@@ -783,6 +809,7 @@ describe("re-review on a new teacher comment (#44)", () => {
     const failing = new FakeProvider({ respond: () => new LlmError("down") });
     expect(await run(id, failing)).toEqual({
       status: "fallback",
+      error: "down",
       llmFailures: 1,
       triggerCommentId: cid,
     });

@@ -122,3 +122,23 @@ export interface LlmProvider {
 export class LlmError extends Error {
   override name = "LlmError";
 }
+
+/**
+ * The agent itself can't work, whatever the task (#84): its login expired, the CLI won't start,
+ * the API key is missing or wrong, the quota is spent. Retrying other items won't help until
+ * someone fixes it on the machine, so it isn't counted against the item being reviewed.
+ */
+export class LlmAgentError extends LlmError {
+  override name = "LlmAgentError";
+}
+
+export const isAgentError = (err: unknown): err is LlmAgentError => err instanceof LlmAgentError;
+
+/**
+ * Failure text that means the agent (not the task) is broken: auth, login, keys, quota.
+ * Checked against the CLI's stderr/result and API error messages.
+ */
+const AGENT_FAILURE =
+  /authenticat|oauth|not logged in|log ?in|\/login|unauthori[sz]ed|\b401\b|\b403\b|api[ _-]?key|credit balance|usage limit|quota|billing/i;
+
+export const looksLikeAgentFailure = (text: string): boolean => AGENT_FAILURE.test(text);

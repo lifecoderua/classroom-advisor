@@ -21,8 +21,10 @@ import {
 import {
   type GenerateOptions,
   type JsonTask,
+  LlmAgentError,
   LlmError,
   type LlmProvider,
+  looksLikeAgentFailure,
   type ReviewInput,
   type ReviewOptions,
   type ReviewOutput,
@@ -108,6 +110,8 @@ class Retryable extends Error {
   constructor(
     message: string,
     readonly hintMs?: number,
+    /** HTTP status, when the failure was an API answer. */
+    readonly status?: number,
   ) {
     super(message);
   }
@@ -165,7 +169,7 @@ export class GeminiProvider implements LlmProvider {
   private readonly random: () => number;
 
   constructor(private readonly opts: GeminiOptions) {
-    if (!opts.apiKey) throw new LlmError("GEMINI_API_KEY is not set");
+    if (!opts.apiKey) throw new LlmAgentError("GEMINI_API_KEY is not set");
     this.model = opts.model ?? DEFAULT_GEMINI_MODEL;
     this.backoff = { ...DEFAULT_BACKOFF, ...opts.backoff };
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
@@ -234,9 +238,9 @@ export class GeminiProvider implements LlmProvider {
       } catch (err) {
         if (!(err instanceof Retryable)) throw err;
         if (attempt >= this.backoff.maxRetries) {
-          throw new LlmError(
-            `Gemini request failed after ${attempt + 1} attempts: ${trim(err.message)}`,
-          );
+          const message = `Gemini request failed after ${attempt + 1} attempts: ${trim(err.message)}`;
+          // Rate limits that outlast the backoff: the quota is spent, not this item's fault.
+          throw err.status === 429 ? new LlmAgentError(message) : new LlmError(message);
         }
         await this.sleep(backoffDelay(attempt, this.backoff, this.random, err.hintMs));
       }
@@ -266,9 +270,18 @@ export class GeminiProvider implements LlmProvider {
       if (controller.signal.aborted) throw new LlmError(`Gemini timed out after ${timeoutMs}ms`);
       if (err instanceof ApiError) {
         if (RETRYABLE_STATUS.has(err.status)) {
-          throw new Retryable(`HTTP ${err.status}: ${err.message}`, retryDelayHint(err.message));
+          throw new Retryable(
+            `HTTP ${err.status}: ${err.message}`,
+            retryDelayHint(err.message),
+            err.status,
+          );
         }
-        throw new LlmError(`Gemini API error (HTTP ${err.status}): ${trim(err.message)}`);
+        const message = `Gemini API error (HTTP ${err.status}): ${trim(err.message)}`;
+        // A wrong key (Gemini answers 400 "API key not valid") or no access (#84).
+        if (err.status === 401 || err.status === 403 || looksLikeAgentFailure(err.message)) {
+          throw new LlmAgentError(message);
+        }
+        throw new LlmError(message);
       }
       // Network-level failure (DNS, reset): transient.
       if (err instanceof TypeError) throw new Retryable(err.message);

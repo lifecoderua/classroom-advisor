@@ -125,6 +125,8 @@ export type AlertContent =
       code: "quality.llm_failed";
       params: AlertItem & { failures: number; provider: string; error: string };
     }
+  /** The review agent itself can't work (login, quota), #84: one alert for every item. */
+  | { code: "llm.agent"; params: { provider: string; error: string } }
   | { code: "sync.session"; params: { account: string; state: "expired" | "missing" } }
   | { code: "sync.drift"; params: { account: string; rpcid: string; error: string } };
 

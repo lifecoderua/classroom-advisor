@@ -874,6 +874,43 @@ describe("TelegramNotifier", () => {
     });
   });
 
+  describe("review agent health (#84)", () => {
+    const agentDown = () =>
+      raiseAlert(
+        db,
+        {
+          key: "llm:agent:1",
+          level: "alert",
+          code: "llm.agent",
+          params: { provider: "claude-cli", error: "OAuth <session> expired" },
+        },
+        clock,
+      );
+
+    it("announces an outage at once, with the fix, and keeps it as a digest banner", async () => {
+      await seed();
+      const { alert } = await agentDown();
+      const f = fakeFetch();
+      const n = notifier(f);
+      await n.afterCycle({ newAlertIds: [alert.id], agentDown: alert.id });
+      const down = f.sent().find((c) => text(c).includes("Automatic review is down"));
+      expect(text(down)).toContain("OAuth &lt;session&gt; expired");
+      expect(text(down)).toContain("<code>/login</code>");
+
+      const g = fakeFetch();
+      await notifier(g).handleUpdate(say(CHAT, "/digest"));
+      expect(text(g.sent()[0])).toContain("⚠️");
+      expect(text(g.sent()[0])).toContain("Automatic review is down (claude-cli");
+    });
+
+    it("says when reviews work again", async () => {
+      await seed();
+      const f = fakeFetch();
+      await notifier(f).afterCycle({ agentRecovered: true });
+      expect(f.sent().some((c) => text(c).includes("Automatic review works again"))).toBe(true);
+    });
+  });
+
   describe("manual triggers (#54)", () => {
     const GROUP = "-1001234567890";
 

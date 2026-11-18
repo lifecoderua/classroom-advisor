@@ -3,7 +3,12 @@
 import { readFileSync } from "node:fs";
 import { type OfficeSummary, officeLabelledText, officeStructure } from "../collector/office.ts";
 import { DEFAULT_LANG, type Lang } from "../i18n/index.ts";
-import type { LlmProvider, ReviewInput, ReviewOutput } from "../llm/types.ts";
+import {
+  isAgentError,
+  type LlmProvider,
+  type ReviewInput,
+  type ReviewOutput,
+} from "../llm/types.ts";
 import {
   type AlertContent,
   type AlertItem,
@@ -16,6 +21,7 @@ import {
   uncheckedAlertKey,
   type Verdict,
 } from "../store/index.ts";
+import { MUTE_AUTO, muteAlerts } from "./auto-ack.ts";
 import {
   type ImagePathOf,
   loadTurnedInInput,
@@ -381,6 +387,11 @@ export type ReviewStatus =
    * direct heuristic panic, plus `quality:<id>:llm-failed` after repeated failures.
    */
   | "fallback"
+  /**
+   * The agent itself is down (login, quota; `LlmAgentError`, #84): not counted against this
+   * version, no alert; the version stays pending and the caller stops reviewing for now.
+   */
+  | "agent_down"
   /** Already has an LLM CheckResult from this provider and no newer teacher comment. */
   | "already_reviewed"
   /** Not turned in, or a material post. */
@@ -393,6 +404,8 @@ export interface ReviewSubmissionResult {
   /** What the raised alert says (when one was raised). */
   content?: AlertContent;
   alertCreated?: boolean;
+  /** The provider's error (on `fallback` and `agent_down`). */
+  error?: string;
   /** Provider failures so far for this version (on `fallback`). */
   llmFailures?: number;
   /** Whether the `quality:<id>:llm-failed` alert was created by this call. */
@@ -609,6 +622,7 @@ export async function reviewSubmission(
   try {
     llm = { ok: true, output: await provider.review(input, { instructions: reviewPrompt() }) };
   } catch (err) {
+    if (isAgentError(err)) return { status: "agent_down", error: err.message, ...reReview };
     llm = { ok: false, error: (err as Error).message };
   }
   const redo = openRedoRequest(snapshot);
@@ -646,6 +660,7 @@ export async function reviewSubmission(
     });
     const result: ReviewSubmissionResult = {
       status: "fallback",
+      error: llm.error,
       llmFailures: failures,
       ...reReview,
     };
@@ -691,6 +706,18 @@ export async function reviewSubmission(
     },
     now,
   );
+  // Earlier failures of this review are moot now that it ran (#84).
+  const failed = await db.alert.findMany({
+    where: { key: `quality:${submissionVersionId}${suffix}:llm-failed`, mutedAt: null },
+    select: { id: true },
+  });
+  if (failed.length)
+    await muteAlerts(
+      db,
+      failed.map((a) => a.id),
+      MUTE_AUTO,
+      now,
+    );
   // A re-review alerts only when the verdict got worse; an unchanged one would repeat itself.
   const worse = !previous || RANK[merged.verdict] > RANK[previous];
   if (merged.verdict === "ok" || !worse) {

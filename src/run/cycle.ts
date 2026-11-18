@@ -1,3 +1,4 @@
+import { trackAgent, updateAgentAlert } from "../checks/agent.ts";
 import { autoAck, supersedeAlerts } from "../checks/auto-ack.ts";
 import { type EvaluateDeadlinesOptions, evaluateDeadlines } from "../checks/evaluate-deadlines.ts";
 import type { ReadText } from "../checks/evaluate-heuristics.ts";
@@ -58,6 +59,10 @@ export interface CycleResult {
   digest?: string;
   /** Results of the requested re-checks (empty when none were asked). */
   rechecked: RecheckResult[];
+  /** The review agent went down this cycle: the id of its `llm.agent` alert (#84). */
+  agentDown?: number;
+  /** The review agent works again: its open `llm.agent` alerts were closed this cycle. */
+  agentRecovered?: boolean;
 }
 
 /**
@@ -89,12 +94,27 @@ export async function runCycle(deps: CycleDeps): Promise<CycleResult> {
   await step("deadlines", async () => {
     await evaluateDeadlines(db, now(), deps.deadlineOptions);
   });
+  // Reviews and rechecks go through a tracker: an agent-side failure (login, quota) is one
+  // `llm.agent` alert, not a "not checked" per item (#84).
+  const { provider, health } = trackAgent(deps.provider);
   let reviewed = 0;
   await step("quality", async () => {
-    const ids = await pendingQualityVersions(db, llmSource(deps.provider));
+    const ids = await pendingQualityVersions(db, llmSource(provider));
     for (const id of ids) {
       if (deps.signal?.aborted) break;
-      await reviewSubmission(db, id, deps.provider, deps.readText, now(), deps.reviewOptions);
+      const res = await reviewSubmission(
+        db,
+        id,
+        provider,
+        deps.readText,
+        now(),
+        deps.reviewOptions,
+      );
+      // The rest would fail the same way; they stay pending for a later cycle.
+      if (res.status === "agent_down") {
+        log(`quality: review agent unavailable, ${ids.length - reviewed} review(s) postponed`);
+        break;
+      }
       reviewed++;
     }
   });
@@ -104,7 +124,7 @@ export async function runCycle(deps: CycleDeps): Promise<CycleResult> {
       rechecked = await recheckAssignments(
         db,
         recheck,
-        deps.provider,
+        provider,
         deps.readText,
         now(),
         started,
@@ -114,6 +134,10 @@ export async function runCycle(deps: CycleDeps): Promise<CycleResult> {
   }
   // Replaced turn-ins retire their alerts (#52), resolved work closes its old ones (#51), both
   // before the digest is built.
+  let agent: Awaited<ReturnType<typeof updateAgentAlert>> = { recovered: 0 };
+  await step("agent", async () => {
+    agent = await updateAgentAlert(db, deps.provider.name, health, now());
+  });
   let autoAcked = 0;
   let superseded = 0;
   await step("auto-ack", async () => {
@@ -128,6 +152,8 @@ export async function runCycle(deps: CycleDeps): Promise<CycleResult> {
   });
   const newAlertIds = fresh.map((a) => a.id);
   const result: CycleResult = { newAlertIds, reviewed, autoAcked, superseded, errors, rechecked };
+  if (agent.raised !== undefined) result.agentDown = agent.raised;
+  if (agent.recovered) result.agentRecovered = true;
   if (newAlertIds.length) {
     const report = await buildReport(db, {
       now: now(),

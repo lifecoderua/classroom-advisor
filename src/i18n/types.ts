@@ -68,6 +68,8 @@ export interface Messages {
     notChecked(list: string): string;
     checkByHand(item: string, list: string): string;
     llmFailed(item: string, failures: number, provider: string, error: string): string;
+    /** The review agent is down (#84): `provider` picks the hint (`claude-cli`: log in again). */
+    agent(provider: string, error: string): string;
     session(account: string, state: "expired" | "missing"): string;
     drift(account: string, rpcid: string, error: string): string;
     empty: string;
@@ -156,6 +158,13 @@ export interface Messages {
       unavailable: string;
       /** Popups after a tap (plain). */
       toast: { opening: string; checking: string; notOpen: string };
+    };
+    /** Review agent health (#84), HTML; `error` is escaped. */
+    agent: {
+      /** Pushed when reviews stop because the agent can't work. */
+      down(provider: string, error: string): string;
+      /** Pushed when it works again. */
+      back: string;
     };
     /** The navigable digest and cards (#66). */
     view: {

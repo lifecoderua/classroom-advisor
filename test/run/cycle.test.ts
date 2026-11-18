@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { FakeProvider } from "../../src/llm/index.ts";
+import { FakeProvider, LlmAgentError } from "../../src/llm/index.ts";
 import { runCycle, runLoop, type SyncFn } from "../../src/run/cycle.ts";
 import { parseQuietHours } from "../../src/run/schedule.ts";
 import {
@@ -192,6 +192,45 @@ describe("runCycle", () => {
       where: { sentAt: null, mutedAt: null, key: { startsWith: "quality:" } },
     });
     expect(pending.map((a) => a.id)).toEqual(second.newAlertIds);
+  });
+
+  it("an agent outage is one llm.agent alert, closed when reviews work again (#84)", async () => {
+    const logs: string[] = [];
+    const down = new FakeProvider({
+      respond: () => new LlmAgentError("Failed to authenticate: OAuth session expired"),
+    });
+    const deps = {
+      db,
+      sync: fakeSync([]),
+      provider: down,
+      readText: async () => undefined,
+      now: () => NOW,
+      log: (l: string) => logs.push(l),
+    };
+    const first = await runCycle(deps);
+    expect(first.reviewed).toBe(0);
+    expect(first.agentDown).toBeTypeOf("number");
+    expect(logs).toContain("quality: review agent unavailable, 1 review(s) postponed");
+    const agent = await db.alert.findMany({ where: { code: "llm.agent" } });
+    expect(agent).toHaveLength(1);
+    expect(JSON.parse(agent[0]?.params ?? "{}")).toEqual({
+      provider: "fake",
+      error: "Failed to authenticate: OAuth session expired",
+    });
+    expect(await db.alert.count({ where: { key: { endsWith: ":llm-failed" } } })).toBe(0);
+
+    // Still down: no second alert, nothing counted against the item.
+    for (let i = 0; i < 3; i++) expect((await runCycle(deps)).agentDown).toBeUndefined();
+    expect(await db.alert.count({ where: { code: "llm.agent" } })).toBe(1);
+    expect(await db.alert.count({ where: { key: { endsWith: ":llm-failed" } } })).toBe(0);
+
+    // Back: the postponed review runs and the outage closes.
+    const back = await runCycle({ ...deps, provider: warnProvider() });
+    expect(back.reviewed).toBe(1);
+    expect(back.agentRecovered).toBe(true);
+    const closed = await db.alert.findFirst({ where: { code: "llm.agent" } });
+    expect(closed?.muteReason).toBe("auto");
+    expect((await runCycle({ ...deps, provider: warnProvider() })).agentRecovered).toBeUndefined();
   });
 
   it("keeps going when sync fails", async () => {

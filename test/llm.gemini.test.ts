@@ -5,6 +5,7 @@ import {
   DEFAULT_GEMINI_MODEL,
   GeminiProvider,
   geminiResponseSchema,
+  isAgentError,
   LlmError,
   type ReviewInput,
   type ReviewOutput,
@@ -139,6 +140,21 @@ describe("GeminiProvider backoff", () => {
     await expect(provider.review(input)).rejects.toThrow(LlmError);
     await expect(setup([() => err(403)]).provider.review(input)).rejects.toThrow(/HTTP 403/);
     expect(requests).toHaveLength(1);
+  });
+
+  it("marks a bad key and a spent quota as agent-side failures (#84)", async () => {
+    const reject = (p: Promise<unknown>) => p.catch((e: unknown) => e);
+    expect(isAgentError(await reject(setup([() => err(401)]).provider.review(input)))).toBe(true);
+    expect(isAgentError(await reject(setup([() => err(400)]).provider.review(input)))).toBe(false);
+    const badKey = () =>
+      json(400, {
+        error: { code: 400, message: "API key not valid.", status: "INVALID_ARGUMENT" },
+      });
+    expect(isAgentError(await reject(setup([badKey]).provider.review(input)))).toBe(true);
+    const quota = setup([() => err(429), () => err(429)], { maxRetries: 1 });
+    expect(isAgentError(await reject(quota.provider.review(input)))).toBe(true);
+    const busy = setup([() => err(503), () => err(503)], { maxRetries: 1 });
+    expect(isAgentError(await reject(busy.provider.review(input)))).toBe(false);
   });
 
   it("retries network errors", async () => {

@@ -8,6 +8,7 @@ import {
   extractJson,
   FakeProvider,
   type GeminiProvider,
+  isAgentError,
   LlmError,
   type ReviewInput,
   type ReviewOutput,
@@ -178,7 +179,32 @@ describe("ClaudeCliProvider", () => {
 
   it("reports timeouts", async () => {
     const { p } = provider([{ code: null, stdout: "", stderr: "", timedOut: true }]);
-    await expect(p.review(input)).rejects.toThrow(/timed out after 1234ms/);
+    const err = await p.review(input).catch((e: unknown) => e);
+    expect(String(err)).toMatch(/timed out after 1234ms/);
+    expect(isAgentError(err)).toBe(false);
+  });
+
+  it("tells agent-side failures (login, quota) from task failures (#84)", async () => {
+    const fail = async (stderr: string) =>
+      provider([{ code: 1, stdout: "", stderr, timedOut: false }])
+        .p.review(input)
+        .catch((e: unknown) => e);
+    for (const stderr of [
+      "Failed to authenticate: OAuth session expired and could not be refreshed",
+      "Error: not logged in. Please run /login",
+      "Invalid API key",
+      "Credit balance is too low",
+      "Claude usage limit reached",
+    ]) {
+      expect(isAgentError(await fail(stderr)), stderr).toBe(true);
+    }
+    expect(isAgentError(await fail("Error: something broke"))).toBe(false);
+    const envErr = await provider([
+      ok(envelope({ is_error: true, subtype: "error", result: "OAuth token has expired" })),
+    ])
+      .p.review(input)
+      .catch((e: unknown) => e);
+    expect(isAgentError(envErr)).toBe(true);
   });
 
   it("reports is_error envelopes", async () => {

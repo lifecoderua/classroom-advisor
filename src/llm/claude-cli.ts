@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { z } from "zod";
@@ -24,6 +24,13 @@ import {
   reviewOutputJsonSchema,
   reviewOutputSchema,
 } from "./types.ts";
+
+/**
+ * Fixed, empty scratch cwd for `claude -p` (#91). Outside the repo so no project CLAUDE.md is
+ * found; fixed so Claude Code keeps one `~/.claude/projects/<cwd>` folder instead of one per call.
+ * The CLI never writes here (no tools, or `Read` only), so concurrent calls can share it.
+ */
+export const CLAUDE_CWD = join(tmpdir(), "classroom-advisor-llm");
 
 export interface RunRequest {
   args: string[];
@@ -177,37 +184,34 @@ export class ClaudeCliProvider implements LlmProvider {
     return this.run(args, prompt, task.schema, options.timeoutMs ?? this.opts.timeoutMs);
   }
 
-  /** One logical call: a corrective retry on invalid output, from an empty scratch cwd. */
+  /** One logical call: a corrective retry on invalid output, from the fixed empty `CLAUDE_CWD`. */
   private async run<T>(
     args: string[],
     prompt: string,
     schema: z.ZodType<T>,
     timeoutMs: number,
   ): Promise<T> {
-    // Empty scratch cwd: no project CLAUDE.md, nothing readable beyond --add-dir.
-    const cwd = mkdtempSync(join(tmpdir(), "ca-llm-"));
+    // Created on every call: the OS may clean tmpdir between runs.
+    const cwd = CLAUDE_CWD;
+    mkdirSync(cwd, { recursive: true });
     try {
+      return await this.call(args, prompt, cwd, timeoutMs, schema);
+    } catch (err) {
+      if (!(err instanceof InvalidOutput)) throw err;
       try {
-        return await this.call(args, prompt, cwd, timeoutMs, schema);
-      } catch (err) {
-        if (!(err instanceof InvalidOutput)) throw err;
-        try {
-          return await this.call(
-            args,
-            buildCorrectivePrompt(prompt, err.message),
-            cwd,
-            timeoutMs,
-            schema,
-          );
-        } catch (retryErr) {
-          if (retryErr instanceof InvalidOutput) {
-            throw new LlmError(`invalid model output after retry: ${retryErr.message}`);
-          }
-          throw retryErr;
+        return await this.call(
+          args,
+          buildCorrectivePrompt(prompt, err.message),
+          cwd,
+          timeoutMs,
+          schema,
+        );
+      } catch (retryErr) {
+        if (retryErr instanceof InvalidOutput) {
+          throw new LlmError(`invalid model output after retry: ${retryErr.message}`);
         }
+        throw retryErr;
       }
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
     }
   }
 

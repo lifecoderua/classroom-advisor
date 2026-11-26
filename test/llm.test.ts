@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildClaudeArgs,
   buildPrompt,
+  CLAUDE_CWD,
   ClaudeCliProvider,
   createProvider,
   extractJson,
@@ -138,7 +139,8 @@ describe("ClaudeCliProvider", () => {
     expect(req.stdin.startsWith("Task.")).toBe(true);
     expect(req.args).toContain("opus");
     expect(req.args.slice(-2)).toEqual(["--add-dir", "/data/files/a"]);
-    expect(existsSync(req.cwd)).toBe(false); // scratch cwd cleaned up
+    expect(req.cwd).toBe(CLAUDE_CWD); // one fixed cwd: one transcript folder, #91
+    expect(existsSync(req.cwd)).toBe(true);
   });
 
   it("falls back to fenced JSON in result", async () => {
